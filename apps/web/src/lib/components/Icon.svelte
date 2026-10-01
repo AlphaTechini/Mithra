@@ -36,6 +36,17 @@
     send: 'M4 12l16-8-6 16-3-6.5z',
     spinner: 'M12 3a9 9 0 1 0 9 9',
     dot: 'M12 12h.01',
+    plus: 'M12 5v14M5 12h14',
+    external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
+    pause: 'M8 5v14M16 5v14',
+    play: 'M7 4l13 8-13 8z',
+    server: 'M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01',
+    wallet:
+      'M3 7h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 7V6a2 2 0 0 1 2-2h11M16.5 14h.01',
+    wifi: 'M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01',
+    'wifi-off':
+      'M2 9a15 15 0 0 1 5-3M5 12.5a10 10 0 0 1 3-2M8.5 16a5 5 0 0 1 7 0M12 19.5h.01M3 3l18 18',
+    sealed: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM8 12.5l3 3 5-6',
   } as const;
 
   export type IconName = keyof typeof ICONS;

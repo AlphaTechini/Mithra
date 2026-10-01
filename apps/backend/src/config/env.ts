@@ -16,6 +16,8 @@ export const ENV_DESCRIPTIONS = {
   WEB_DIST_DIR:
     'Path to the built web app (apps/web/build) that the backend serves in production; leave empty in dev.',
   LOG_LEVEL: 'Log level for the backend: fatal, error, warn, info, debug, trace or silent.',
+  HOLD_COUNTDOWN_SECONDS:
+    'Seconds of the Hold countdown before an auto-execute distribution is paid (default 30).',
   DATABASE_URL: 'PostgreSQL connection string for the application database.',
   SESSION_SECRET:
     'Secret that signs the session cookie, at least 32 characters (for example: openssl rand -hex 32).',
@@ -23,6 +25,10 @@ export const ENV_DESCRIPTIONS = {
   LLM_API_KEY: 'API key for the OpenAI-compatible LLM endpoint.',
   LLM_MODEL: 'Model name sent to the LLM endpoint.',
   LLM_TIMEOUT_MS: 'Timeout in milliseconds for one LLM request.',
+  LLM_STRICT_TOOLS:
+    'Send strict: true on the agent tool definitions (true for OpenAI; leave false for providers that reject it). Default false.',
+  LLM_MAX_TOOL_ROUNDS:
+    'Maximum number of tool-calling rounds the agent runs for one message before it must answer (default 4).',
   MITHRA_PACKAGE:
     'Daml package reference of the Mithra model used in ledger requests, for example #mithra-v1.',
   LEDGER_JSON_API_URL:
@@ -56,6 +62,10 @@ export const ENV_DESCRIPTIONS = {
     'LocalNet only: JSON list of exactly three nodes [{"id","name","operator","jsonApiUrl","decmanUrl","autoConfirm"}].',
   DECMAN_GOVERNANCE_THRESHOLD:
     'LocalNet only: number of node confirmations the Decentralization Manager needs for a governed action (default 2).',
+  DECMAN_GOVERNANCE_RULES_CID:
+    'LocalNet only: contract id of the treasury GovernanceRules, used to confirm and execute governed actions such as sealing a Mandate (scripts/localnet-up.sh writes it).',
+  DECMAN_MEMBER_PARTIES:
+    'LocalNet only: JSON object mapping a node id to the party that represents that node in governance, {"a":"member-a::1220..."}.',
   MAINNET_EXPLORER_TX_URL:
     'MainNet only: block explorer link for a transaction, containing {updateId}.',
   GROFTY_MIN_VERSION:
@@ -108,12 +118,15 @@ const commonShape = {
   WEB_ORIGIN: z.url().default('http://localhost:5173'),
   WEB_DIST_DIR: z.string().min(1).optional(),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  HOLD_COUNTDOWN_SECONDS: z.coerce.number().int().min(0).max(3600).default(30),
   DATABASE_URL: z.url(),
   SESSION_SECRET: z.string().min(32, 'must be at least 32 characters long'),
   LLM_BASE_URL: z.url().default('https://api.openai.com/v1'),
   LLM_API_KEY: z.string().min(1),
   LLM_MODEL: z.string().min(1),
   LLM_TIMEOUT_MS: z.coerce.number().int().min(1).default(30000),
+  LLM_STRICT_TOOLS: booleanString.default(false),
+  LLM_MAX_TOOL_ROUNDS: z.coerce.number().int().min(1).max(10).default(4),
   MITHRA_PACKAGE: z.string().min(1).default('#mithra-v1'),
   LEDGER_JSON_API_URL: z.url(),
   LEDGER_USER_ID: z.string().min(1),
@@ -145,6 +158,8 @@ const networkShapes = {
     LOCALNET_READ_AS_TREASURY: booleanString.default(true),
     LOCALNET_NODES: jsonOf(NodesSchema),
     DECMAN_GOVERNANCE_THRESHOLD: z.coerce.number().int().min(1).max(3).default(2),
+    DECMAN_GOVERNANCE_RULES_CID: z.string().min(1),
+    DECMAN_MEMBER_PARTIES: jsonOf(z.record(z.string().min(1), z.string().min(1))),
   },
   mainnet: {
     MAINNET_EXPLORER_TX_URL: z
@@ -185,6 +200,10 @@ export interface LocalnetConfig {
   demoParties: { partyId: string; displayName: string }[];
   nodes: LocalnetNode[];
   decmanGovernanceThreshold: number;
+  /** Contract id of the treasury's GovernanceRules in DecMan. */
+  decmanGovernanceRulesCid: string;
+  /** Node id to the member party that represents the node in governance. */
+  decmanMemberParties: Record<string, string>;
 }
 
 export interface MainnetConfig {
@@ -199,6 +218,8 @@ export interface BaseConfig {
   /** Absolute or relative path to the built web app; when set the backend serves it. */
   webDistDir: string | undefined;
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent';
+  /** Seconds of the Hold countdown before an auto-execute distribution is paid. Absent means 30. */
+  holdCountdownSeconds?: number;
   databaseUrl: string;
   /** Secret that signs the session cookie. */
   sessionSecret: string;
@@ -207,6 +228,10 @@ export interface BaseConfig {
     apiKey: string;
     model: string;
     timeoutMs: number;
+    /** Send `strict: true` on function tools. Absent means false. */
+    strictTools?: boolean;
+    /** Tool-calling rounds per agent message. Absent means 4. */
+    maxToolRounds?: number;
   };
   ledger: {
     jsonApiUrl: string;
@@ -380,6 +405,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     webOrigin: values.WEB_ORIGIN,
     webDistDir: values.WEB_DIST_DIR,
     logLevel: values.LOG_LEVEL,
+    holdCountdownSeconds: values.HOLD_COUNTDOWN_SECONDS,
     databaseUrl: values.DATABASE_URL,
     sessionSecret: values.SESSION_SECRET,
     llm: {
@@ -387,6 +413,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
       apiKey: values.LLM_API_KEY,
       model: values.LLM_MODEL,
       timeoutMs: values.LLM_TIMEOUT_MS,
+      strictTools: values.LLM_STRICT_TOOLS,
+      maxToolRounds: values.LLM_MAX_TOOL_ROUNDS,
     },
     ledger: {
       jsonApiUrl: values.LEDGER_JSON_API_URL,
@@ -419,6 +447,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
         demoParties: local.LOCALNET_DEMO_PARTIES,
         nodes: local.LOCALNET_NODES,
         decmanGovernanceThreshold: local.DECMAN_GOVERNANCE_THRESHOLD,
+        decmanGovernanceRulesCid: local.DECMAN_GOVERNANCE_RULES_CID,
+        decmanMemberParties: local.DECMAN_MEMBER_PARTIES,
       },
     };
   }

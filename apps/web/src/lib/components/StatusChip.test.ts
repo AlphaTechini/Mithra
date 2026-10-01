@@ -17,6 +17,20 @@ const WORDS: Record<ChipKind, string> = {
   expired: 'Access ended Oct 14',
   denied: 'Request denied',
   seeded: 'Seeded',
+  'paid-approved': 'Paid after approval',
+  running: 'Running',
+  countdown: 'Executing soon',
+  held: 'On hold',
+  failed: 'Failed',
+  'needs-funds': 'Needs funds',
+  advisory: 'Advisory',
+  'auto-on': 'Auto-receive on',
+  'auto-off': 'Auto-receive off',
+  online: 'Online',
+  offline: 'Offline',
+  confirmed: 'Confirmed',
+  waiting: 'Waiting',
+  approved: 'Approved',
 };
 
 describe('StatusChip', () => {

@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * Holder layout: a single column with no navigation beyond payments and units. Holders only ever
-   * see their own position, which the footer says.
+   * see their own position; each holder page carries the privacy note (PrivacyNote).
    */
   import { resolve } from '$app/paths';
   import type { Snippet } from 'svelte';
@@ -24,9 +24,6 @@
     <main id="main" tabindex="-1">
       {@render children()}
     </main>
-    <footer>
-      <p>Only you and the fund can see your position.</p>
-    </footer>
   </div>
 </SessionGate>
 
@@ -48,7 +45,7 @@
     text-decoration: none;
   }
   .column {
-    max-width: 40rem;
+    max-width: 48rem;
     margin: 0 auto;
     padding: var(--space-5) var(--space-4) var(--space-7);
   }
@@ -56,15 +53,5 @@
     display: flex;
     gap: var(--space-4);
     margin-bottom: var(--space-5);
-  }
-  footer {
-    margin-top: var(--space-7);
-    padding-top: var(--space-4);
-    border-top: 1px solid var(--color-border);
-    color: var(--color-text-muted);
-    font-size: var(--text-13);
-  }
-  footer p {
-    margin: 0;
   }
 </style>

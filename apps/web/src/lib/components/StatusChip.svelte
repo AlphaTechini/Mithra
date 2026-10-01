@@ -33,6 +33,20 @@
     expired: { icon: 'key-off', tone: 'danger' },
     denied: { icon: 'ban', tone: 'danger' },
     seeded: { icon: 'tag', tone: 'neutral' },
+    'paid-approved': { icon: 'check-double', tone: 'success' },
+    running: { icon: 'spinner', tone: 'info' },
+    countdown: { icon: 'clock', tone: 'info' },
+    held: { icon: 'pause', tone: 'neutral' },
+    failed: { icon: 'x-circle', tone: 'danger' },
+    'needs-funds': { icon: 'wallet', tone: 'danger' },
+    advisory: { icon: 'sparkle', tone: 'neutral' },
+    'auto-on': { icon: 'check-circle', tone: 'success' },
+    'auto-off': { icon: 'mail', tone: 'info' },
+    online: { icon: 'wifi', tone: 'success' },
+    offline: { icon: 'wifi-off', tone: 'danger' },
+    confirmed: { icon: 'check-circle', tone: 'success' },
+    waiting: { icon: 'clock', tone: 'neutral' },
+    approved: { icon: 'check-circle', tone: 'success' },
   };
 
   const text = $derived.by(() => {
@@ -66,6 +80,34 @@
         return 'Request denied';
       case 'seeded':
         return 'Seeded';
+      case 'paid-approved':
+        return 'Paid after approval';
+      case 'running':
+        return 'Running';
+      case 'countdown':
+        return 'Executing soon';
+      case 'held':
+        return 'On hold';
+      case 'failed':
+        return 'Failed';
+      case 'needs-funds':
+        return 'Needs funds';
+      case 'advisory':
+        return 'Advisory';
+      case 'auto-on':
+        return 'Auto-receive on';
+      case 'auto-off':
+        return 'Auto-receive off';
+      case 'online':
+        return 'Online';
+      case 'offline':
+        return 'Offline';
+      case 'confirmed':
+        return 'Confirmed';
+      case 'waiting':
+        return 'Waiting';
+      case 'approved':
+        return 'Approved';
     }
   });
 </script>

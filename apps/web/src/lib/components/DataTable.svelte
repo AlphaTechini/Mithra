@@ -54,6 +54,7 @@
 
 <style>
   .wrap {
+    position: relative;
     overflow-x: auto;
   }
   table {

@@ -13,7 +13,7 @@ export interface TimelineStep {
   at?: Date | string | number;
 }
 
-export type ActionStatus = 'running' | 'done' | 'failed';
+export type ActionStatus = 'running' | 'done' | 'failed' | 'needs-you';
 
 export interface ActionDetail {
   label: string;
@@ -26,10 +26,14 @@ export interface ActionCardData {
   status: ActionStatus;
   summary?: string;
   details?: readonly ActionDetail[];
+  /** In-app path to what the action touched. */
+  href?: string;
 }
 
 export type AgentMessage =
-  | { id: string; role: 'user' | 'agent'; text: string }
+  | { id: string; role: 'user'; text: string }
+  /** `degraded`: the agent could not use its language model; the text says what still happened. */
+  | { id: string; role: 'agent'; text: string; degraded?: boolean }
   | { id: string; role: 'tool'; action: ActionCardData };
 
 export type ChipKind =
@@ -45,7 +49,21 @@ export type ChipKind =
   | 'active'
   | 'expired'
   | 'denied'
-  | 'seeded';
+  | 'seeded'
+  | 'paid-approved'
+  | 'running'
+  | 'countdown'
+  | 'held'
+  | 'failed'
+  | 'needs-funds'
+  | 'advisory'
+  | 'auto-on'
+  | 'auto-off'
+  | 'online'
+  | 'offline'
+  | 'confirmed'
+  | 'waiting'
+  | 'approved';
 
 export interface TableColumn {
   key: string;

@@ -8,7 +8,8 @@
    */
   import { tick } from 'svelte';
   import type { AgentMessage } from '$lib/types/ui';
-  import ActionCard from './ActionCard.svelte';
+  import AgentComposer from './AgentComposer.svelte';
+  import AgentTranscript from './AgentTranscript.svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
 
@@ -27,6 +28,9 @@
     busy?: boolean;
     /** When set, the prompt box is disabled and this explains why. */
     unavailableReason?: string;
+    /** A failed load or send: what failed and what to do. */
+    error?: { title: string; message: string } | null;
+    onretry?: () => void;
     onsend?: (text: string) => void;
     onclose?: () => void;
   }
@@ -37,14 +41,15 @@
     suggestions = DEFAULT_SUGGESTIONS,
     busy = false,
     unavailableReason,
+    error = null,
+    onretry,
     onsend,
     onclose,
   }: Props = $props();
 
   let panel = $state<HTMLElement>();
-  let textarea = $state<HTMLTextAreaElement>();
+  let composer = $state<{ focus: () => void }>();
   let transcript = $state<HTMLElement>();
-  let draft = $state('');
   let opener: HTMLElement | null = null;
 
   const FOCUSABLE =
@@ -63,9 +68,10 @@
   $effect(() => {
     if (open) {
       opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      void tick().then(() =>
-        (textarea && !textarea.disabled ? textarea : focusables()[0])?.focus(),
-      );
+      void tick().then(() => {
+        composer?.focus();
+        if (!panel?.contains(document.activeElement)) focusables()[0]?.focus();
+      });
       return () => {
         const target = opener;
         opener = null;
@@ -106,20 +112,6 @@
       }
     }
   }
-
-  function send(text: string): void {
-    const value = text.trim();
-    if (!value || busy || unavailableReason) return;
-    onsend?.(value);
-    draft = '';
-  }
-
-  function onPromptKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      send(draft);
-    }
-  }
 </script>
 
 <svelte:window onkeydown={onWindowKeydown} />
@@ -141,81 +133,13 @@
       </Button>
     </header>
 
-    <div
-      class="transcript"
-      bind:this={transcript}
-      role="log"
-      aria-live="polite"
-      aria-label="Conversation"
-    >
-      {#if messages.length === 0}
-        <p class="hint">
-          Ask for a distribution, the reason behind a flag, or a payment history. The agent works
-          inside your mandate and never signs for you.
-        </p>
-      {/if}
-      {#each messages as message (message.id)}
-        {#if message.role === 'tool'}
-          <div class="row tool">
-            <ActionCard
-              title={message.action.title}
-              status={message.action.status}
-              summary={message.action.summary}
-              items={message.action.details}
-            />
-          </div>
-        {:else}
-          <div class="row {message.role}">
-            <p class="bubble">
-              <span class="sr-only"
-                >{message.role === 'user' ? 'You' : 'Agent'}:
-              </span>{message.text}
-            </p>
-          </div>
-        {/if}
-      {/each}
-      {#if busy}
-        <p class="working"><Icon name="spinner" spin size={14} /> The agent is working…</p>
-      {/if}
+    <div class="scroll" bind:this={transcript}>
+      <AgentTranscript {messages} {busy} {error} {onretry} />
     </div>
 
-    <form
-      class="composer"
-      onsubmit={(event) => {
-        event.preventDefault();
-        send(draft);
-      }}
-    >
-      {#if suggestions.length > 0}
-        <ul class="suggestions" aria-label="Suggested prompts">
-          {#each suggestions as suggestion (suggestion)}
-            <li>
-              <button
-                type="button"
-                class="suggestion"
-                disabled={busy || !!unavailableReason}
-                onclick={() => send(suggestion)}>{suggestion}</button
-              >
-            </li>
-          {/each}
-        </ul>
-      {/if}
-      {#if unavailableReason}<p class="hint" role="status">{unavailableReason}</p>{/if}
-      <label class="sr-only" for="agent-prompt">Message to the agent</label>
-      <div class="prompt">
-        <textarea
-          id="agent-prompt"
-          bind:this={textarea}
-          bind:value={draft}
-          rows="2"
-          placeholder="Ask the agent"
-          disabled={!!unavailableReason}
-          onkeydown={onPromptKeydown}></textarea>
-        <Button type="submit" disabled={!draft.trim() || busy || !!unavailableReason}>
-          <Icon name="send" size={16} /> Send
-        </Button>
-      </div>
-    </form>
+    <div class="composer-wrap">
+      <AgentComposer bind:this={composer} {suggestions} {busy} {unavailableReason} {onsend} />
+    </div>
   </div>
 {/if}
 
@@ -256,98 +180,14 @@
     margin: 0;
     font-size: var(--text-18);
   }
-  .transcript {
+  .scroll {
     flex: 1;
     overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
     padding: var(--space-4);
   }
-  .hint {
-    color: var(--color-text-muted);
-    font-size: var(--text-13);
-    margin: 0;
-  }
-  .row {
-    display: flex;
-  }
-  .row.user {
-    justify-content: flex-end;
-  }
-  .row.tool > :global(*) {
-    flex: 1;
-  }
-  .bubble {
-    margin: 0;
-    padding: var(--space-2) var(--space-3);
-    border-radius: var(--radius-lg);
-    max-width: 85%;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  .user .bubble {
-    background: var(--color-selected-bg);
-    color: var(--color-text);
-  }
-  .agent .bubble {
-    background: var(--color-surface-sunken);
-  }
-  .working {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    margin: 0;
-    color: var(--color-text-muted);
-    font-size: var(--text-13);
-  }
-  .composer {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
+  .composer-wrap {
     padding: var(--space-3) var(--space-4) var(--space-4);
     border-top: 1px solid var(--color-border);
-  }
-  .suggestions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    max-width: none;
-  }
-  .suggestion {
-    padding: var(--space-1) var(--space-3);
-    border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-pill);
-    background: var(--color-surface);
-    font-size: var(--text-13);
-    text-align: left;
-  }
-  .suggestion:hover:not(:disabled) {
-    background: var(--color-surface-sunken);
-  }
-  .suggestion:disabled {
-    color: var(--color-text-muted);
-  }
-  .prompt {
-    display: flex;
-    gap: var(--space-2);
-    align-items: flex-end;
-  }
-  textarea {
-    flex: 1;
-    min-width: 0;
-    resize: vertical;
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-md);
-    background: var(--color-surface);
-  }
-  textarea:disabled {
-    background: var(--color-surface-sunken);
-    color: var(--color-text-muted);
   }
   @keyframes slide-in {
     from {

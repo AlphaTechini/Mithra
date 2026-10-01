@@ -11,11 +11,23 @@
   import Icon from '$lib/components/Icon.svelte';
   import PartyBar from '$lib/components/PartyBar.svelte';
   import SessionGate from '$lib/components/SessionGate.svelte';
+  import { untrack } from 'svelte';
+  import { agentStore } from '$lib/stores/agent.svelte';
   import { sessionStore } from '$lib/stores/session.svelte';
   import { shell } from '$lib/stores/ui.svelte';
   import type { NavItem } from '$lib/types/ui';
 
   let { children }: { children: Snippet } = $props();
+
+  // The agent conversation belongs to the signed-in party: reload it when the party changes.
+  $effect(() => {
+    const partyId = sessionStore.party?.partyId;
+    if (!partyId) return;
+    untrack(() => {
+      agentStore.reset();
+      void agentStore.load();
+    });
+  });
 
   const isApprover = $derived(sessionStore.party?.roles.includes('approver') ?? false);
 
@@ -60,7 +72,12 @@
   </div>
   <AgentPanel
     bind:open={shell.agentOpen}
-    unavailableReason="The agent isn't connected in this build yet, so prompts can't be sent."
+    messages={agentStore.rows}
+    suggestions={agentStore.suggestions}
+    busy={agentStore.busy}
+    error={agentStore.error}
+    onretry={() => void agentStore.retry()}
+    onsend={(text: string) => void agentStore.send(text)}
   />
 </SessionGate>
 

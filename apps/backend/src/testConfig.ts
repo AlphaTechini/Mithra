@@ -52,6 +52,12 @@ export function localnetTestConfig(overrides: Partial<Config> = {}): Config {
         },
       ],
       decmanGovernanceThreshold: 2,
+      decmanGovernanceRulesCid: '00rules',
+      decmanMemberParties: {
+        a: 'member-a::1220aa',
+        b: 'member-b::1220aa',
+        c: 'member-c::1220aa',
+      },
     },
   };
   return { ...config, ...overrides } as Config;

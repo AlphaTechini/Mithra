@@ -14,7 +14,7 @@ export class ApiError extends Error {
   }
 }
 
-type Method = 'GET' | 'POST' | 'DELETE';
+type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
 async function readErrorBody(res: Response): Promise<{ code: string; message: string }> {
   try {
@@ -97,6 +97,11 @@ export async function apiPost<T>(
   const res = await fetchJson('POST', path, body);
   if (schema === null) return;
   return parseBody(res, schema);
+}
+
+/** PUT a JSON body to `/api<path>` and parse the response with `schema`. */
+export async function apiPut<T>(path: string, schema: z.ZodType<T>, body: unknown): Promise<T> {
+  return parseBody(await fetchJson('PUT', path, body), schema);
 }
 
 /** DELETE `/api<path>`. Pass `null` as the schema for an empty (204) response. */

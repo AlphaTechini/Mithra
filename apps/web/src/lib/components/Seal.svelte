@@ -24,6 +24,12 @@
     /** `expiring` only: when the grant began. */
     grantedAt?: Date | string | number;
     size?: 'sm' | 'md' | 'lg';
+    /**
+     * Keep the ring open even when every segment is signed, until `state` says `sealed`. For
+     * actions that are only final once the ledger confirms them (for example the Mandate, which
+     * waits for treasury node confirmations after the treasurer signs).
+     */
+    hold?: boolean;
   }
 
   let {
@@ -34,6 +40,7 @@
     expiresAt,
     grantedAt,
     size = 'md',
+    hold = false,
   }: Props = $props();
 
   const PX = { sm: 56, md: 112, lg: 168 } as const;
@@ -43,7 +50,7 @@
 
   const segments = $derived(Math.max(1, Math.floor(required)));
   const count = $derived(Math.min(Math.max(0, Math.floor(signed)), segments));
-  const isSealed = $derived(mode === 'sealed' || (mode === 'open' && signed >= required));
+  const isSealed = $derived(mode === 'sealed' || (mode === 'open' && !hold && signed >= required));
   const isExpiring = $derived(mode === 'expiring');
 
   // Time-left fraction for the expiring ring, refreshed once a minute.

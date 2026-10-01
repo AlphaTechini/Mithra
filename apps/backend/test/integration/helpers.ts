@@ -129,6 +129,8 @@ export function localnetConfig(
         },
       ],
       decmanGovernanceThreshold: 2,
+      decmanGovernanceRulesCid: '00rules',
+      decmanMemberParties: { a: 'member-a', b: 'member-b', c: 'member-c' },
     },
   };
   return { ...base, ...overrides } as Config;

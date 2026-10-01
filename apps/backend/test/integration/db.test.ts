@@ -27,6 +27,8 @@ describe('database', () => {
       'chat_messages',
       'cycle_runs',
       'invites',
+      'policy_drafts',
+      'seal_requests',
       'sessions',
       'tx_refs',
     ]);

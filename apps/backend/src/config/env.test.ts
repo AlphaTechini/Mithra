@@ -57,6 +57,8 @@ const localnet = {
     { partyId: PARTY('treasurer'), displayName: 'Treasurer' },
   ]),
   LOCALNET_NODES: nodes,
+  DECMAN_GOVERNANCE_RULES_CID: '00rulescid',
+  DECMAN_MEMBER_PARTIES: JSON.stringify({ a: PARTY('member-a'), b: PARTY('member-b') }),
 };
 
 const mainnet = {
@@ -90,6 +92,7 @@ describe('loadConfig on localnet', () => {
       webOrigin: 'http://localhost:5173',
       webDistDir: undefined,
       logLevel: 'info',
+      holdCountdownSeconds: 30,
       databaseUrl: 'postgres://x@localhost/x',
       sessionSecret: 's'.repeat(32),
       llm: {
@@ -97,6 +100,8 @@ describe('loadConfig on localnet', () => {
         apiKey: 'key',
         model: 'model',
         timeoutMs: 30000,
+        strictTools: false,
+        maxToolRounds: 4,
       },
       ledger: {
         jsonApiUrl: 'http://localhost:3975',
@@ -113,6 +118,8 @@ describe('loadConfig on localnet', () => {
         demoParties: [{ partyId: PARTY('treasurer'), displayName: 'Treasurer' }],
         nodes: JSON.parse(nodes) as unknown[],
         decmanGovernanceThreshold: 2,
+        decmanGovernanceRulesCid: '00rulescid',
+        decmanMemberParties: { a: PARTY('member-a'), b: PARTY('member-b') },
       },
     });
   });
@@ -126,10 +133,13 @@ describe('loadConfig on localnet', () => {
       LOG_LEVEL: 'debug',
       LLM_BASE_URL: 'http://localhost:11434/v1',
       LLM_TIMEOUT_MS: '5000',
+      LLM_STRICT_TOOLS: 'true',
+      LLM_MAX_TOOL_ROUNDS: '2',
       MITHRA_PACKAGE: '#mithra-v2',
       LEDGER_AUTH_MODE: 'none',
       LOCALNET_READ_AS_TREASURY: 'false',
       DECMAN_GOVERNANCE_THRESHOLD: '3',
+      HOLD_COUNTDOWN_SECONDS: '5',
       ASSET_ID: 'USDCx',
       ASSET_SYMBOL: 'USDC',
     });
@@ -138,10 +148,16 @@ describe('loadConfig on localnet', () => {
       host: '127.0.0.1',
       webDistDir: 'apps/web/build',
       logLevel: 'debug',
-      llm: { baseUrl: 'http://localhost:11434/v1', timeoutMs: 5000 },
+      llm: {
+        baseUrl: 'http://localhost:11434/v1',
+        timeoutMs: 5000,
+        strictTools: true,
+        maxToolRounds: 2,
+      },
       ledger: { auth: { mode: 'none' }, mithraPackage: '#mithra-v2', readAsTreasury: false },
       asset: { id: 'USDCx', symbol: 'USDC' },
       localnet: { decmanGovernanceThreshold: 3 },
+      holdCountdownSeconds: 5,
     });
   });
 
@@ -163,6 +179,8 @@ describe('loadConfig on localnet', () => {
       'LOCALNET_DEMO_PASSWORD',
       'LOCALNET_DEMO_PARTIES',
       'LOCALNET_NODES',
+      'DECMAN_GOVERNANCE_RULES_CID',
+      'DECMAN_MEMBER_PARTIES',
     ] as const;
     for (const name of expected) {
       expect(lines).toContain(

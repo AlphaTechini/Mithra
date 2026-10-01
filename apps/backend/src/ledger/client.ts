@@ -458,6 +458,53 @@ export class LedgerClient {
     const value = isObject(wrapper) ? wrapper['value'] : undefined;
     return parseTransaction(value);
   }
+
+  /**
+   * When `contractId` was created and archived, as seen by `parties`. Throws a `LedgerError` with
+   * status 404 when none of the parties can see the contract.
+   */
+  async eventsByContractId(contractId: string, parties: string[]): Promise<ContractEvents> {
+    const result = await this.call('POST', '/v2/events/events-by-contract-id', {
+      json: { contractId, eventFormat: eventFormat(parties, [WILDCARD]) },
+    });
+    const body = isObject(result) ? result : {};
+    const offsetOf = (side: unknown, key: string): number | null => {
+      if (!isObject(side)) return null;
+      const event = side[key];
+      return isObject(event) && typeof event['offset'] === 'number' ? event['offset'] : null;
+    };
+    return {
+      createdAtOffset: offsetOf(body['created'], 'createdEvent'),
+      archivedAtOffset: offsetOf(body['archived'], 'archivedEvent'),
+    };
+  }
+
+  /** The transaction at a ledger offset (with exercise events), as seen by `parties`. */
+  async updateByOffset(offset: number, parties: string[]): Promise<Transaction> {
+    const result = await this.call('POST', '/v2/updates/update-by-offset', {
+      json: {
+        offset,
+        updateFormat: {
+          includeTransactions: {
+            eventFormat: eventFormat(parties, [WILDCARD]),
+            transactionShape: 'TRANSACTION_SHAPE_LEDGER_EFFECTS',
+          },
+        },
+      },
+    });
+    const update = isObject(result) ? result['update'] : undefined;
+    const wrapper = isObject(update) ? update['Transaction'] : undefined;
+    const value = isObject(wrapper) ? wrapper['value'] : undefined;
+    return parseTransaction(value);
+  }
+}
+
+/** The events of one contract as the queried parties see them (`/v2/events/events-by-contract-id`). */
+export interface ContractEvents {
+  /** Offset of the transaction that created the contract. */
+  createdAtOffset: number | null;
+  /** Offset of the transaction that archived it; null while the contract is active. */
+  archivedAtOffset: number | null;
 }
 
 /** Contracts created by a transaction, optionally only of one entity (`Module:Entity`). */

@@ -56,3 +56,65 @@ export function shortenPartyId(id: string): string {
   const shortHint = hint.length > 24 ? `${hint.slice(0, 23)}…` : hint;
   return hint ? `${shortHint}::${shortFingerprint}` : shortFingerprint;
 }
+
+function two(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+/** "Oct 14, 09:00 UTC" (year added when it is not the current year). Empty for an invalid date. */
+export function formatDateTime(value: Date | string | number, now: Date = new Date()): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${formatShortDate(date, now)}, ${two(date.getUTCHours())}:${two(date.getUTCMinutes())} UTC`;
+}
+
+/**
+ * A short duration for countdowns: "12 s", "4 min", "5 h 12 min", "3 days". Negative or zero
+ * values read as "0 s". Display only; the server decides when anything actually happens.
+ */
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds} s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  if (totalHours < 24) {
+    const minutes = totalMinutes % 60;
+    return minutes === 0 ? `${totalHours} h` : `${totalHours} h ${minutes} min`;
+  }
+  const days = Math.floor(totalHours / 24);
+  return days === 1 ? '1 day' : `${days} days`;
+}
+
+/** "0:12" style clock for the Hold countdown. */
+export function formatClock(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(totalSeconds / 60)}:${two(totalSeconds % 60)}`;
+}
+
+/** "age" for lists: "just now", "5 min ago", "3 h ago", "2 days ago". */
+export function formatAge(value: Date | string | number, now: number = Date.now()): string {
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return '';
+  const diff = now - then;
+  if (diff < 45_000) return 'just now';
+  return `${formatDuration(diff)} ago`;
+}
+
+/** The previous calendar month as "YYYY-MM" in UTC, the default period for "Run cycle now". */
+export function previousMonth(now: Date = new Date()): string {
+  const year = now.getUTCMonth() === 0 ? now.getUTCFullYear() - 1 : now.getUTCFullYear();
+  const month = now.getUTCMonth() === 0 ? 12 : now.getUTCMonth();
+  return `${year}-${two(month)}`;
+}
+
+/** Today's date as "YYYY-MM-DD" in UTC. */
+export function todayIso(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+/** An absolute URL for an in-app path, e.g. an invite link the treasurer copies. */
+export function absoluteUrl(path: string): string {
+  if (typeof window === 'undefined') return path;
+  return new URL(path, window.location.origin).toString();
+}

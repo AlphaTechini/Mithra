@@ -6,6 +6,7 @@
    */
   import type { Snippet } from 'svelte';
   import type { ActionDetail, ActionStatus } from '$lib/types/ui';
+  import AppLink from './AppLink.svelte';
   import Icon from './Icon.svelte';
 
   interface Props {
@@ -17,13 +18,28 @@
     /** Free-form details, shown after the items when expanded. */
     details?: Snippet;
     open?: boolean;
+    /** In-app path to what the action touched; shown as an "Open" link under the card header. */
+    href?: string;
   }
 
-  let { title, status, summary, items = [], details, open = $bindable(false) }: Props = $props();
+  let {
+    title,
+    status,
+    summary,
+    items = [],
+    details,
+    open = $bindable(false),
+    href,
+  }: Props = $props();
 
   const uid = $props.id();
   const expandable = $derived(items.length > 0 || details !== undefined);
-  const STATUS_WORD = { running: 'Running', done: 'Done', failed: 'Failed' } as const;
+  const STATUS_WORD = {
+    running: 'Running',
+    done: 'Done',
+    failed: 'Failed',
+    'needs-you': 'Needs you',
+  } as const;
 </script>
 
 {#snippet headContent()}
@@ -32,6 +48,8 @@
       <Icon name="spinner" size={16} spin />
     {:else if status === 'done'}
       <Icon name="check-circle" size={16} />
+    {:else if status === 'needs-you'}
+      <Icon name="alert" size={16} />
     {:else}
       <Icon name="x-circle" size={16} />
     {/if}
@@ -57,6 +75,9 @@
     </button>
   {:else}
     <div class="head">{@render headContent()}</div>
+  {/if}
+  {#if href}
+    <p class="link"><AppLink link={href}>Open</AppLink></p>
   {/if}
   {#if expandable && open}
     <div class="details" id="{uid}-details">
@@ -104,8 +125,13 @@
   .done .state {
     color: var(--color-success);
   }
-  .failed .state {
+  .failed .state,
+  .needs-you .state {
     color: var(--color-danger);
+  }
+  .link {
+    margin: 0;
+    padding: 0 var(--space-3) var(--space-2) calc(var(--space-3) + 16px + var(--space-2));
   }
   .text {
     flex: 1;
