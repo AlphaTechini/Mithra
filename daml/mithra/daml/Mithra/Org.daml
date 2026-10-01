@@ -4,6 +4,8 @@ import DA.Date (toDateUTC)
 import DA.Foldable (forA_)
 import DA.List (dedup)
 import Splice.Api.Token.HoldingV1 (InstrumentId)
+import Splice.Api.Token.MetadataV1 (ExtraArgs)
+import Splice.Api.Token.TransferInstructionV1
 import Mithra.Audit
 import Mithra.Mandate
 import Mithra.Types
@@ -63,6 +65,21 @@ template Organization
           accepted = False
           seeded
         pure (newRegisterCid, unitCid)
+
+    -- | Funding: the agent accepts an incoming transfer of the organization's asset to the
+    -- treasury. On LocalNet the treasury is a Decentralized Party that cannot submit, so
+    -- deposits would otherwise wait forever. Accepting only adds to the treasury.
+    nonconsuming choice Org_AcceptDeposit : TransferInstructionResult
+      with
+        instructionCid : ContractId TransferInstruction
+        extraArgs : ExtraArgs
+      controller agent
+      do
+        instruction <- fetch instructionCid
+        let pending = (view instruction).transfer
+        assertMsg "This transfer is not addressed to the treasury" (pending.receiver == treasury)
+        assertMsg "Only the organization's asset can be accepted" (pending.instrumentId == asset)
+        exercise instructionCid TransferInstruction_Accept with extraArgs
 
     -- | L6, N8: turns a treasurer-signed request into the new Mandate. The treasury's
     -- authority is required, so on LocalNet this runs only through a governed action.

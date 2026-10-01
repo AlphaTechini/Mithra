@@ -11,6 +11,7 @@ import Mithra.Mandate
 import Mithra.Org
 import Mithra.Payment
 import Mithra.Types
+import Mithra.Test.Registry (mintTo)
 import Mithra.Test.Setup
 
 -- | Every holder has a preapproval: all are paid in the same transaction.
@@ -173,3 +174,45 @@ test_mainnet_agent_execution_can_be_switched_off = do
     executeBefore = addRelTime now (days 1)
   o <- outcomeOf fx1 outcomeCid
   assertMsg "executed by the treasury" (o.kind == Executed && o.actor == fx.treasury)
+
+-- | Funding: someone sends the asset to the treasury without a preapproval; the agent
+-- accepts it on the treasury's behalf through the Organization.
+test_funding_agent_accepts_deposit : Script ()
+test_funding_agent_accepts_deposit = do
+  fx <- setup
+  funder <- allocatePartyByHint (PartyIdHint "funder")
+  input <- mintTo fx.registryAdmin funder 250.0
+  now <- getTime
+  let noArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+  result <- submit (actAs funder <> readAs fx.treasury) $ exerciseCmd fx.factoryCid TransferFactory_Transfer with
+    expectedAdmin = fx.registryAdmin
+    transfer = Transfer with
+      sender = funder
+      receiver = fx.treasury
+      amount = 250.0
+      instrumentId = fx.asset
+      requestedAt = now
+      executeBefore = now `addRelTime` hours 1
+      inputHoldingCids = [input]
+      meta = emptyMetadata
+    extraArgs = noArgs
+  TransferInstructionResult_Pending instructionCid <- pure result.output
+  before <- treasuryBalance fx
+  -- an outsider cannot accept for the treasury
+  failsWith notAuthorized (actAs fx.outsider <> readAs fx.treasury) (exerciseCmd fx.orgCid Org_AcceptDeposit with
+    instructionCid; extraArgs = noArgs)
+  _ <- submit (asAgent fx) $ exerciseCmd fx.orgCid Org_AcceptDeposit with instructionCid; extraArgs = noArgs
+  after <- treasuryBalance fx
+  assertMsg "the deposit reached the treasury" (after == before + 250.0)
+
+-- | The agent cannot use the deposit path to accept transfers addressed to anyone else.
+test_funding_agent_cannot_accept_for_others : Script ()
+test_funding_agent_cannot_accept_for_others = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  cmd <- executeCmdFor fx fx.mandateCid proposalCid [fx.holderC]
+  _ <- submit (asAgent fx) cmd
+  [(_, payment)] <- query @Payment fx.holderC
+  Some instructionCid <- pure payment.transferInstructionCid
+  failsWith "not addressed to the treasury" (asAgent fx <> readAs fx.holderC) (exerciseCmd fx.orgCid Org_AcceptDeposit with
+    instructionCid; extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata)
