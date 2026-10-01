@@ -19,3 +19,9 @@ export {
   SwitchPartyRequestSchema,
   type SwitchPartyRequest,
 } from './api/session';
+export {
+  NodeStatusSchema,
+  type NodeStatus,
+  StatusResponseSchema,
+  type StatusResponse,
+} from './api/status';

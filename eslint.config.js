@@ -44,7 +44,8 @@ export default ts.config(
     },
   },
   {
-    files: ['**/*.svelte'],
+    // Rune modules (*.svelte.ts) are parsed by the Svelte parser too and need the TS parser inside.
+    files: ['**/*.svelte', '**/*.svelte.ts'],
     languageOptions: {
       parserOptions: { parser: ts.parser },
     },

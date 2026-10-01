@@ -1,0 +1,21 @@
+# Override for the Splice LocalNet `console` service: runs one of Mithra's Canton console scripts
+# (console/*.sc) instead of the stock console. Used by scripts/localnet-node.sh, always together
+# with the bundle's compose.yaml:
+#   docker compose ... -f <bundle>/compose.yaml -f <bundle>/resource-constraints.yaml \
+#     -f localnet/compose.console.yaml --profile sv --profile app-provider --profile app-user --profile console \
+#     run --rm -T \
+#     -e MITHRA_PARTICIPANT=app-user -e MITHRA_CONSOLE_SCRIPT=node-offline.sc console
+#
+# All four profiles are needed (the bundle's multi-sync-startup extends `console` and depends on `splice`).
+# The path of localnet/console is passed as MITHRA_CONSOLE_DIR (absolute) because relative paths in a
+# merged file resolve against the first -f file's directory, which is the bundle's.
+services:
+  console:
+    # The stock entrypoint is /app/entrypoint.sh behind tini; ours mirrors it (see console/entrypoint.sh)
+    # and runs the script named by MITHRA_CONSOLE_SCRIPT.
+    entrypoint: ['/usr/bin/tini', '--', '/bin/bash', '/mithra/entrypoint.sh']
+    environment:
+      - MITHRA_PARTICIPANT=${MITHRA_PARTICIPANT:-}
+      - MITHRA_CONSOLE_SCRIPT=${MITHRA_CONSOLE_SCRIPT:-}
+    volumes:
+      - ${MITHRA_CONSOLE_DIR:?set MITHRA_CONSOLE_DIR to the absolute path of localnet/console}:/mithra:ro

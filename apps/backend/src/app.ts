@@ -1,16 +1,31 @@
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import fastifyCookie from '@fastify/cookie';
 import fastifyCors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { HealthResponseSchema, type HealthResponse } from '@mithra/shared';
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply } from 'fastify';
 import { ZodError } from 'zod';
 import { version } from '../package.json';
+import { sessionPlugin } from './auth/plugin';
+import { createRoleResolver } from './auth/roles';
+import { SessionService } from './auth/sessions';
 import type { Config } from './config/env';
+import type { DatabaseHandle } from './db';
+import { ApiError, errorBody, upstreamErrorResponse } from './http/errors';
+import type { Ledger } from './ledger';
+import { configRoutes } from './routes/config';
+import { sessionRoutes, type SessionRouteOptions } from './routes/session';
+import { statusRoutes } from './routes/status';
 
-/** Body of every API error response. */
-export interface ErrorBody {
-  error: { code: string; message: string };
+export type { ErrorBody } from './http/errors';
+
+/** What the API routes need besides the configuration. Without it only health and config routes exist. */
+export interface AppDeps {
+  database: DatabaseHandle;
+  ledger: Ledger;
+  /** Overrides for tests, such as the sign-in rate limit. */
+  session?: SessionRouteOptions;
 }
 
 const STATUS_CODES: Record<number, string> = {
@@ -26,10 +41,6 @@ const STATUS_CODES: Record<number, string> = {
   429: 'too_many_requests',
 };
 
-function errorBody(code: string, message: string): ErrorBody {
-  return { error: { code, message } };
-}
-
 function sendNotFound(reply: FastifyReply, method: string, url: string): FastifyReply {
   return reply.code(404).send(errorBody('not_found', `Route ${method} ${url} not found`));
 }
@@ -39,7 +50,7 @@ function isApiPath(url: string): boolean {
   return path === '/api' || path.startsWith('/api/');
 }
 
-export function buildApp(config: Config): FastifyInstance {
+export function buildApp(config: Config, deps?: AppDeps): FastifyInstance {
   const prettyLogs = process.env['NODE_ENV'] !== 'production' && process.stdout.isTTY;
   const app = Fastify({
     logger: {
@@ -58,10 +69,18 @@ export function buildApp(config: Config): FastifyInstance {
   // In production the backend serves the web app itself (same origin), so CORS is only needed in
   // development, when the web dev server runs on WEB_ORIGIN.
   if (!webDistDir) {
-    void app.register(fastifyCors, { origin: config.webOrigin });
+    void app.register(fastifyCors, { origin: config.webOrigin, credentials: true });
   }
 
-  app.setErrorHandler((error: FastifyError | ZodError, request, reply) => {
+  app.setErrorHandler((error: FastifyError | ZodError | ApiError, request, reply) => {
+    if (error instanceof ApiError) {
+      return reply.code(error.status).send(errorBody(error.code, error.message));
+    }
+    const upstream = upstreamErrorResponse(error);
+    if (upstream) {
+      request.log.warn({ err: error }, 'upstream request failed');
+      return reply.code(upstream.status).send(upstream.body);
+    }
     if (error instanceof ZodError) {
       const message = error.issues
         .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
@@ -81,6 +100,23 @@ export function buildApp(config: Config): FastifyInstance {
   app.get('/api/health', (): HealthResponse => {
     return HealthResponseSchema.parse({ status: 'ok', network: config.network, version });
   });
+
+  configRoutes(app, config);
+
+  void app.register(fastifyCookie, { secret: config.sessionSecret });
+  if (deps) {
+    const { database, ledger } = deps;
+    void app.register(sessionPlugin, {
+      sessions: new SessionService(database.db),
+      roleResolver: createRoleResolver({ reader: ledger.reader, db: database.db }),
+    });
+    // A child scope: it is loaded after the session plugin, so it sees its hook and decorators.
+    void app.register((scope, _options, done) => {
+      sessionRoutes(scope, config, deps.session);
+      statusRoutes(scope, config, { ledger, pool: database.pool });
+      done();
+    });
+  }
 
   if (webDistDir) {
     void app.register(fastifyStatic, {

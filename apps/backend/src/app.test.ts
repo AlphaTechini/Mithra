@@ -1,23 +1,15 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DecimalString, HealthResponseSchema } from '@mithra/shared';
+import { DecimalString, HealthResponseSchema, PublicConfigSchema } from '@mithra/shared';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { buildApp, type ErrorBody } from './app';
 import type { Config } from './config/env';
+import { localnetTestConfig, mainnetTestConfig } from './testConfig';
 
-const baseConfig: Config = {
-  network: 'localnet',
-  host: '127.0.0.1',
-  port: 0,
-  webOrigin: 'http://localhost:5173',
-  webDistDir: undefined,
-  logLevel: 'silent',
-  databaseUrl: 'postgres://x@localhost/x',
-  llm: { baseUrl: 'https://api.openai.com/v1', apiKey: 'key', model: 'model' },
-};
+const baseConfig: Config = localnetTestConfig();
 
 const INDEX_HTML = '<!doctype html><html lang="en"><body>mithra shell</body></html>';
 
@@ -39,7 +31,7 @@ afterEach(async () => {
 
 describe('GET /api/health', () => {
   it('returns status, network and version', async () => {
-    app = buildApp({ ...baseConfig, network: 'mainnet' });
+    app = buildApp(mainnetTestConfig());
     const res = await app.inject({ method: 'GET', url: '/api/health' });
     expect(res.statusCode).toBe(200);
     const body = HealthResponseSchema.parse(res.json());
@@ -55,6 +47,41 @@ describe('GET /api/health', () => {
       headers: { origin: 'http://localhost:5173' },
     });
     expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+  });
+});
+
+describe('GET /api/config/public', () => {
+  it('describes LocalNet as test mode without an explorer link', async () => {
+    app = buildApp(baseConfig);
+    const res = await app.inject({ method: 'GET', url: '/api/config/public' });
+    expect(res.statusCode).toBe(200);
+    expect(PublicConfigSchema.parse(res.json())).toEqual({
+      network: 'localnet',
+      testMode: true,
+      assetSymbol: 'CC',
+      explorerTxUrlTemplate: null,
+      groftyMinVersion: '2.0.4',
+    });
+  });
+
+  it('gives MainNet the explorer template and the Grofty version', async () => {
+    app = buildApp(mainnetTestConfig());
+    const res = await app.inject({ method: 'GET', url: '/api/config/public' });
+    expect(PublicConfigSchema.parse(res.json())).toEqual({
+      network: 'mainnet',
+      testMode: false,
+      assetSymbol: 'CC',
+      explorerTxUrlTemplate: 'https://explorer.example/tx/{updateId}',
+      groftyMinVersion: '2.0.4',
+    });
+  });
+
+  it('does not expose session or ledger routes when the app has no dependencies', async () => {
+    app = buildApp(baseConfig);
+    for (const url of ['/api/session', '/api/status']) {
+      const res = await app.inject({ method: 'GET', url });
+      expect(res.statusCode).toBe(404);
+    }
   });
 });
 

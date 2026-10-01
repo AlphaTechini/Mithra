@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { svelteTesting } from '@testing-library/svelte/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
@@ -11,7 +12,7 @@ export default defineConfig(({ mode }) => {
     process.env['MITHRA_API_PROXY'] ?? fileEnv['MITHRA_API_PROXY'] ?? 'http://localhost:8787';
 
   return {
-    plugins: [sveltekit()],
+    plugins: [sveltekit(), svelteTesting()],
     server: {
       port: 5173,
       proxy: { '/api': { target: apiTarget, changeOrigin: true } },
@@ -21,7 +22,8 @@ export default defineConfig(({ mode }) => {
     },
     test: {
       include: ['src/**/*.test.ts'],
-      environment: 'node',
+      environment: 'jsdom',
+      setupFiles: ['src/test/setup.ts'],
     },
   };
 });

@@ -11,8 +11,10 @@ The Daml model that makes the product's guarantees ledger rules (specs.md Sectio
 | `agent` | local party on node A, used only by the backend | operator-hosted party from env |
 | `operator` | local party on node A (DecMan additional proposer) | operator-hosted party from env |
 | approvers | local parties on node A | Grofty parties |
-| holders | local parties on node B | Grofty parties |
-| auditor | local party on node C | Grofty party |
+| holders | local parties on node A | Grofty parties |
+| auditor | local party on node A | Grofty party |
+
+All LocalNet demo parties live on node A (app-provider) so that taking node B offline in the BitSafe demo leaves every payee reachable. Node C (sv) hosts the DSO party and the synchronizer and is never taken offline. Nodes B and C host the treasury together with A.
 
 Every user action is a **single-party** submission (Grofty refuses multi-party `actAs`).
 
