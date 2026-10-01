@@ -59,3 +59,13 @@ Splice LocalNet participants use `auth-services = [{ type = unsafe-jwt-hmac-256,
 ## Auth on MainNet
 
 OIDC client-credentials or password grant against the operator's identity provider (`LEDGER_AUTH_*` env vars). Token's `sub` is the ledger user; the user needs `CanActAs` for the operator and agent parties.
+
+## Verified live (2026-10-01) against a Canton 3.4.0-rc2 sandbox
+
+`docker run --network host ... digitalasset/daml-sdk:3.4.0-rc2 daml sandbox --json-api-port 7575 --wall-clock-time --dar ...` (see `scripts/sandbox.sh`). The sandbox has no auth; `userId: "participant_admin"`. It needs ~20 s after "ready" before party allocation works (`PARTY_ALLOCATION_WITHOUT_CONNECTED_SYNCHRONIZER` until then).
+
+- `POST /v2/parties {"partyIdHint":"alice","identityProviderId":""}` → `{"partyDetails":{"party":"alice::1220…","isLocal":true,…}}`.
+- `POST /v2/commands/submit-and-wait-for-transaction` with `{"commands":{"commandId","userId","actAs":[p],"commands":[{"CreateCommand":{"templateId":"#mithra-v1:Mithra.Charter:TreasuryCharter","createArguments":{…}}}]}}` → `{"transaction":{"updateId","commandId","effectiveAt","events":[{"CreatedEvent":{…,"templateId":"<package-id>:Mithra.Charter:TreasuryCharter",…}}],…}}`. Package-name template ids work in requests; responses carry package-id form.
+- `POST /v2/state/active-contracts` with `{"activeAtOffset": <ledger end>, "eventFormat": {"filtersByParty": {p: {"cumulative": [{"identifierFilter": {"TemplateFilter": {"value": {"templateId": "#mithra-v1:…", "includeCreatedEventBlob": false}}}}]}}, "verbose": false}}` → JSON array of `{"workflowId","contractEntry":{"JsActiveContract":{"createdEvent":{…}}}}`.
+- Encoding confirmed: `Decimal` and `Int` sent as strings (`"5000"`, `"3"`) are accepted; `Optional` `None` as `null`; records as objects; `Time` as ISO string.
+- A failed `ensure` returns HTTP 400-class JSON `{"code":"DAML_FAILURE","cause":"Interpretation error: Error: User failure: UNHANDLED_EXCEPTION/DA.Exception.PreconditionFailed…","context":{"error_id":…},"errorCategory":9,…}`. `assertMsg` failures carry the message text inside `cause`.
