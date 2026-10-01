@@ -2,7 +2,8 @@
   /**
    * Setup step 1: organization (userflow 4). Treasury name, base asset (CC, fixed), approvers and
    * the approval threshold with a live seal ring preview. On LocalNet approvers are picked from
-   * the demo parties; on MainNet they are typed as party ids. Problems are flagged on the field.
+   * the demo parties (none preselected; the "Approver ..." ones first, the rest under "Other demo
+   * parties"); on MainNet they are typed as party ids. Problems are flagged on the field.
    */
   import { onMount } from 'svelte';
   import type { DemoParty, OrgResponse } from '@mithra/shared';
@@ -39,6 +40,10 @@
   const testMode = $derived(sessionStore.testMode === true);
   const selfId = $derived(sessionStore.party?.partyId ?? '');
   const candidates = $derived(demoParties.filter((p) => p.partyId !== selfId));
+  // LocalNet demo parties are named after their part in the story: "Approver 1" to "Approver 3"
+  // are the obvious picks, so they come first; holders and the auditor follow under a sub-heading.
+  const suggested = $derived(candidates.filter((p) => p.displayName.startsWith('Approver')));
+  const others = $derived(candidates.filter((p) => !p.displayName.startsWith('Approver')));
 
   const approverIds = $derived(
     testMode ? picked : typed.map((t) => t.trim()).filter((t) => t !== ''),
@@ -80,10 +85,6 @@
       org = await getOrg();
       if (testMode && demoParties.length === 0) {
         demoParties = await getDemoParties();
-        picked = demoParties
-          .filter((p) => p.roles.includes('approver') && p.partyId !== selfId)
-          .map((p) => p.partyId);
-        threshold = Math.max(1, Math.ceil(picked.length / 2));
       }
     } catch (e) {
       loadError = e;
@@ -192,21 +193,30 @@
         {#if candidates.length === 0}
           <p class="hint">No demo parties were found. Check that the backend is running.</p>
         {/if}
-        <ul class="picker">
-          {#each candidates as party (party.partyId)}
-            <li>
-              <label class="check">
-                <input
-                  type="checkbox"
-                  checked={picked.includes(party.partyId)}
-                  onchange={(e) => toggle(party.partyId, e.currentTarget.checked)}
-                />
-                <span>{party.displayName}</span>
-              </label>
-              <PartyId partyId={party.partyId} />
-            </li>
-          {/each}
-        </ul>
+        {#snippet pickerList(list: DemoParty[], label: string)}
+          <ul class="picker" aria-label={label}>
+            {#each list as party (party.partyId)}
+              <li>
+                <label class="check">
+                  <input
+                    type="checkbox"
+                    checked={picked.includes(party.partyId)}
+                    onchange={(e) => toggle(party.partyId, e.currentTarget.checked)}
+                  />
+                  <span>{party.displayName}</span>
+                </label>
+                <PartyId partyId={party.partyId} />
+              </li>
+            {/each}
+          </ul>
+        {/snippet}
+        {#if suggested.length > 0}
+          {@render pickerList(suggested, 'Approver demo parties')}
+        {/if}
+        {#if others.length > 0}
+          <h3 class="subheading">Other demo parties</h3>
+          {@render pickerList(others, 'Other demo parties')}
+        {/if}
       {:else}
         <p class="hint">Paste each approver's party id. They sign with their own wallet.</p>
         {#each typed, index (index)}
@@ -330,6 +340,12 @@
     gap: var(--space-2);
     padding: var(--space-2) 0;
     border-bottom: 1px solid var(--color-border);
+  }
+  .subheading {
+    margin: var(--space-3) 0 var(--space-1);
+    font-size: var(--text-13);
+    font-weight: 500;
+    color: var(--color-text-muted);
   }
   .check {
     display: inline-flex;

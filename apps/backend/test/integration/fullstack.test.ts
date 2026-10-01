@@ -178,6 +178,7 @@ describe('full stack: the happy path over HTTP (sessions to paid cycles)', () =>
       databaseUrl: DATABASE_URL,
       holdCountdownSeconds: 2,
       reconcileIntervalMs: 500,
+      eventRoleRefreshMs: 1000,
       webDistDir: null,
       logLevel: 'silent',
     });
@@ -227,30 +228,8 @@ describe('full stack: the happy path over HTTP (sessions to paid cycles)', () =>
     expect(before.setupStep).toBe('organization');
 
     const { parties } = stack;
-    const created = await treasurer.post('/api/org', {
-      name: 'Northwind Income Fund',
-      approvers: [parties.approver1, parties.approver2, parties.approver3],
-      approvalThreshold: 2,
-    });
-    expect(created.status).toBe(201);
-    const org = OrgResponseSchema.parse(created.json());
-    expect(org.setupStep).toBe('policy');
-    expect(org.organization?.approvers.map((a) => a.displayName)).toEqual([
-      'Approver 1',
-      'Approver 2',
-      'Approver 3',
-    ]);
-    expect(
-      (
-        await treasurer.post('/api/org', {
-          name: 'Again',
-          approvers: [parties.approver1],
-          approvalThreshold: 1,
-        })
-      ).status,
-    ).toBe(409);
-
-    // Live updates: the treasurer's stream (opened once the role exists) stays open for the whole run.
+    // Live updates: the treasurer's stream stays open for the whole run. It is opened before the
+    // organization exists, while the party has no role, as a browser does after sign-in.
     const events = await fetch(`${base}/api/events`, {
       headers: { cookie: treasurer.cookieHeader },
       signal: abort.signal,
@@ -283,8 +262,33 @@ describe('full stack: the happy path over HTTP (sessions to paid cycles)', () =>
       }
     })();
 
+    const created = await treasurer.post('/api/org', {
+      name: 'Northwind Income Fund',
+      approvers: [parties.approver1, parties.approver2, parties.approver3],
+      approvalThreshold: 2,
+    });
+    expect(created.status).toBe(201);
+    const org = OrgResponseSchema.parse(created.json());
+    expect(org.setupStep).toBe('policy');
+    expect(org.organization?.approvers.map((a) => a.displayName)).toEqual([
+      'Approver 1',
+      'Approver 2',
+      'Approver 3',
+    ]);
+    expect(
+      (
+        await treasurer.post('/api/org', {
+          name: 'Again',
+          approvers: [parties.approver1],
+          approvalThreshold: 1,
+        })
+      ).status,
+    ).toBe(409);
+
     const roles = SessionResponseSchema.parse((await treasurer.get('/api/session')).json());
     expect(roles.party?.roles).toEqual(['treasurer']);
+    // The stream looked up the roles before there was an organization; it must look again (U9).
+    await new Promise((resolve) => setTimeout(resolve, 1200));
     expect(
       SessionResponseSchema.parse((await as('approver1').get('/api/session')).json()).party?.roles,
     ).toEqual(['approver']);
@@ -577,9 +581,17 @@ describe('full stack: the happy path over HTTP (sessions to paid cycles)', () =>
       'cycle.proposed',
       'proposal.approved',
       'payment.accepted',
+      'mandate.seal-requested',
+      'mandate.sealed',
     ]) {
       expect(kinds, `activity kind ${kind}`).toContain(kind);
     }
+    // The test sealer words them like the DecMan sealer does.
+    const textOf = (kind: string) => entries.find((e) => e.kind === kind)?.text;
+    expect(textOf('mandate.seal-requested')).toBe(
+      'Signed the request: Seal Mandate v1: cap 5,000 CC, 2 of 3 approvals',
+    );
+    expect(textOf('mandate.sealed')).toBe('Mandate v1 sealed: cap 5,000 CC, 2 of 3 approvals');
     expect(
       entries.some((e) => e.actor?.displayName === 'Approver 1' && e.kind === 'proposal.approved'),
     ).toBe(true);
@@ -602,5 +614,53 @@ describe('full stack: the happy path over HTTP (sessions to paid cycles)', () =>
       ),
     ).toBe(true);
     expect(live.some((e) => e.type === 'activity')).toBe(true);
+    // The stream was opened before the party was the treasurer, and still got the team's events.
+    expect(
+      live.some((e) => e.type === 'activity' && e.entry.kind === 'mandate.sealed'),
+      'the sealer writes its activity lines, live',
+    ).toBe(true);
+  });
+  it('an auditor with no role can draft a scope and ask the fund for access (userflow 11.1)', async () => {
+    const { parties } = stack;
+    const auditor = await signIn('auditor', parties.auditor);
+    const session = SessionResponseSchema.parse((await auditor.get('/api/session')).json());
+    expect(session.party).toMatchObject({ displayName: 'Auditor', roles: [], primaryRole: null });
+
+    const question = 'Show all distributions and the approvals behind any flagged one.';
+    const drafted = await auditor.post<{
+      items: { recordId: string; kind: string; reason: string }[];
+    }>('/api/audit/scope/draft', { question });
+    expect(drafted.status).toBe(200);
+    const items = drafted.json().items;
+    expect(items.length, drafted.body).toBeGreaterThan(0);
+
+    // Nothing of the fund yet: an empty own list; the team's screens stay closed.
+    const empty = await auditor.get<{ requests: unknown[] }>('/api/audit/requests');
+    expect(empty.status).toBe(200);
+    expect(empty.json().requests).toEqual([]);
+    for (const path of ['/api/overview', '/api/holders', '/api/activity', '/api/approvals']) {
+      expect((await auditor.get(path)).status, path).toBe(403);
+    }
+
+    const created = await auditor.post<{ request: { requestId: string } }>('/api/audit/requests', {
+      question,
+      items,
+      excluded: 'Holder identities',
+    });
+    expect(created.status, created.body).toBe(200);
+    const own = await auditor.get<{ requests: { requestId: string }[] }>('/api/audit/requests');
+    expect(own.json().requests.map((r) => r.requestId)).toEqual([created.json().request.requestId]);
+    // The request makes them an auditor; the treasurer sees it, a holder is not an auditor.
+    expect(
+      SessionResponseSchema.parse((await auditor.get('/api/session')).json()).party?.roles,
+    ).toEqual(['auditor']);
+    const asTreasurer = await as('treasurer').get<{ requests: { requestId: string }[] }>(
+      '/api/audit/requests',
+    );
+    expect(asTreasurer.json().requests.map((r) => r.requestId)).toContain(
+      created.json().request.requestId,
+    );
+    expect((await as('holderA').get('/api/audit/requests')).status).toBe(403);
+    expect((await as('holderA').post('/api/audit/scope/draft', { question })).status).toBe(403);
   });
 });

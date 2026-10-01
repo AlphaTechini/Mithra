@@ -1,3 +1,4 @@
+import type { CycleDetail, CycleStatus } from '@mithra/shared';
 import { describe, expect, it } from 'vitest';
 import { createFakeServices, fakeNames, FAKE_PARTIES } from '../fakes';
 import {
@@ -285,6 +286,155 @@ describe('run_cycle_now', () => {
     });
     expect(services.runs[0]).not.toHaveProperty('total');
     expect(run.card.tool).toBe('run_cycle_now');
+  });
+});
+
+/** A fake cycle that already exists in `status`, as the engine would show it. */
+async function existingCycle(
+  status: CycleStatus,
+  patch: Partial<CycleDetail> = {},
+  total = '300',
+): Promise<ReturnType<typeof createFakeServices>> {
+  const services = createFakeServices();
+  await services.cycles.run({
+    trigger: 'prompt',
+    triggerDetail: 'earlier',
+    cycleId: '2026-09',
+    total,
+    actorParty: 'p',
+  });
+  const detail = services.cycles.store.get('2026-09')!;
+  services.cycles.store.set('2026-09', {
+    ...detail,
+    ...patch,
+    summary: { ...detail.summary, status },
+  });
+  services.runs.length = 0;
+  return services;
+}
+
+const EXECUTED = {
+  kind: 'executed',
+  actor: FAKE_PARTIES.treasurer,
+  reason: null,
+  at: '2026-10-01T09:00:00.000Z',
+} as const;
+
+describe('create_cycle and run_cycle_now on a cycle that already exists', () => {
+  const settled = (services: ReturnType<typeof createFakeServices>, text: string) =>
+    context({ services, userText: text });
+
+  it('September already paid: says so with the date and creates nothing', async () => {
+    const services = await existingCycle('paid-automatically', { outcome: EXECUTED });
+    const ctx = settled(services, 'Distribute 300 CC for September.');
+    const run = await tool('create_cycle').execute('{"total":"300","period":"2026-09"}', ctx);
+    expect(run.card.status).toBe('done');
+    expect(run.card.title).toBe('September 2026 was already paid');
+    expect(run.card.summary).toBe(
+      'September 2026 was already paid automatically on 1 October 2026. Nothing new was created.',
+    );
+    expect(run.card.summary).not.toContain('hold countdown');
+    expect(run.replyNotes).toEqual([run.card.summary]);
+    expect(run.result).toMatchObject({ ok: true, existedBefore: true });
+    expect((run.result as { note: string }).note).toContain('already paid');
+    // The fake keeps the paid cycle: nothing new was created.
+    expect(services.cycles.store.get('2026-09')?.summary.status).toBe('paid-automatically');
+  });
+
+  it('run_cycle_now on a paid cycle words it the same way, and a cycle paid after approval says so', async () => {
+    const services = await existingCycle('paid-after-approval', { outcome: EXECUTED });
+    const run = await tool('run_cycle_now').execute('{}', settled(services, 'Run the cycle'));
+    expect(run.card.tool).toBe('run_cycle_now');
+    expect(run.card.summary).toBe(
+      'September 2026 was already paid after approval on 1 October 2026. Nothing new was created.',
+    );
+  });
+
+  it('a cycle paid whose payments wait for a holder says so', async () => {
+    const services = await existingCycle('awaiting-acceptance', { outcome: EXECUTED });
+    const run = await tool('create_cycle').execute(
+      '{"total":"300","period":"2026-09"}',
+      settled(services, 'Distribute 300 CC for September.'),
+    );
+    expect(run.card.summary).toContain('already paid on 1 October 2026');
+    expect(run.card.summary).toContain('still has to accept');
+  });
+
+  it('awaiting approval: says the proposal already waits, and adds no cap sentence', async () => {
+    const services = await existingCycle('awaiting-approval', {}, '9000');
+    const run = await tool('create_cycle').execute(
+      '{"total":"9000","period":"2026-09"}',
+      settled(services, 'Distribute 9000 CC for September.'),
+    );
+    expect(run.card.status).toBe('needs-you');
+    expect(run.card.title).toBe('September 2026 already has a proposal waiting for approval');
+    expect(run.card.summary).toContain('Needs 2 of 3 approvals, 0 so far.');
+    expect(run.card.summary).toContain('Nothing new was created.');
+    expect(run.replyNotes).toEqual([run.card.summary]);
+  });
+
+  it('held: says it is on hold', async () => {
+    const services = await existingCycle('held');
+    const run = await tool('create_cycle').execute(
+      '{"total":"300","period":"2026-09"}',
+      settled(services, 'Distribute 300 CC for September.'),
+    );
+    expect(run.card.status).toBe('needs-you');
+    expect(run.card.summary).toContain('is on hold');
+    expect(run.card.summary).toContain('Nothing new was created.');
+  });
+
+  it('needs funds: gives the shortfall', async () => {
+    const services = await existingCycle('needs-funds', {
+      fundsShortfall: { balance: '100.0000000000', required: '301.0000000000' },
+    });
+    const run = await tool('run_cycle_now').execute('{}', settled(services, 'Run the cycle'));
+    expect(run.card.status).toBe('needs-you');
+    expect(run.card.summary).toContain('100 CC available, 301 CC needed');
+    expect(run.card.summary).toContain('Add funds');
+  });
+
+  it('failed: shows the error and starts a new attempt', async () => {
+    const services = await existingCycle('failed', { error: 'The ledger was unreachable' });
+    const run = await tool('create_cycle').execute(
+      '{"total":"300","period":"2026-09"}',
+      settled(services, 'Distribute 300 CC for September.'),
+    );
+    // A failed cycle is started again by the engine; the fake does the same, so this is a new cycle.
+    expect(services.runs).toHaveLength(1);
+    expect(run.card.title).toContain('Created proposal for September 2026');
+  });
+
+  it('failed after its proposal: the card carries the error', async () => {
+    const services = createFakeServices();
+    services.cycles.run = (input) => {
+      services.runs.push(input);
+      return Promise.resolve({ cycleId: '2026-09' });
+    };
+    const base = createFakeServices();
+    await base.cycles.run({ trigger: 'prompt', triggerDetail: 'x', total: '300', actorParty: 'p' });
+    const detail = base.cycles.store.get('2026-09')!;
+    services.cycles.store.set('2026-09', {
+      ...detail,
+      error: 'Paying Holder C failed: no preapproval',
+      summary: { ...detail.summary, status: 'failed' },
+    });
+    const run = await tool('create_cycle').execute(
+      '{"total":"300","period":"2026-09"}',
+      settled(services, 'Distribute 300 CC for September.'),
+    );
+    expect(run.card.status).toBe('failed');
+    expect(run.card.summary).toBe('Paying Holder C failed: no preapproval');
+    expect(run.result).toMatchObject({ ok: false });
+    expect(run.replyNotes).toEqual(['Paying Holder C failed: no preapproval']);
+  });
+
+  it('a new within-mandate cycle keeps the countdown wording', async () => {
+    const run = await tool('create_cycle').execute('{"total":"1200"}', context());
+    expect(run.card.summary).toBe(
+      'Within your mandate. It runs automatically after the hold countdown.',
+    );
+    expect(run.result).toMatchObject({ existedBefore: false });
   });
 });
 

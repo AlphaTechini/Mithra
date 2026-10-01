@@ -152,7 +152,14 @@ describe('audit flow against a Canton sandbox and PostgreSQL', () => {
     await inviteAuditor(database, p().auditor, 'Auditor');
     await inviteAuditor(database, p().outsider, 'Newcomer');
     cookies = {};
-    for (const who of ['treasurer', 'approver1', 'holderA', 'auditor', 'outsider'] as const) {
+    for (const who of [
+      'treasurer',
+      'approver1',
+      'holderA',
+      'auditor',
+      'outsider',
+      'prospect',
+    ] as const) {
       cookies[who] = await t.cookieFor(p()[who]);
     }
   });
@@ -722,6 +729,40 @@ describe('audit flow against a Canton sandbox and PostgreSQL', () => {
     expect(has(/^Access for Auditor ended .* \(expired\)$/)).toBe(true);
     expect(has(/^Access for Auditor revoked$/)).toBe(true);
     expect(has(/^Request denied$/)).toBe(true);
+  });
+
+  it('a signed-in party with no role can ask for access as a prospective auditor, and then sees only their own request', async () => {
+    // No role yet: the lists are open (and empty), as is the first request.
+    const before = await get('/api/audit/requests', 'prospect');
+    expect(before.statusCode).toBe(200);
+    expect(AuditRequestsResponseSchema.parse(before.json()).requests).toEqual([]);
+    const created = await createRequest('prospect', [scopeItems[0]!], 'July, from a new firm');
+    // The request makes them an auditor: they see their own request and no one else's.
+    const list = AuditRequestsResponseSchema.parse(
+      (await get('/api/audit/requests', 'prospect')).json(),
+    );
+    expect(list.requests.map((r) => r.requestId)).toEqual([created.request.requestId]);
+    expect(list.requests[0]?.auditor.displayName).toBe('Prospect');
+    expect((await get(`/api/audit/requests/${requestId}`, 'prospect')).statusCode).toBe(404);
+    // Still no evidence without a grant, and no treasurer actions.
+    expect(
+      (await get(grantUrl(grantIdOf(created.request.requestId), 'evidence'), 'prospect'))
+        .statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await post(`/api/audit/requests/${created.request.requestId}/grant`, 'prospect', {
+          expiresIn: '7d',
+        })
+      ).statusCode,
+    ).toBe(403);
+    // The treasurer, approvers and holders are not prospects.
+    const body = { question: QUESTION, items: [scopeItems[0]!], excluded: '' };
+    for (const who of ['treasurer', 'approver1', 'holderA'] as const) {
+      const denied = await post('/api/audit/requests', who, body);
+      expect(denied.statusCode, who).toBe(403);
+      expect(errorOf(denied).code).toBe('forbidden_role');
+    }
   });
 
   it('MainNet: auditor and treasurer writes are signed in Grofty (409 sign_in_wallet); reads still work', async () => {

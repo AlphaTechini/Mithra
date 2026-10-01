@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { ActivityLog } from '../../src/activity/log';
 import type { Config } from '../../src/config/env';
 import { createDatabase, runMigrations, type DatabaseHandle } from '../../src/db';
 import { FundingError, type Funding } from '../../src/funding';
@@ -97,6 +98,8 @@ export interface FullStackOptions {
   holdCountdownSeconds?: number;
   /** Milliseconds between reconciler passes. Default 1000. */
   reconcileIntervalMs?: number;
+  /** Milliseconds after which a live stream looks up its viewer's roles again. Default 15 000. */
+  eventRoleRefreshMs?: number;
   /** The built web app. Default `apps/web/build` when it exists. */
   webDistDir?: string | null;
   /** Keep the world in this file and reuse it (and the database) on the next boot. */
@@ -400,7 +403,9 @@ export async function bootFullStack(options: FullStackOptions = {}): Promise<Ful
   const funding = testFunding(ledger, parties, preapprovals, persist);
   const names = new PartyNames(config, database.db);
   const drafts = createPolicyDrafts({ config, db: database.db, ledger, names });
-  const sealer = createTestSealer({ config, ledger, parties, names }, drafts);
+  // Built from the backend's own activity log, so the lines reach the Activity page live.
+  const sealer = ({ activity }: { activity: ActivityLog }) =>
+    createTestSealer({ config, ledger, parties, names }, drafts, activity);
 
   const backend = createBackend(config, database, {
     ledger,
@@ -409,6 +414,9 @@ export async function bootFullStack(options: FullStackOptions = {}): Promise<Ful
     sealer,
     holdCountdownSeconds: options.holdCountdownSeconds ?? 5,
     reconcileIntervalMs: options.reconcileIntervalMs ?? 1000,
+    ...(options.eventRoleRefreshMs === undefined
+      ? {}
+      : { eventRoleRefreshMs: options.eventRoleRefreshMs }),
     // Many sign-ins per minute are normal for a test run.
     session: { signInLimit: { limit: 1000, windowMs: 60_000 } },
   });

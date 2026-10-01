@@ -1,7 +1,6 @@
 import type { SealStatus } from '@mithra/shared';
 import type { ActivityLog } from '../activity/log';
 import type { Config, LocalnetConfig, LocalnetNode } from '../config/env';
-import { formatAmount } from '../cycle/format';
 import { TREASURY_TEAM, type EventBus } from '../events/bus';
 import { ApiError } from '../http/errors';
 import { createdIn, type Ledger } from '../ledger';
@@ -11,6 +10,8 @@ import {
   newSealId,
   prepareSeal,
   progressOf,
+  sealedText,
+  sealRequestedText,
   sealStatusOf,
   type MandateSealer,
   type SealPrepareDeps,
@@ -204,13 +205,12 @@ export function createDecmanSealer(deps: DecmanSealerDeps): MandateSealer {
     });
     const mandate = await ledger.reader.mandate();
     if (deps.activity && mandate) {
-      const t = mandate.payload.terms;
       await deps.activity
         .record({
           actorParty: row.treasurer,
           kind: 'mandate.sealed',
           subject: row.sealId,
-          text: `Mandate v${mandate.payload.version} sealed: cap ${formatAmount(t.cap, config.asset.symbol)}, ${t.approvalThreshold} of ${t.approvers.length} approvals`,
+          text: sealedText(mandate.payload, config.asset.symbol),
           link: '/app/settings',
         })
         .catch(() => undefined);
@@ -335,7 +335,7 @@ export function createDecmanSealer(deps: DecmanSealerDeps): MandateSealer {
           actorParty: treasurer,
           kind: 'mandate.seal-requested',
           subject: row.sealId,
-          text: `Signed the request: ${prepared.description}`,
+          text: sealRequestedText(prepared.description),
           link: '/app/settings',
         })
         .catch(() => undefined);

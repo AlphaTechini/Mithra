@@ -39,7 +39,7 @@
   import CheckList from '$lib/components/treasury/CheckList.svelte';
   import DecisionRecordPanel from '$lib/components/treasury/DecisionRecordPanel.svelte';
   import FundsWarning from '$lib/components/treasury/FundsWarning.svelte';
-  import { cycleChip, isSettled, paymentChip } from '$lib/cycle';
+  import { cycleChip, isSettled, memoSourceText, paymentChip } from '$lib/cycle';
   import { describeError, type ErrorCopy } from '$lib/errors';
   import { formatClock, formatDateTime, formatShortDate } from '$lib/format';
   import { createResource } from '$lib/resource.svelte';
@@ -286,7 +286,7 @@
     <section aria-labelledby="memo-title">
       <details open={isApprover && !isTreasurer}>
         <summary id="memo-title">Agent's memo</summary>
-        <p class="source">{proposal.memoSource}</p>
+        <p class="source">{memoSourceText(proposal.memoSource)}</p>
         <p class="memo">{proposal.memo}</p>
       </details>
     </section>

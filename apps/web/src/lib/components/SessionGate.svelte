@@ -13,7 +13,8 @@
   import ErrorState from './ErrorState.svelte';
   import Skeleton from './Skeleton.svelte';
 
-  let { allow, children }: { allow: readonly Role[] | 'any'; children: Snippet } = $props();
+  let { allow, children }: { allow: readonly (Role | null)[] | 'any'; children: Snippet } =
+    $props();
 
   const target = $derived(
     sessionStore.status === 'ready' ? redirectFor(sessionStore.session, allow) : null,

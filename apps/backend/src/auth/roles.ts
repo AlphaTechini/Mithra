@@ -114,3 +114,25 @@ export function requireRole(...roles: Role[]): preHandlerAsyncHookHandler {
     }
   };
 }
+
+/**
+ * Like `requireRole`, and also lets through a signed-in party that has no role at all: a prospective
+ * auditor who has not asked this fund for anything yet (userflow 11.1). A treasurer, approver or
+ * holder without one of `roles` is still refused.
+ */
+export function requireRoleOrNone(...roles: Role[]): preHandlerAsyncHookHandler {
+  return async function requireRoleOrNoneHook(request: FastifyRequest): Promise<void> {
+    if (!request.session?.partyId) {
+      throw new ApiError(401, 'not_signed_in', 'Sign in and pick a party first.');
+    }
+    const resolution = await rolesOfRequest(request);
+    if (resolution.roles.length === 0) return;
+    if (!roles.some((r) => resolution.roles.includes(r))) {
+      throw new ApiError(
+        403,
+        'forbidden_role',
+        `This needs the ${roles.join(' or ')} role. Switch to a party that has it.`,
+      );
+    }
+  };
+}

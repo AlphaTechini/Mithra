@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * "Issue units": pick a holder (an existing one, a LocalNet demo holder, or any party id),
+   * "Issue units": pick a holder (an existing one, a LocalNet demo party, or any party id),
    * enter the number of units and the effective date, confirm. The ledger records it; the holder
    * then accepts the units on their own screen.
    */
@@ -37,9 +37,14 @@
   let submitted = $state(false);
   let failure = $state<{ title: string; message: string } | null>(null);
 
-  const demoHolders = $derived(
+  // LocalNet: every demo party that is not the treasurer or an approver and not a holder already.
+  // On a fresh setup no demo party has a role yet, and they are the ones to issue the first units to.
+  const demoParties = $derived(
     demo.filter(
-      (p) => p.roles.includes('holder') && !holders.some((h) => h.holder.partyId === p.partyId),
+      (p) =>
+        !p.roles.includes('treasurer') &&
+        !p.roles.includes('approver') &&
+        !holders.some((h) => h.holder.partyId === p.partyId),
     ),
   );
   const partyId = $derived(choice === OTHER ? otherId.trim() : choice);
@@ -105,9 +110,9 @@
               {/each}
             </optgroup>
           {/if}
-          {#if demoHolders.length > 0}
-            <optgroup label="Demo holders">
-              {#each demoHolders as party (party.partyId)}
+          {#if demoParties.length > 0}
+            <optgroup label="Demo parties">
+              {#each demoParties as party (party.partyId)}
                 <option value={party.partyId}>{party.displayName}</option>
               {/each}
             </optgroup>

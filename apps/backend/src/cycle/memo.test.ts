@@ -83,9 +83,45 @@ describe('TemplateMemoWriter', () => {
       holderChanges: [],
       history: [],
     });
-    expect(clean.memo).toContain('All 1 checks passed.');
+    expect(clean.memo).toContain('The 1 check passed.');
+    expect(clean.memo).not.toMatch(/\b1 (checks|holders|approvals|units)\b/);
     expect(clean.memo).toContain('within the mandate');
     expect(clean.memo).toContain('Hold');
+  });
+});
+
+describe('count phrases agree with their number (U8: "1 checks flagged")', () => {
+  const writer = new TemplateMemoWriter();
+  const one = {
+    ...input,
+    payouts: [input.payouts[0]!],
+    holderChanges: [{ holder: 'a', displayName: 'Holder A', unitsBefore: 0, unitsAfter: 1 }],
+    mandate: { ...input.mandate, approvalThreshold: 1, approverCount: 1 },
+  };
+
+  it('one flagged check out of one is "1 of 1 check flagged"', async () => {
+    const { memo } = await writer.write({ ...one, checks: [failedDeviation] });
+    expect(memo).toContain('1 of 1 check flagged:');
+    expect(memo).toContain('over 1 holder by');
+    expect(memo).toContain('Holder A 0 → 1 unit.');
+    expect(memo).toContain('needs 1 of 1 approval before');
+    expect(memo).not.toMatch(/\b1 (checks|holders|approvals|units)\b/);
+  });
+
+  it('one flagged check out of several is "1 of 2 checks flagged"', async () => {
+    const { memo } = await writer.write({ ...one, checks: [passedCap, failedDeviation] });
+    expect(memo).toContain('1 of 2 checks flagged:');
+  });
+
+  it('none, one and several checks that all passed', async () => {
+    const clean = { ...one, verdict: 'within-mandate' as const, verdictReasons: [] };
+    expect((await writer.write({ ...clean, checks: [] })).memo).toContain('No checks were run.');
+    expect((await writer.write({ ...clean, checks: [passedCap] })).memo).toContain(
+      'The 1 check passed.',
+    );
+    expect((await writer.write({ ...clean, checks: [passedCap, passedCap] })).memo).toContain(
+      'All 2 checks passed.',
+    );
   });
 });
 

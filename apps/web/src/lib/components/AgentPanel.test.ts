@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AgentPanel from './AgentPanel.svelte';
 
 describe('AgentPanel', () => {
@@ -81,6 +81,42 @@ describe('AgentPanel', () => {
     await fireEvent.input(box, { target: { value: 'Hello' } });
     await fireEvent.keyDown(box, { key: 'Enter' });
     expect(onsend).toHaveBeenCalledWith('Hello');
+  });
+
+  describe('following a link', () => {
+    const messages = [
+      {
+        id: '2',
+        role: 'tool' as const,
+        action: {
+          id: 'a',
+          title: 'Created proposal for September',
+          status: 'done' as const,
+          summary: '4 payees, 1,200 CC',
+          href: '/app/cycles/2026-09',
+        },
+      },
+    ];
+    // jsdom cannot navigate; the router is not under test here.
+    const stopNavigation = (event: Event) => event.preventDefault();
+    beforeEach(() => document.addEventListener('click', stopNavigation));
+    afterEach(() => document.removeEventListener('click', stopNavigation));
+
+    it('closes the panel when an action card link is followed', async () => {
+      const onclose = vi.fn();
+      render(AgentPanel, { open: true, messages, onclose });
+      await fireEvent.click(screen.getByRole('link', { name: 'Open' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(onclose).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays open for a modified click (a new tab) and for buttons', async () => {
+      render(AgentPanel, { open: true, messages });
+      await fireEvent.click(screen.getByRole('link', { name: 'Open' }), { ctrlKey: true });
+      await fireEvent.click(screen.getByRole('button', { name: 'Why was last cycle flagged?' }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
   });
 
   it('disables the prompt box and says why when unavailable', () => {

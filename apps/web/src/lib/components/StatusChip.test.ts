@@ -31,6 +31,8 @@ const WORDS: Record<ChipKind, string> = {
   confirmed: 'Confirmed',
   waiting: 'Waiting',
   approved: 'Approved',
+  'waiting-treasurer': 'Waiting for the treasurer',
+  withdrawn: 'Request withdrawn',
 };
 
 describe('StatusChip', () => {

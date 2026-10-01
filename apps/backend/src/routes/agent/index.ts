@@ -10,7 +10,7 @@ import { z } from 'zod';
 import type { Agent } from '../../agent/agent';
 import type { PolicyDrafter } from '../../agent/policyDrafter';
 import type { AuditScopeResult, ScopeDrafter } from '../../audit/scope';
-import { requireRole, rolesOfRequest } from '../../auth/roles';
+import { requireRole, requireRoleOrNone, rolesOfRequest } from '../../auth/roles';
 import { ApiError, parse } from '../../http/errors';
 import { RateLimiter } from '../../http/rateLimit';
 
@@ -74,7 +74,7 @@ export function agentRoutes(app: FastifyInstance, options: AgentRouteOptions): v
 
   app.post(
     '/api/audit/scope/draft',
-    { preHandler: requireRole('auditor', 'treasurer') },
+    { preHandler: requireRoleOrNone('auditor', 'treasurer') },
     async (request): Promise<AuditScopeResult> => {
       const body = parse(AuditScopeDraftRequestSchema, request.body);
       return options.scope.draft(body.question);

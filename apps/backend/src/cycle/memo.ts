@@ -124,11 +124,17 @@ export function templateMemo(input: MemoInput): string {
 
   const failed = input.checks.filter((c) => !c.passed);
   if (failed.length === 0) {
-    paragraphs.push(`All ${input.checks.length} checks passed.`);
+    paragraphs.push(
+      input.checks.length === 0
+        ? 'No checks were run.'
+        : input.checks.length === 1
+          ? 'The 1 check passed.'
+          : `All ${input.checks.length} checks passed.`,
+    );
   } else {
     const lines = failed.map((c) => `- ${c.label}: ${c.actual}`);
     paragraphs.push(
-      `${failed.length} of ${input.checks.length} checks flagged:\n${lines.join('\n')}`,
+      `${failed.length} of ${plural(input.checks.length, 'check')} flagged:\n${lines.join('\n')}`,
     );
   }
 
@@ -140,7 +146,10 @@ export function templateMemo(input: MemoInput): string {
   }
   if (input.holderChanges.length > 0) {
     const changes = input.holderChanges
-      .map((c) => `${c.displayName} ${c.unitsBefore} → ${c.unitsAfter} units`)
+      .map(
+        (c) =>
+          `${c.displayName} ${c.unitsBefore} → ${c.unitsAfter} ${c.unitsAfter === 1 ? 'unit' : 'units'}`,
+      )
       .join(', ');
     paragraphs.push(`Unit changes in the window before the record date: ${changes}.`);
   }
@@ -152,7 +161,7 @@ export function templateMemo(input: MemoInput): string {
   } else {
     const reasons = input.verdictReasons.length > 0 ? ` ${input.verdictReasons.join('; ')}.` : '';
     paragraphs.push(
-      `This needs ${input.mandate.approvalThreshold} of ${input.mandate.approverCount} approvals before it is paid.${reasons}`,
+      `This needs ${input.mandate.approvalThreshold} of ${plural(input.mandate.approverCount, 'approval')} before it is paid.${reasons}`,
     );
   }
   return paragraphs.join('\n\n');

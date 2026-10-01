@@ -34,7 +34,8 @@ export interface BackendOverrides {
   ledger?: Ledger;
   asset?: AssetAdapter;
   funding?: Funding;
-  sealer?: MandateSealer;
+  /** The sealer, or a function that builds it from the backend's own activity log. */
+  sealer?: MandateSealer | ((deps: { activity: ActivityLog }) => MandateSealer);
   llm?: Llm;
   /** Seconds of the Hold countdown; default `config.holdCountdownSeconds`. */
   holdCountdownSeconds?: number;
@@ -44,6 +45,8 @@ export interface BackendOverrides {
   expiryIntervalMs?: number;
   /** Session route options (the sign-in rate limit). */
   session?: AppDeps['session'];
+  /** Milliseconds after which a live stream looks up its viewer's roles again. Default 15 000. */
+  eventRoleRefreshMs?: number;
 }
 
 /** One process: the Fastify app plus every module and background job behind it. */
@@ -93,6 +96,8 @@ export function createBackend(
     info: (object: unknown, message?: string): void => late.app?.log.info(object, message),
   };
 
+  const sealer =
+    typeof overrides.sealer === 'function' ? overrides.sealer({ activity }) : overrides.sealer;
   const holdCountdownSeconds = overrides.holdCountdownSeconds ?? config.holdCountdownSeconds;
   const cycle = createCycleModule({
     config,
@@ -104,7 +109,7 @@ export function createBackend(
     bus,
     memoWriter: new AiMemoWriter({ llm }),
     ...(holdCountdownSeconds === undefined ? {} : { holdCountdownSeconds }),
-    ...(overrides.sealer ? { sealer: overrides.sealer } : {}),
+    ...(sealer ? { sealer } : {}),
     ...(overrides.reconcileIntervalMs === undefined
       ? {}
       : { reconcileIntervalMs: overrides.reconcileIntervalMs }),
@@ -174,6 +179,9 @@ export function createBackend(
       },
       agent: { agent, drafter, scope },
       audit: { routes: audit.routes },
+      ...(overrides.eventRoleRefreshMs === undefined
+        ? {}
+        : { events: { roleRefreshMs: overrides.eventRoleRefreshMs } }),
     },
   });
   late.app = app;

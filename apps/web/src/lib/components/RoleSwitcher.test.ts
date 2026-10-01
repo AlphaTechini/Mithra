@@ -69,6 +69,46 @@ describe('RoleSwitcher', () => {
     expect(sessionStore.party?.displayName).toBe('Holder A');
   });
 
+  it('routes to next instead of the role home when the page gives one', async () => {
+    render(RoleSwitcher, { props: { next: '/invite/ABC' } });
+    const select = await screen.findByRole('combobox', { name: 'Acting as' });
+    await fireEvent.change(select, { target: { value: 'holderA::1220cc' } });
+
+    await waitFor(() => expect(goto).toHaveBeenCalledWith('/invite/ABC', expect.anything()));
+    expect(goto).not.toHaveBeenCalledWith('/holder', expect.anything());
+    expect(sessionStore.party?.displayName).toBe('Holder A');
+  });
+
+  it('LocalNet: the demo party "Auditor" with no role yet goes to /auditor, not /start', async () => {
+    const auditorNoRole = { partyId: 'auditor::1220ee', displayName: 'Auditor', roles: [] };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) => {
+        if (url === '/api/session/demo-parties') {
+          return Promise.resolve(json({ parties: [...PARTIES.slice(0, 3), auditorNoRole] }));
+        }
+        if (url === '/api/session/switch' && init?.method === 'POST') {
+          return Promise.resolve(
+            json({
+              network: 'localnet',
+              testMode: true,
+              signedIn: true,
+              party: { ...auditorNoRole, primaryRole: null },
+            }),
+          );
+        }
+        return Promise.resolve(new Response('{}', { status: 404 }));
+      }),
+    );
+    const { container } = render(RoleSwitcher);
+    const select = await screen.findByRole('combobox', { name: 'Acting as' });
+    expect(Array.from(container.querySelectorAll('optgroup')).map((g) => g.label)).toContain(
+      'No role yet',
+    );
+    await fireEvent.change(select, { target: { value: 'auditor::1220ee' } });
+    await waitFor(() => expect(goto).toHaveBeenCalledWith('/auditor', expect.anything()));
+  });
+
   it('shows what failed when demo parties cannot be loaded', async () => {
     vi.stubGlobal(
       'fetch',

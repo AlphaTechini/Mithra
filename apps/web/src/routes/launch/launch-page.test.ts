@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { goto } from '$app/navigation';
 import {
@@ -53,6 +53,27 @@ describe('launch page: ?next=', () => {
       'href',
       '/invite/ABC',
     );
+  });
+
+  it('the role switcher sends the chosen party to next, not to its role home', async () => {
+    launchAt('?next=/invite/ABC');
+    const holderB = { partyId: 'holderB::1220bb', displayName: 'Holder B', roles: ['holder'] };
+    stubApi({
+      'GET /api/session': holderSession(),
+      'GET /api/config/public': configFor(),
+      'GET /api/session/demo-parties': { parties: [holderB] },
+      'POST /api/session/switch': {
+        network: 'localnet',
+        testMode: true,
+        signedIn: true,
+        party: { ...holderB, primaryRole: 'holder' },
+      },
+    });
+    render(Page);
+    const select = await screen.findByRole('combobox', { name: 'Acting as' });
+    await fireEvent.change(select, { target: { value: holderB.partyId } });
+    await vi.waitFor(() => expect(goto).toHaveBeenCalledWith('/invite/ABC', expect.anything()));
+    expect(goto).not.toHaveBeenCalledWith('/holder', expect.anything());
   });
 
   it('goes to the role home when there is no next', async () => {

@@ -1,5 +1,8 @@
 <script lang="ts">
-  /** Unknown party: set up a treasury, or open an invitation with a code (userflow section 3). */
+  /**
+   * Unknown party: set up a treasury, open an invitation with a code, or ask a fund for access as an
+   * auditor (userflow sections 3 and 11).
+   */
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { onMount } from 'svelte';
@@ -54,6 +57,11 @@
           <input id="invite-code" bind:value={code} autocomplete="off" spellcheck="false" />
           <Button type="submit" variant="secondary" disabled={!code.trim()}>Open invitation</Button>
         </form>
+      </section>
+      <section aria-labelledby="auditor-heading">
+        <h2 id="auditor-heading">I'm an auditor</h2>
+        <p>Ask this fund for access to specific records.</p>
+        <Button href="/auditor" variant="secondary">Open the audit workspace</Button>
       </section>
     </div>
   </main>

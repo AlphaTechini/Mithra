@@ -111,6 +111,27 @@ Everything below was built from the research notes and the bundle's files but co
 
 Already checked in the build environment: `bash -n` and `shellcheck` on all scripts; `docker compose config` for the DecMan file and for the console override merged with the bundle's compose files; the JWT helper against `jose`; the SHA-256 of the bundle (`e15e8263...cd73`) and the download, verify and extract path against a local copy; the whole bring-up, a rerun and the status, node and down scripts against a fake DecMan, fake ledger API and fake `docker` (checks the control flow and the JSON bodies, not the real services); `scripts/localnet-up.sh --dry-run` output.
 
+## Seeding the demo history
+
+After `scripts/localnet-up.sh` and `scripts/localnet-env.sh`, `pnpm seed:localnet` creates real history on LocalNet, tagged "Seeded" in the UI (U8). Every step prints one line and skips itself when it is already done, so a second run prints `already done` everywhere and ends with `Nothing to do: the demo history is already in place.`
+
+| Step | What it creates | Line on a first run |
+|---|---|---|
+| Organization | Northwind Income Fund, Approver 1 to 3, threshold 2 | `Organization: created Northwind Income Fund with Approver 1 to 3, threshold 2` |
+| Mandate | The default policy, sealed (waits for the node confirmations) | `Mandate: sealed version 1 (cap 5,000 CC, 2 of 3 approvals, Monthly on the 1st at 09:00 UTC)` |
+| Units Holder A to D | 100, 300, 600 and 1,000 units, effective 2026-05-01 | `Units Holder A: issued 100 units, effective 2026-05-01, seeded` |
+| Treasury funds | 20,000 test CC when the balance is under 10,000 | `Treasury funds: added 20,000 CC (was 5,000, now 25,000)` |
+| Auto-receive Holder A to C | A transfer preapproval through `Funding.createPreapproval`, skipped when the registry already reports `direct` for the holder; the step waits until the registry shows it | `Auto-receive Holder A: turned on` |
+| Cycle 2026-06, Cycle 2026-07 | June (400 CC) and July (420 CC), run through the cycle engine and paid | `Cycle 2026-06: ran 400 CC, awaiting-acceptance, seeded` |
+
+What to look for afterwards:
+
+- **June and July only.** The Cycles list shows June 2026 and July 2026 with the "Seeded" tag. August and September are left for the live demo: August clean (300 CC), September flagged (Holder C's units jump just before the record date, 1,200 CC against an average of about 400 CC). See `docs/demo-script.md`.
+- **Only Holder D is pending.** Holders A to C have auto-receive, so their payments in both cycles are Paid. Holder D has none, so Holder D's payment in both cycles shows "Awaiting acceptance" and the cycle status is `awaiting-acceptance`; Holder D accepts it on their Payments screen. This is the one place the demo shows the pending-acceptance path.
+- **Balance.** 24,180 CC after the first run on a treasury that started at 5,000 CC (5,000 + 20,000 - 400 - 420).
+
+`pnpm seed:localnet --sandbox` runs the same steps against the Canton sandbox world of the full-stack test server (test token registry; the world is kept in `.sandbox-seed-world.json`, delete it to start over). That world already gives Holders A to C auto-receive, so the three auto-receive lines read `already done (the registry reports direct)` even on the first run. Run it twice to see the idempotent second run (`Nothing to do`).
+
 ## Backend happy path
 
 To be written with the backend milestone: start the backend against `.env`, sign in as the demo treasurer, run a cycle, approve, execute, and what each screen shows.

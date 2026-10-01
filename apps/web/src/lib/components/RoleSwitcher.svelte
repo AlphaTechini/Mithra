@@ -2,18 +2,20 @@
   /**
    * LocalNet only: choose which demo party to act as. Parties come from
    * `/api/session/demo-parties`, grouped by role. Choosing one calls `POST /api/session/switch`
-   * and then routes to that party's home. Keyboard: a native select (arrows, type-ahead).
+   * and then routes to that party's home, or to `next` when the page that shows the switcher has
+   * one (the launch page, for `/launch?next=/invite/<code>`). Keyboard: a native select (arrows, type-ahead).
    */
   import { DemoPartiesResponseSchema, type DemoParty, type Role } from '@mithra/shared';
   import { onMount } from 'svelte';
+  import type { Pathname } from '$app/types';
   import { apiGet } from '$lib/api/client';
   import { describeError } from '$lib/errors';
   import { navigate } from '$lib/nav';
-  import { homeFor } from '$lib/routing';
+  import { localnetHomeFor } from '$lib/routing';
   import { sessionStore } from '$lib/stores/session.svelte';
   import Skeleton from './Skeleton.svelte';
 
-  let { compact = false }: { compact?: boolean } = $props();
+  let { compact = false, next = null }: { compact?: boolean; next?: Pathname | null } = $props();
 
   const uid = $props.id();
   const ORDER: Role[] = ['treasurer', 'approver', 'holder', 'auditor'];
@@ -69,7 +71,7 @@
     switchError = null;
     try {
       const session = await sessionStore.switchParty(partyId);
-      await navigate(homeFor(session.party?.primaryRole ?? null));
+      await navigate(next ?? localnetHomeFor(session.party));
     } catch (e) {
       const copy = describeError(e, "Couldn't switch party.");
       switchError = `${copy.title} ${copy.message}`;

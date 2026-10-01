@@ -9,7 +9,7 @@ import {
 import type { FastifyError, FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { ZodError, z } from 'zod';
 import type { AuditService, Viewer } from '../../audit/service';
-import { requireRole, rolesOfRequest } from '../../auth/roles';
+import { requireRole, requireRoleOrNone, rolesOfRequest } from '../../auth/roles';
 import { ApiError, errorBody, parse, upstreamErrorResponse } from '../../http/errors';
 
 export interface AuditRouteDeps {
@@ -60,12 +60,17 @@ function handleError(
 /**
  * Registers the audit routes (the contract in shared/api/audit.ts). Roles: an auditor sees only
  * their own requests and grants (404 otherwise), the treasurer sees all, approvers and holders get 403.
+ * A signed-in party with no role yet may draft a scope, create a request and list their own (none
+ * yet), as a prospective auditor.
  */
 export function auditRoutes(app: FastifyInstance, deps: AuditRouteDeps): void {
   const { service } = deps;
   const auditorOnly = requireRole('auditor');
   const treasurerOnly = requireRole('treasurer');
   const auditorOrTreasurer = requireRole('auditor', 'treasurer');
+  // A party with no role yet may ask this fund for access: they become an auditor with the request.
+  const auditorOrProspect = requireRoleOrNone('auditor');
+  const auditorTreasurerOrProspect = requireRoleOrNone('auditor', 'treasurer');
 
   async function viewerOf(request: FastifyRequest): Promise<Viewer> {
     const { roles } = await rolesOfRequest(request);
@@ -74,7 +79,7 @@ export function auditRoutes(app: FastifyInstance, deps: AuditRouteDeps): void {
 
   app.post(
     '/api/audit/requests',
-    { preHandler: auditorOnly },
+    { preHandler: auditorOrProspect },
     async (request): Promise<AuditRequestDetail> => {
       const body = parse(CreateAuditRequestSchema, request.body);
       service.assertServerSigns();
@@ -84,7 +89,7 @@ export function auditRoutes(app: FastifyInstance, deps: AuditRouteDeps): void {
 
   app.get(
     '/api/audit/requests',
-    { preHandler: auditorOrTreasurer },
+    { preHandler: auditorTreasurerOrProspect },
     async (request, reply): Promise<AuditRequestsResponse> => {
       void reply.header('cache-control', 'no-store');
       return service.list(await viewerOf(request));

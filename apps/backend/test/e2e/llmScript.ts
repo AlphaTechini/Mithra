@@ -116,7 +116,7 @@ function auditScope(userContent: string): StubStep {
   for (const line of userContent.split('\n')) {
     const parts = line.split(' | ');
     const id = parts[0]?.trim();
-    if (parts.length === 5 && id && /^[A-Za-z0-9:_.-]+$/.test(id)) ids.push(id);
+    if (parts.length === 5 && id && /^[A-Za-z0-9:_./-]+$/.test(id)) ids.push(id);
   }
   return {
     toolCalls: [

@@ -21,7 +21,7 @@ interface Running {
   active(): number;
 }
 
-async function start(heartbeatMs = 20_000): Promise<Running> {
+async function start(heartbeatMs = 20_000, roleRefreshMs?: number): Promise<Running> {
   const bus = new EventBus();
   let active = 0;
   const subscribe = bus.subscribe.bind(bus);
@@ -50,7 +50,7 @@ async function start(heartbeatMs = 20_000): Promise<Running> {
       return reply.code(error.status).send(errorBody(error.code, error.message));
     return reply.code(500).send(errorBody('internal_error', 'Internal server error'));
   });
-  eventsRoute(app, { bus, heartbeatMs });
+  eventsRoute(app, { bus, heartbeatMs, ...(roleRefreshMs === undefined ? {} : { roleRefreshMs }) });
   await app.listen({ host: '127.0.0.1', port: 0 });
   const port = (app.server.address() as AddressInfo).port;
   return { app, bus, url: `http://127.0.0.1:${port}/api/events`, active: () => active };
@@ -174,6 +174,45 @@ describe('GET /api/events', () => {
     expect(names(holder1)).toEqual(['holder']);
     expect(names(holder2)).toEqual([]);
     for (const c of [treasurer, approver, holder1, holder2]) c.controller.abort();
+  });
+
+  it('looks the roles up again when an event arrives after they are stale (a new treasurer gets team events)', async () => {
+    running = await start(20_000, 400);
+    // Opens the stream before creating the organization: no role yet.
+    const client = await connect(running, 'newcomer::1');
+    await client.waitFor(': connected');
+    running.bus.publish({ type: 'cycle', cycleId: 'c0', status: 'running' }, TREASURY_TEAM);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(client.text()).not.toContain('event: cycle');
+
+    // The organization is created: the party is the treasurer now. The roles are not stale yet,
+    // so the next event is still judged on the old ones...
+    ROLES['newcomer::1'] = ['treasurer'];
+    running.bus.publish({ type: 'cycle', cycleId: 'c1', status: 'running' }, TREASURY_TEAM);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(client.text()).not.toContain('event: cycle');
+
+    // ...and once they are older than the refresh interval, the next event looks them up again.
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    running.bus.publish({ type: 'cycle', cycleId: 'c2', status: 'running' }, TREASURY_TEAM);
+    await client.waitFor('event: cycle\n');
+    expect(client.text()).toContain('"cycleId":"c2"');
+    expect(client.text()).not.toContain('"cycleId":"c1"');
+    delete ROLES['newcomer::1'];
+    client.controller.abort();
+  });
+
+  it('keeps events in order and survives a failed role lookup', async () => {
+    running = await start(20_000, 0);
+    const client = await connect(running, 'treasurer::1');
+    await client.waitFor(': connected');
+    running.app.roleResolver.resolveRoles = () => Promise.reject(new Error('ledger busy'));
+    running.bus.publish({ type: 'cycle', cycleId: 'a', status: 'running' }, TREASURY_TEAM);
+    running.bus.publish({ type: 'cycle', cycleId: 'b', status: 'running' }, TREASURY_TEAM);
+    await client.waitFor('"cycleId":"b"');
+    const ids = [...client.text().matchAll(/"cycleId":"(\w)"/g)].map((m) => m[1]);
+    expect(ids).toEqual(['a', 'b']);
+    client.controller.abort();
   });
 
   it('sends a heartbeat comment', async () => {

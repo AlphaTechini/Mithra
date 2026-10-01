@@ -112,6 +112,41 @@ describe('the agent loop', () => {
     expect(reply.actions).toHaveLength(1);
   });
 
+  it('asking again for a month that was already paid says so, whatever the model wrote', async () => {
+    h = await createHarness();
+    h.stub.script(
+      { toolCalls: [{ name: 'create_cycle', arguments: { total: '300', period: '2026-09' } }] },
+      { text: 'Done.' },
+    );
+    await h.say('Distribute 300 CC for September.');
+    // September is paid in the meantime.
+    const september = h.services.cycles.store.get('2026-09')!;
+    h.services.cycles.store.set('2026-09', {
+      ...september,
+      summary: { ...september.summary, status: 'paid-automatically' },
+      outcome: {
+        kind: 'executed',
+        actor: FAKE_PARTIES.treasurer,
+        reason: null,
+        at: '2026-10-01T09:00:00.000Z',
+      },
+    });
+    h.stub.script(
+      { toolCalls: [{ name: 'create_cycle', arguments: { total: '300', period: '2026-09' } }] },
+      { text: 'Within your mandate. It runs automatically after the hold countdown.' },
+    );
+    const { reply } = await h.say('Distribute 300 CC for September.');
+    expect(h.services.cycles.store.get('2026-09')?.summary.status).toBe('paid-automatically');
+    expect(reply.actions[0]).toMatchObject({
+      status: 'done',
+      summary:
+        'September 2026 was already paid automatically on 1 October 2026. Nothing new was created.',
+    });
+    expect(reply.text).toContain(
+      'September 2026 was already paid automatically on 1 October 2026. Nothing new was created.',
+    );
+  });
+
   it('records state-changing tool runs in the activity log', async () => {
     h = await createHarness();
     h.stub.script(

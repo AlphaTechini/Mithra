@@ -17,7 +17,7 @@
   import Skeleton from '$lib/components/Skeleton.svelte';
   import { describeError } from '$lib/errors';
   import { navigate } from '$lib/nav';
-  import { homeFor } from '$lib/routing';
+  import { homeFor, localnetHomeFor } from '$lib/routing';
   import { sessionStore } from '$lib/stores/session.svelte';
 
   let password = $state('');
@@ -47,7 +47,12 @@
     }
     return value as Pathname; // Not a typed route (it carries a code), so the cast is deliberate.
   });
-  const destination = $derived(next ?? homeFor(party?.primaryRole ?? null));
+  const destination = $derived(
+    next ??
+      (sessionStore.network === 'localnet'
+        ? localnetHomeFor(party)
+        : homeFor(party?.primaryRole ?? null)),
+  );
 
   onMount(() => {
     void sessionStore.load();
@@ -145,7 +150,7 @@
           Pick a demo party. Mithra opens the screens for that party's role, and you can switch
           again at any time from the header.
         </p>
-        <RoleSwitcher />
+        <RoleSwitcher {next} />
         {#if party}
           <p class="current">
             Signed in as <strong>{party.displayName}</strong>

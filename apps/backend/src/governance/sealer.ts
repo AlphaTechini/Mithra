@@ -3,7 +3,7 @@ import type { PolicyFields, SealStatus } from '@mithra/shared';
 import { eq } from 'drizzle-orm';
 import type { Config } from '../config/env';
 import { sha256Hex } from '../cycle/fingerprint';
-import { formatAmount } from '../cycle/format';
+import { formatAmount, plural } from '../cycle/format';
 import type { Database } from '../db';
 import { sealRequests, type SealRequestRow } from '../db/schema';
 import { ApiError } from '../http/errors';
@@ -174,8 +174,24 @@ export async function prepareSeal(
     organization,
     currentMandate,
     nextVersion,
-    description: `Seal Mandate v${nextVersion}: cap ${formatAmount(fields.cap, deps.config.asset.symbol)}, ${fields.approvalThreshold} of ${fields.approvers.length} approvals`,
+    description: `Seal Mandate v${nextVersion}: cap ${formatAmount(fields.cap, deps.config.asset.symbol)}, ${fields.approvalThreshold} of ${plural(fields.approvers.length, 'approval')}`,
   };
+}
+
+/** The activity line when the treasurer has signed the seal request (the same for every sealer). */
+export function sealRequestedText(description: string): string {
+  return `Signed the request: ${description}`;
+}
+
+/** The activity line when the Mandate is on the ledger (the same for every sealer). */
+export function sealedText(
+  mandate: Pick<Mandate, 'version'> & {
+    terms: Pick<MandateTerms, 'cap' | 'approvalThreshold' | 'approvers'>;
+  },
+  symbol: string,
+): string {
+  const t = mandate.terms;
+  return `Mandate v${mandate.version} sealed: cap ${formatAmount(t.cap, symbol)}, ${t.approvalThreshold} of ${plural(t.approvers.length, 'approval')}`;
 }
 
 /** Creates a new seal request id. */

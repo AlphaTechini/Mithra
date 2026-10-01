@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  AUTO_RECEIVE_HOLDERS,
   DEMO_CYCLES,
   DEMO_HOLDERS,
   FUND_NAME,
+  ensureAutoReceive,
   runSeed,
   type StepResult,
 } from '../../../../scripts/seed/steps';
@@ -53,9 +55,18 @@ describe('seeding: demo history on the ledger, tagged as seeded, idempotent', ()
       'Mandate',
       ...DEMO_HOLDERS.map((h) => `Units ${h.name}`),
       'Treasury funds',
+      ...AUTO_RECEIVE_HOLDERS.map((h) => `Auto-receive ${h}`),
       ...DEMO_CYCLES.map((c) => `Cycle ${c.cycleId}`),
     ]);
-    expect(results.every((r) => r.outcome === 'done')).toBe(true);
+    // The test server already gives Holders A to C auto-receive, so those steps find it done.
+    const doneBefore = new Set(AUTO_RECEIVE_HOLDERS.map((h) => `Auto-receive ${h}`));
+    for (const r of results) {
+      expect(r.outcome, r.step).toBe(doneBefore.has(r.step) ? 'skipped' : 'done');
+    }
+    expect(DEMO_CYCLES.map((c) => [c.cycleId, c.total])).toEqual([
+      ['2026-06', '400'],
+      ['2026-07', '420'],
+    ]);
     // One line per step.
     expect(lines[0]).toHaveLength(results.length);
 
@@ -93,8 +104,8 @@ describe('seeding: demo history on the ledger, tagged as seeded, idempotent', ()
     // Two executed cycles, seeded all the way down to the payments.
     const cycles = await stack.backend.cycle.cycles.listCycles();
     expect(cycles.map((c) => [c.cycleId, c.total, c.trigger, c.seeded]).sort()).toEqual([
-      ['2026-07', '400.0000000000', 'manual', true],
-      ['2026-08', '420.0000000000', 'manual', true],
+      ['2026-06', '400.0000000000', 'manual', true],
+      ['2026-07', '420.0000000000', 'manual', true],
     ]);
     const payments = await ledger.reader.payments();
     expect(payments).toHaveLength(8);
@@ -102,12 +113,23 @@ describe('seeding: demo history on the ledger, tagged as seeded, idempotent', ()
     const outcomes = await ledger.reader.outcomes();
     expect(outcomes.every((o) => o.payload.seeded && o.payload.kind === 'Executed')).toBe(true);
 
+    // Only Holder D is left to accept: A to C were paid straight away (auto-receive).
+    const unpaid = payments.filter((p) => p.payload.status !== 'Paid');
+    expect(unpaid.map((p) => p.payload.holder)).toEqual([parties.holderD, parties.holderD]);
+
     // 5,000 + 20,000 - 400 - 420.
     expect(await stack.backend.asset.balance(parties.treasury)).toMatch(/^24180/);
     const activity = await stack.backend.activity.list(50);
     expect(activity.filter((a) => a.seeded).map((a) => a.kind)).toEqual(
       expect.arrayContaining(['org.created', 'units.issued']),
     );
+  });
+
+  it('turns auto-receive on for a holder who does not have it, and then finds it done', async () => {
+    const ctx = { backend: stack.backend, print: () => undefined, pollMs: 200 };
+    // Holder D has none in the test world; the step creates it through Funding, once.
+    expect(await ensureAutoReceive(ctx, stack.parties.holderD)).toBe('done');
+    expect(await ensureAutoReceive(ctx, stack.parties.holderD)).toBe('skipped');
   });
 
   it('a second run finds everything done and changes nothing', async () => {

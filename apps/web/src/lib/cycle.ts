@@ -65,3 +65,20 @@ export function isSettled(status: CycleStatus): boolean {
     status === 'failed'
   );
 }
+
+/**
+ * Who wrote the memo of a decision, in words. The server sends `ai`, `template` or
+ * `ai-unavailable`; anything else (an older record) is shown as it came.
+ */
+export function memoSourceText(source: string): string {
+  switch (source) {
+    case 'ai':
+      return 'Written by the AI reviewer';
+    case 'template':
+      return 'Written from the checks';
+    case 'ai-unavailable':
+      return 'AI review unavailable; written from the checks';
+    default:
+      return source;
+  }
+}

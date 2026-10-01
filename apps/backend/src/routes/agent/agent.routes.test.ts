@@ -16,6 +16,7 @@ const ROLES: Record<string, Role[]> = {
   'approver::1': ['approver'],
   'holder::1': ['holder'],
   'auditor::1': ['auditor'],
+  // 'prospect::1' has no role: a signed-in party who may ask this fund for access.
 };
 
 interface Calls {
@@ -242,10 +243,10 @@ describe('agent routes', () => {
     });
   });
 
-  it('POST /api/audit/scope/draft: auditor or treasurer', async () => {
+  it('POST /api/audit/scope/draft: auditor, treasurer or a party with no role (a prospective auditor)', async () => {
     const built = await build();
     app = built.app;
-    for (const party of ['auditor::1', 'treasurer::1']) {
+    for (const party of ['auditor::1', 'treasurer::1', 'prospect::1']) {
       const ok = await app.inject({
         method: 'POST',
         url: '/api/audit/scope/draft',
@@ -271,6 +272,6 @@ describe('agent routes', () => {
       payload: {},
     });
     expect(bad.statusCode).toBe(400);
-    expect(built.calls.scope).toEqual(['Show Q3', 'Show Q3']);
+    expect(built.calls.scope).toEqual(['Show Q3', 'Show Q3', 'Show Q3']);
   });
 });

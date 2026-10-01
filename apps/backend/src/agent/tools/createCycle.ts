@@ -1,7 +1,13 @@
-import { DecimalString, toDecimal } from '@mithra/shared';
+import {
+  DecimalString,
+  toDecimal,
+  type ActionCardView,
+  type CycleDetail,
+  type CycleStatus,
+} from '@mithra/shared';
 import Decimal from 'decimal.js';
 import { z } from 'zod';
-import { formatAmount } from '../format';
+import { formatAmount, longDateOf, plural } from '../format';
 import { messageOf } from './errors';
 import { cycleFacts, isAboveCap, waitForProposal } from './cycleWait';
 import { card, defineTool, failedRun, type ToolContext, type ToolRun } from './types';
@@ -54,12 +60,152 @@ export const createCycleParameters = z.strictObject({
     .describe('The record date, as YYYY-MM-DD, only if the treasurer named one.'),
 });
 
-/** Shared by `create_cycle` and `run_cycle_now`: waits for the proposal and builds the card. */
+const RERUNNABLE: readonly CycleStatus[] = ['failed', 'rejected', 'cancelled'];
+
+/**
+ * The cycles that exist before a run, by id. `run` answers with the id of an existing cycle and
+ * creates nothing when that cycle is open or paid, so the tools need this to word what happened.
+ */
+export async function cycleStatusesBefore(ctx: ToolContext): Promise<Map<string, CycleStatus>> {
+  try {
+    const list = await ctx.services.cycles.listCycles();
+    return new Map(list.map((c) => [c.cycleId, c.status]));
+  } catch {
+    return new Map();
+  }
+}
+
+interface Worded {
+  title: string;
+  status: ActionCardView['status'];
+  summary: string;
+}
+
+/**
+ * The card and reply text for a cycle, from the status it has now (never from what the tool
+ * expected to happen). `existed`: the cycle was already there, so nothing new was created.
+ */
+function wordCycle(
+  detail: CycleDetail,
+  symbol: string,
+  existed: boolean,
+  fallbackTitle: string,
+): Worded {
+  const { label, status } = detail.summary;
+  const tail = existed ? ' Nothing new was created.' : '';
+  const p = detail.proposal;
+  const paidOn = detail.outcome?.kind === 'executed' ? ` on ${longDateOf(detail.outcome.at)}` : '';
+  const created = (): string => {
+    const payees = p?.payouts.length ?? 0;
+    return `Created proposal for ${label}, ${payees} ${payees === 1 ? 'payee' : 'payees'}, ${formatAmount(p?.total ?? detail.summary.total ?? '0')} ${symbol}`;
+  };
+
+  switch (status) {
+    case 'paid-automatically':
+    case 'paid-after-approval':
+    case 'awaiting-acceptance': {
+      const how = status === 'paid-after-approval' ? 'after approval' : 'automatically';
+      const text =
+        status === 'awaiting-acceptance'
+          ? `${label} was already paid${paidOn}; at least one holder still has to accept their payment.`
+          : `${label} was already paid ${how}${paidOn}.`;
+      return existed
+        ? { title: `${label} was already paid`, status: 'done', summary: `${text}${tail}` }
+        : {
+            title: `${label} was paid`,
+            status: 'done',
+            summary: text.replace('was already paid', 'was paid'),
+          };
+    }
+    case 'executing':
+      return {
+        title: `${label} is being paid`,
+        status: 'done',
+        summary: `The payments for ${label} are being made now.${tail}`,
+      };
+    case 'awaiting-approval': {
+      const need = p?.approvalThreshold ?? 0;
+      const of = p?.approvers.length ?? 0;
+      const have = p?.approvals.length ?? 0;
+      const reasons = p?.verdictReasons.join(' ') ?? '';
+      return existed
+        ? {
+            title: `${label} already has a proposal waiting for approval`,
+            status: 'needs-you',
+            summary:
+              `Needs ${need} of ${plural(of, 'approval')}, ${have} so far. ${reasons}${tail}`.replace(
+                /\s+/g,
+                ' ',
+              ),
+          }
+        : {
+            title: created(),
+            status: 'needs-you',
+            summary: `Needs ${need} of ${plural(of, 'approval')}. ${reasons}`.trim(),
+          };
+    }
+    case 'countdown':
+      return existed
+        ? {
+            title: `${label} already has a proposal within your mandate`,
+            status: 'done',
+            summary: `It runs automatically after the hold countdown.${tail}`,
+          }
+        : {
+            title: created(),
+            status: 'done',
+            summary: 'Within your mandate. It runs automatically after the hold countdown.',
+          };
+    case 'held':
+      return {
+        title: existed ? `${label} is on hold` : created(),
+        status: 'needs-you',
+        summary: `The proposal for ${label} is on hold. Release it from the cycle page to let it run.${tail}`,
+      };
+    case 'needs-funds': {
+      const short = detail.fundsShortfall;
+      const amounts = short
+        ? ` ${formatAmount(short.balance)} ${symbol} available, ${formatAmount(short.required)} ${symbol} needed.`
+        : '';
+      return {
+        title: existed ? `${label} is waiting for funds` : created(),
+        status: 'needs-you',
+        summary: `The treasury does not have enough funds to pay ${label}.${amounts} Add funds and the payment continues.${tail}`,
+      };
+    }
+    case 'failed':
+      return {
+        title: `The cycle for ${label} failed`,
+        status: 'failed',
+        summary: detail.error ?? 'The cycle failed. Open it for the reason.',
+      };
+    case 'rejected':
+    case 'cancelled':
+      return {
+        title: `The proposal for ${label} was ${status}`,
+        status: 'done',
+        summary: `The proposal for ${label} was ${status}${detail.outcome?.reason ? `: ${detail.outcome.reason}` : '.'}${tail}`,
+      };
+    case 'running':
+      return {
+        title: fallbackTitle,
+        status: 'done',
+        summary: 'The proposal is still being prepared. Open the cycle to watch the timeline.',
+      };
+  }
+}
+
+/**
+ * Shared by `create_cycle` and `run_cycle_now`: waits for the proposal, reads the cycle's actual
+ * status and words the card and the reply from it. `before` is `cycleStatusesBefore`, read before
+ * `run`, to tell a cycle that already existed (nothing new was created) from a new one.
+ */
 export async function cycleRunOutcome(
   tool: string,
   cycleId: string,
   ctx: ToolContext,
   startedTitle: string,
+  before: ReadonlyMap<string, CycleStatus> = new Map(),
 ): Promise<ToolRun> {
   const mandate = await ctx.services.org.mandate();
   const symbol = mandate?.terms.assetSymbol ?? 'CC';
@@ -86,8 +232,10 @@ export async function cycleRunOutcome(
       },
     };
   }
+  const previous = before.get(cycleId);
+  const existed = previous !== undefined && !RERUNNABLE.includes(previous);
+  const failed = detail.error !== null || detail.summary.status === 'failed';
   if (!detail.proposal) {
-    const failed = detail.error !== null || detail.summary.status === 'failed';
     return {
       card: card({
         tool,
@@ -105,25 +253,32 @@ export async function cycleRunOutcome(
   }
 
   const p = detail.proposal;
-  const payees = p.payouts.length;
   const needsApproval = p.verdict === 'needs-approval';
   const cap = detail.decisionRecord?.cap ?? mandate?.terms.cap ?? null;
-  const aboveCap = needsApproval && cap !== null && isAboveCap(p.total, cap);
+  const aboveCap =
+    !existed &&
+    detail.summary.status === 'awaiting-approval' &&
+    cap !== null &&
+    isAboveCap(p.total, cap);
+  const worded = wordCycle(detail, symbol, existed, startedTitle);
   const failedChecks = p.checks.filter((c) => !c.passed);
   const replyNotes: string[] = [];
   if (aboveCap && cap !== null) {
     replyNotes.push(
-      `${formatAmount(p.total)} ${symbol} is above your auto-pay cap of ${formatAmount(cap)} ${symbol}. I've prepared this as a proposal that needs ${p.approvalThreshold} of ${p.approvers.length} approvals.`,
+      `${formatAmount(p.total)} ${symbol} is above your auto-pay cap of ${formatAmount(cap)} ${symbol}. I've prepared this as a proposal that needs ${p.approvalThreshold} of ${plural(p.approvers.length, 'approval')}.`,
     );
   }
+  // What the cycle already was, or how it ended: said in the reply by code, whatever the model wrote.
+  if (existed || detail.summary.status === 'failed') replyNotes.push(worded.summary);
+  const alreadyPaid = ['paid-automatically', 'paid-after-approval', 'awaiting-acceptance'].includes(
+    detail.summary.status,
+  );
   return {
     card: card({
       tool,
-      title: `Created proposal for ${detail.summary.label}, ${payees} ${payees === 1 ? 'payee' : 'payees'}, ${formatAmount(p.total)} ${symbol}`,
-      status: needsApproval ? 'needs-you' : 'done',
-      summary: needsApproval
-        ? `Needs ${p.approvalThreshold} of ${p.approvers.length} approvals. ${p.verdictReasons.join(' ')}`.trim()
-        : 'Within your mandate. It runs automatically after the hold countdown.',
+      title: worded.title,
+      status: worded.status,
+      summary: worded.summary,
       details: [
         { label: 'Total', value: `${formatAmount(p.total)} ${symbol}` },
         { label: 'Record date', value: p.recordDate },
@@ -136,9 +291,16 @@ export async function cycleRunOutcome(
       link,
     }),
     result: {
-      ok: true,
+      ok: !failed,
       proposalReady: true,
-      note: 'The proposal was prepared by code. Nothing was paid. Quote amounts exactly as given here.',
+      existedBefore: existed,
+      note: existed
+        ? alreadyPaid
+          ? 'This cycle already existed and was already paid. Nothing new was created and nothing more was paid. Say exactly that; quote the date and amounts as given here.'
+          : 'This cycle already existed. Nothing new was created. Say where it stands from the status given here; quote amounts exactly.'
+        : alreadyPaid
+          ? 'The cycle was paid. Quote amounts exactly as given here.'
+          : 'The proposal was prepared by code. Nothing was paid yet. Quote amounts and the status exactly as given here.',
       ...cycleFacts(detail, symbol),
     },
     replyNotes,
@@ -166,6 +328,7 @@ export const createCycleTool = defineTool({
       );
     }
     const name = await ctx.names.name(ctx.partyId);
+    const before = await cycleStatusesBefore(ctx);
     let started: { cycleId: string };
     try {
       started = await ctx.services.cycles.run({
@@ -186,6 +349,7 @@ export const createCycleTool = defineTool({
       started.cycleId,
       ctx,
       `Started the cycle ${started.cycleId}`,
+      before,
     );
   },
 });

@@ -1,6 +1,6 @@
 import type { SessionResponse } from '@mithra/shared';
 import { describe, expect, it } from 'vitest';
-import { homeFor, redirectFor } from './routing';
+import { homeFor, localnetHomeFor, redirectFor } from './routing';
 
 describe('homeFor', () => {
   it('routes each primary role to its home', () => {
@@ -13,6 +13,22 @@ describe('homeFor', () => {
   it('sends an unknown party to /start', () => {
     expect(homeFor(null)).toBe('/start');
     expect(homeFor(undefined)).toBe('/start');
+  });
+});
+
+describe('localnetHomeFor', () => {
+  it('takes the demo party "Auditor" without a role to the Audit workspace', () => {
+    expect(localnetHomeFor({ displayName: 'Auditor', primaryRole: null })).toBe('/auditor');
+  });
+
+  it('leaves every other party where homeFor sends it', () => {
+    expect(localnetHomeFor({ displayName: 'Holder A', primaryRole: null })).toBe('/start');
+    expect(localnetHomeFor({ displayName: 'Auditor', primaryRole: 'auditor' })).toBe('/auditor');
+    expect(localnetHomeFor({ displayName: 'Auditor', primaryRole: 'holder' })).toBe('/holder');
+    expect(localnetHomeFor({ displayName: 'Treasurer', primaryRole: 'treasurer' })).toBe(
+      '/app/overview',
+    );
+    expect(localnetHomeFor(null)).toBe('/start');
   });
 });
 
@@ -50,5 +66,11 @@ describe('redirectFor', () => {
 
   it('sends an unknown party to /start', () => {
     expect(redirectFor(session({}), ['treasurer'])).toBe('/start');
+  });
+
+  it('lets a party with no role into a layout that lists null (the auditor workspace)', () => {
+    expect(redirectFor(session({}), ['auditor', null])).toBeNull();
+    expect(redirectFor(holder, ['auditor', null])).toBe('/holder');
+    expect(redirectFor(session({}), ['auditor'])).toBe('/start');
   });
 });

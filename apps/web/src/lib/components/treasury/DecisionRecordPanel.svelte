@@ -5,6 +5,7 @@
    * under. Opens as a dialog from the cycle page (or with `?record=1`).
    */
   import type { DecisionRecordView } from '@mithra/shared';
+  import { memoSourceText } from '$lib/cycle';
   import { formatDateTime } from '$lib/format';
   import Amount from '../Amount.svelte';
   import Dialog from '../Dialog.svelte';
@@ -61,7 +62,7 @@
     <CheckList checks={record.checks} label="Checks in this record" />
 
     <h3>Memo</h3>
-    <p class="source">{record.memoSource}</p>
+    <p class="source">{memoSourceText(record.memoSource)}</p>
     <p class="memo">{record.memo}</p>
   {/if}
 </Dialog>

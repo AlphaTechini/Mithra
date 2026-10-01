@@ -1,11 +1,10 @@
 <script lang="ts">
   /**
    * The status of an audit request as icon + word. Granted, ended and denied reuse StatusChip
-   * ("Active until Oct 14", "Access ended Oct 14", "Request denied"); a request still waiting for
-   * the treasurer, or withdrawn by the auditor, gets a neutral chip with its own wording.
+   * ("Active until Oct 14", "Access ended Oct 14", "Request denied"), and so do a request still
+   * waiting for the treasurer and one the auditor withdrew.
    */
   import type { AuditRequestView } from '@mithra/shared';
-  import Icon from '../Icon.svelte';
   import StatusChip from '../StatusChip.svelte';
   import { endedAt } from './status';
 
@@ -19,23 +18,7 @@
 {:else if request.status === 'denied'}
   <StatusChip kind="denied" />
 {:else if request.status === 'withdrawn'}
-  <span class="chip"><Icon name="ban" size={14} /><span>Request withdrawn</span></span>
+  <StatusChip kind="withdrawn" />
 {:else}
-  <span class="chip"><Icon name="clock" size={14} /><span>Waiting for the treasurer</span></span>
+  <StatusChip kind="waiting-treasurer" />
 {/if}
-
-<style>
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: 0.125rem var(--space-2);
-    border-radius: var(--radius-pill);
-    background: var(--color-neutral-bg);
-    color: var(--color-neutral-text);
-    font-size: var(--text-13);
-    font-weight: 500;
-    line-height: 1.4;
-    white-space: nowrap;
-  }
-</style>

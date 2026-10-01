@@ -11,25 +11,37 @@ export function formatAmount(value: string | Decimal): string {
   return `${negative ? '-' : ''}${grouped}${fraction ? `.${fraction}` : ''}`;
 }
 
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
 /** `2026-09` -> `September 2026`. Returns the input when it is not a cycle id. */
 export function cycleLabelOf(cycleId: string): string {
   const match = /^(\d{4})-(\d{2})$/.exec(cycleId);
   if (!match) return cycleId;
-  const month = Number(match[2]);
-  const names = [
-    'January',
-    'February',
-    'March',
-    'April',
-    'May',
-    'June',
-    'July',
-    'August',
-    'September',
-    'October',
-    'November',
-    'December',
-  ];
-  const name = names[month - 1];
+  const name = MONTH_NAMES[Number(match[2]) - 1];
   return name ? `${name} ${match[1]}` : cycleId;
+}
+
+/** `2026-10-01T09:00:00Z` -> `1 October 2026` (UTC). Returns the input when it is not a time. */
+export function longDateOf(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return `${date.getUTCDate()} ${MONTH_NAMES[date.getUTCMonth()] ?? ''} ${date.getUTCFullYear()}`;
+}
+
+/** `1 payee` / `4 payees`. */
+export function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
 }

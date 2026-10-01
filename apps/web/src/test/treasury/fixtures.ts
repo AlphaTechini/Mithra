@@ -159,7 +159,7 @@ export function proposal(
       },
     ],
     memo: 'The total is far above recent cycles because Holder B joined shortly before the record date.',
-    memoSource: 'Written by the agent',
+    memoSource: 'ai',
     approvals: [],
     approvalThreshold: 2,
     approvers: [APPROVER_1, APPROVER_2, APPROVER_3],

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { cycleRunOutcome } from './createCycle';
+import { cycleRunOutcome, cycleStatusesBefore } from './createCycle';
 import { messageOf } from './errors';
 import { defineTool, failedRun } from './types';
 
@@ -12,6 +12,7 @@ export const runCycleNowTool = defineTool({
   roles: ['treasurer'],
   async run(_args, ctx) {
     const name = await ctx.names.name(ctx.partyId);
+    const before = await cycleStatusesBefore(ctx);
     let started: { cycleId: string };
     try {
       started = await ctx.services.cycles.run({
@@ -28,6 +29,7 @@ export const runCycleNowTool = defineTool({
       started.cycleId,
       ctx,
       `Started the cycle ${started.cycleId}`,
+      before,
     );
   },
 });

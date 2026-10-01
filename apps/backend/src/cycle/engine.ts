@@ -340,19 +340,29 @@ class CycleEngine implements CycleService {
     cycleId: string,
     text: string,
     detail?: Record<string, unknown>,
+    /** Whether the cycle is demo history (U8). Looked up on the ledger when the caller does not know. */
+    seeded?: boolean,
   ): Promise<void> {
     try {
+      const isSeeded = seeded ?? (await this.seededOnLedger(cycleId));
       await this.deps.activity.record({
         actorParty: actor,
         kind,
         subject: cycleId,
         text,
         link: `/app/cycles/${cycleId}`,
+        ...(isSeeded ? { seeded: true } : {}),
         ...(detail ? { detail } : {}),
       });
     } catch {
       // The activity log is a convenience view; the ledger holds the truth.
     }
+  }
+
+  /** True when the cycle's open proposal on the ledger was made as seeded demo history. */
+  private async seededOnLedger(cycleId: string): Promise<boolean> {
+    const proposals = await this.deps.ledger.reader.proposals();
+    return proposals.some((p) => p.payload.cycleId === cycleId && p.payload.seeded);
   }
 
   private async nameOf(party: string): Promise<string> {
@@ -558,6 +568,8 @@ class CycleEngine implements CycleService {
         'cycle.cancelled',
         cycleId,
         `Cancelled the earlier proposal for ${labelOf(cycleId)} before a new attempt`,
+        undefined,
+        proposal.payload.seeded,
       );
     }
   }
@@ -822,7 +834,7 @@ class CycleEngine implements CycleService {
       await this.store.setTxRef(proposal.contractId, updateId, 'proposal');
       const verdictText = auto
         ? 'Within mandate'
-        : `Needs ${terms.approvalThreshold} of ${terms.approvers.length} approvals`;
+        : `Needs ${terms.approvalThreshold} of ${plural(terms.approvers.length, 'approval')}`;
       await this.step(cycleId, 'verdict', 'done', verdictText);
       await this.record(
         input.actorParty,
@@ -830,12 +842,20 @@ class CycleEngine implements CycleService {
         cycleId,
         `Prepared ${label}: ${formatAmount(total, this.symbol)} to ${plural(payouts.length, 'holder')}, ${auto ? 'within the mandate' : verdictText.toLowerCase()}`,
         { proposalId: proposal.payload.proposalId, verdict: proposal.payload.verdict },
+        input.seeded ?? false,
       );
-      if (shortfall) await this.recordNeedsFunds(cycleId, shortfall.balance, shortfall.required);
+      if (shortfall) {
+        await this.recordNeedsFunds(
+          cycleId,
+          shortfall.balance,
+          shortfall.required,
+          input.seeded ?? false,
+        );
+      }
       if (executesAt) this.schedule(cycleId, executesAt);
       await this.emitStatus(cycleId);
     } catch (error) {
-      await this.failRun(row, current, error, input.actorParty);
+      await this.failRun(row, current, error, input.actorParty, input.seeded ?? false);
     }
   }
 
@@ -895,6 +915,7 @@ class CycleEngine implements CycleService {
     step: StepId,
     error: unknown,
     actor: string,
+    seeded: boolean,
   ): Promise<void> {
     const stepFailure = error instanceof StepError ? error : null;
     const failedStep = stepFailure?.step ?? step;
@@ -913,6 +934,8 @@ class CycleEngine implements CycleService {
       'cycle.failed',
       row.cycleId,
       `${labelOf(row.cycleId)} could not be prepared: ${message}`,
+      undefined,
+      seeded,
     );
     await this.emitStatus(row.cycleId);
   }
@@ -1338,12 +1361,15 @@ class CycleEngine implements CycleService {
     cycleId: string,
     balance: string,
     required: string,
+    seeded: boolean,
   ): Promise<void> {
     await this.record(
       this.agent,
       'cycle.needs-funds',
       cycleId,
       `${labelOf(cycleId)} is waiting for funds: the treasury holds ${formatAmount(balance, this.symbol)} and needs ${formatAmount(required, this.symbol)}. Add funds.`,
+      undefined,
+      seeded,
     );
   }
 
@@ -1395,7 +1421,12 @@ class CycleEngine implements CycleService {
         const changed = JSON.stringify(row.fundsShortfall) !== JSON.stringify(shortfall);
         await revert({ fundsShortfall: shortfall });
         if (changed) {
-          await this.recordNeedsFunds(cycleId, balance, formatDecimal(required));
+          await this.recordNeedsFunds(
+            cycleId,
+            balance,
+            formatDecimal(required),
+            proposal.payload.seeded,
+          );
           await this.emitStatus(cycleId);
         }
         return 'needs-funds';
@@ -1513,6 +1544,7 @@ class CycleEngine implements CycleService {
       cycleId,
       `Paid ${formatAmount(proposal.payload.total, this.symbol)} to ${plural(proposal.payload.payouts.length, 'holder')} for ${label}`,
       { updateId: tx.updateId },
+      proposal.payload.seeded,
     );
     for (const ref of awaiting) {
       await this.record(
@@ -1521,6 +1553,7 @@ class CycleEngine implements CycleService {
         cycleId,
         `${await this.nameOf(ref.holder)} has a payment awaiting acceptance`,
         { holder: ref.holder },
+        proposal.payload.seeded,
       );
     }
     for (const payout of proposal.payload.payouts) {

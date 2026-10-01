@@ -315,7 +315,7 @@ describe('cycle page', () => {
         modelFingerprints: [],
         checks: proposal().checks,
         memo: 'The agent memo.',
-        memoSource: 'Written by the agent',
+        memoSource: 'ai',
         verdict: 'needs-approval',
         mandateVersion: 3,
         cap: '5000',
@@ -327,6 +327,20 @@ describe('cycle page', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Decision record' });
     expect(await within(dialog).findByText('ab12cd34')).toBeInTheDocument();
     expect(within(dialog).getByText(/Version 3/)).toBeInTheDocument();
+    // The memo source is in words, not the raw value.
+    expect(within(dialog).getByText('Written by the AI reviewer')).toBeInTheDocument();
+    expect(within(dialog).queryByText('ai')).toBeNull();
+  });
+
+  it.each([
+    ['ai', 'Written by the AI reviewer'],
+    ['template', 'Written from the checks'],
+    ['ai-unavailable', 'AI review unavailable; written from the checks'],
+  ])('shows the memo source %s as words on the cycle page', async (memoSource, words) => {
+    await signIn('treasurer', { [CYCLE]: cycleDetail({ proposal: proposal({ memoSource }) }) });
+    render(Page);
+    expect(await screen.findByText(words)).toBeInTheDocument();
+    expect(screen.queryByText(memoSource)).toBeNull();
   });
 
   it('tells an approver what to do when the wallet must sign (MainNet)', async () => {

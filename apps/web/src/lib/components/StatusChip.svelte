@@ -47,6 +47,8 @@
     confirmed: { icon: 'check-circle', tone: 'success' },
     waiting: { icon: 'clock', tone: 'neutral' },
     approved: { icon: 'check-circle', tone: 'success' },
+    'waiting-treasurer': { icon: 'clock', tone: 'neutral' },
+    withdrawn: { icon: 'ban', tone: 'neutral' },
   };
 
   const text = $derived.by(() => {
@@ -108,6 +110,10 @@
         return 'Waiting';
       case 'approved':
         return 'Approved';
+      case 'waiting-treasurer':
+        return 'Waiting for the treasurer';
+      case 'withdrawn':
+        return 'Request withdrawn';
     }
   });
 </script>

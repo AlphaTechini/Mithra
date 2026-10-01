@@ -5,6 +5,8 @@
    *
    * Keyboard: Ctrl/Cmd+K toggles it from anywhere, Escape closes it, Tab is trapped inside while
    * it is open, and focus returns to whatever opened it. Enter sends, Shift+Enter adds a line.
+   * Following an in-app link from an action card or the transcript closes the panel, so the page it
+   * leads to is not left under the scrim.
    */
   import { tick } from 'svelte';
   import type { AgentMessage } from '$lib/types/ui';
@@ -58,6 +60,16 @@
   function close(): void {
     open = false;
     onclose?.();
+  }
+
+  /** A plain click on an in-app link in the transcript: the visitor is going somewhere else. */
+  function onTranscriptClick(event: MouseEvent): void {
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null;
+    if (!anchor || anchor.getAttribute('target') === '_blank') return;
+    // After the click has reached the router: closing at once would remove the link first.
+    setTimeout(close, 0);
   }
 
   function focusables(): HTMLElement[] {
@@ -133,7 +145,8 @@
       </Button>
     </header>
 
-    <div class="scroll" bind:this={transcript}>
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="scroll" bind:this={transcript} onclick={onTranscriptClick}>
       <AgentTranscript {messages} {busy} {error} {onretry} />
     </div>
 

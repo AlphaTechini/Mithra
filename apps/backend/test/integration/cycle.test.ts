@@ -669,6 +669,8 @@ describe('3c. seeded cycles (demo history) are tagged on the ledger, others are 
   it('carries `seeded` from the run to the decision record, the proposal and the payments', async () => {
     const world = await createCycleWorld(handle, { holders: FOUR_HOLDERS, funds: '1000000' });
     const module = makeModule(world);
+    // The activity table is shared by the worlds of this file: look only at what this test adds.
+    const lastId = Math.max(0, ...(await world.activity.list(500)).map((e) => Number(e.id)));
     await runCycle(module, world, { cycleId: '2026-08', total: '300', seeded: true });
     await runCycle(module, world, { cycleId: '2026-09', total: '300' });
 
@@ -687,6 +689,19 @@ describe('3c. seeded cycles (demo history) are tagged on the ledger, others are 
     expect(payments.every((p) => p.payload.seeded)).toBe(true);
     const outcomes = await world.ledger.reader.outcomes();
     expect(outcomes.find((o) => o.payload.cycleId === '2026-08')?.payload.seeded).toBe(true);
+
+    // U8: the activity rows of a seeded run (proposed, paid) are tagged too, and only those.
+    const activity = (await world.activity.list(500)).filter((e) => Number(e.id) > lastId);
+    const of = (cycleId: string) => activity.filter((e) => e.link === `/app/cycles/${cycleId}`);
+    expect(of('2026-08').map((e) => e.text)).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^Prepared August 2026/),
+        expect.stringMatching(/^Paid 300 CC .* for August 2026/),
+      ]),
+    );
+    expect(of('2026-08').every((e) => e.seeded)).toBe(true);
+    expect(of('2026-09').length).toBeGreaterThan(0);
+    expect(of('2026-09').every((e) => !e.seeded)).toBe(true);
     module.cycles.dispose();
   });
 });

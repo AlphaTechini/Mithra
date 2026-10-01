@@ -7,7 +7,13 @@ import { computeProRata, unitsAt } from '../../src/cycle/prorata';
 import { fingerprint } from '../../src/cycle/fingerprint';
 import type { DatabaseHandle } from '../../src/db';
 import { EventBus } from '../../src/events/bus';
-import { prepareSeal, type DraftSource, type MandateSealer } from '../../src/governance/sealer';
+import {
+  prepareSeal,
+  sealedText,
+  sealRequestedText,
+  type DraftSource,
+  type MandateSealer,
+} from '../../src/governance/sealer';
 import {
   choiceResults,
   createLedger,
@@ -56,6 +62,8 @@ export const CYCLE_PARTY_NAMES = [
   'holderD',
   'auditor',
   'outsider',
+  /** Signed in, with no role at all: a prospective auditor. */
+  'prospect',
 ] as const;
 export type CycleParty = (typeof CYCLE_PARTY_NAMES)[number];
 export type HolderName = Extract<CycleParty, `holder${string}`>;
@@ -199,6 +207,7 @@ export async function createCycleWorld(
     [parties.holderD]: 'Holder D',
     [parties.auditor]: 'Auditor',
     [parties.outsider]: 'Newcomer',
+    [parties.prospect]: 'Prospect',
   };
   const config = {
     ...base,
@@ -455,6 +464,8 @@ export function createTestSealer(
     parties: { treasury: string; agent: string };
   },
   drafts: DraftSource,
+  /** Where the sealer writes its activity lines, as the DecMan sealer does. */
+  activity?: ActivityLog,
 ): MandateSealer {
   const seals = new Map<string, SealStatus>();
   const { ledger, parties } = world;
@@ -490,8 +501,31 @@ export function createTestSealer(
           }),
         ],
       );
+      const sealId = randomUUID();
+      // The same two activity lines, with the same text, as the DecMan sealer writes.
+      await activity
+        ?.record({
+          actorParty: treasurer,
+          kind: 'mandate.seal-requested',
+          subject: sealId,
+          text: sealRequestedText(prepared.description),
+          link: '/app/settings',
+        })
+        .catch(() => undefined);
+      const mandate = await ledger.reader.mandate();
+      if (mandate) {
+        await activity
+          ?.record({
+            actorParty: treasurer,
+            kind: 'mandate.sealed',
+            subject: sealId,
+            text: sealedText(mandate.payload, world.config.asset.symbol),
+            link: '/app/settings',
+          })
+          .catch(() => undefined);
+      }
       const status: SealStatus = {
-        sealId: randomUUID(),
+        sealId,
         state: 'sealed',
         treasurerSigned: true,
         nodeConfirmations: null,
@@ -541,7 +575,7 @@ export function makeModule(
     bus: world.bus,
     holdCountdownSeconds: 1,
     timers: false,
-    sealer: createTestSealer(world, drafts),
+    sealer: createTestSealer(world, drafts, world.activity),
     ...overrides,
   });
 }

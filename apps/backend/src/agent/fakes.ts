@@ -201,7 +201,11 @@ export function createFakeServices(): FakeServices {
       run(input) {
         runs.push(input);
         const cycleId = input.cycleId ?? '2026-09';
-        store.set(cycleId, buildCycle(input, cycleId, state));
+        // As the engine does: a cycle that is open or paid is not started again.
+        const existing = store.get(cycleId)?.summary.status;
+        if (existing === undefined || ['failed', 'rejected', 'cancelled'].includes(existing)) {
+          store.set(cycleId, buildCycle(input, cycleId, state));
+        }
         return record('cycles.run', input, { cycleId });
       },
       getCycle(cycleId) {

@@ -63,7 +63,11 @@ export type ChipKind =
   | 'offline'
   | 'confirmed'
   | 'waiting'
-  | 'approved';
+  | 'approved'
+  /** An audit request the treasurer has not answered yet. */
+  | 'waiting-treasurer'
+  /** An audit request the auditor took back. */
+  | 'withdrawn';
 
 export interface TableColumn {
   key: string;

@@ -1,12 +1,15 @@
 /**
  * Seeds LocalNet with real demo history (T4, U8, details.md feature 17): the organization, the
- * sealed Mandate, units for four holders, test funds and two executed cycles, all tagged "seeded".
+ * sealed Mandate, units for four holders, test funds, auto-receive for Holders A to C (Holder D keeps
+ * the pending-acceptance path) and two executed cycles, June (400 CC) and July (420 CC), all tagged
+ * "seeded". The demo then runs August (clean) and September (flagged) live.
  * Every step prints one line and skips itself when it is already done, so it is safe to run again.
  *
  *   pnpm seed:localnet               seed the LocalNet in .env (the backend's own modules)
  *   pnpm seed:localnet --sandbox     seed the full-stack test server's world on the Canton sandbox
- *                                    (test adapters; the world is kept in .sandbox-seed-world.json,
- *                                    so a second run finds everything done)
+ *                                    (test adapters, where Holders A to C already have auto-receive;
+ *                                    the world is kept in .sandbox-seed-world.json, so a second run
+ *                                    finds everything done)
  */
 import { resolve } from 'node:path';
 import { ConfigError, loadConfig, loadDotEnv } from '../apps/backend/src/config/env';

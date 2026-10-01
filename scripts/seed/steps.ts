@@ -25,10 +25,19 @@ export const UNITS_EFFECTIVE_DATE = '2026-05-01';
 /** The treasury is topped up with `FUND_AMOUNT` when it holds less than `MIN_BALANCE`. */
 export const MIN_BALANCE = '10000';
 export const FUND_AMOUNT = '20000';
+/**
+ * The seeded history: June and July. The live demo then runs August (clean, 300 CC) and September
+ * (flagged: Holder C's units jump just before the record date, 1,200 CC against a ~400 CC average).
+ */
 export const DEMO_CYCLES: { cycleId: string; total: string }[] = [
-  { cycleId: '2026-07', total: '400' },
-  { cycleId: '2026-08', total: '420' },
+  { cycleId: '2026-06', total: '400' },
+  { cycleId: '2026-07', total: '420' },
 ];
+/**
+ * Holders who get auto-receive, so their payments settle at once. Holder D has none, so the demo
+ * shows the pending-acceptance path with one holder only.
+ */
+export const AUTO_RECEIVE_HOLDERS = ['Holder A', 'Holder B', 'Holder C'];
 
 /** Cycle statuses that mean the distribution was executed. */
 const EXECUTED = new Set(['paid-automatically', 'paid-after-approval', 'awaiting-acceptance']);
@@ -52,6 +61,8 @@ export interface SeedContext {
   /** How long to wait for the Mandate to be sealed (node confirmations) and for a cycle. */
   sealTimeoutMs?: number;
   cycleTimeoutMs?: number;
+  /** How long to wait for the registry to show a new preapproval. */
+  autoReceiveTimeoutMs?: number;
   pollMs?: number;
 }
 
@@ -63,6 +74,51 @@ export interface StepResult {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** What the registry says about a transfer from the treasury to `holder`: `direct` means auto-receive is on. */
+async function hasAutoReceive(backend: SeedContext['backend'], holder: string): Promise<boolean> {
+  try {
+    const leg = await backend.asset.transferLeg({
+      sender: backend.config.parties.treasury,
+      receiver: holder,
+      amount: '1',
+    });
+    return leg.kind === 'direct';
+  } catch (error) {
+    throw new SeedError(
+      `Could not ask the registry whether the holder has auto-receive: ${error instanceof Error ? error.message : String(error)} Check the registry (scripts/localnet-status.sh) and seed again.`,
+    );
+  }
+}
+
+/**
+ * Turns auto-receive on for one holder, unless the registry already reports `direct` for them.
+ * Waits until the registry shows it, so the cycles that follow pay straight to the holder.
+ */
+export async function ensureAutoReceive(
+  ctx: SeedContext,
+  holder: string,
+): Promise<StepResult['outcome']> {
+  const { backend } = ctx;
+  if (await hasAutoReceive(backend, holder)) return 'skipped';
+  try {
+    await backend.funding.createPreapproval(holder);
+  } catch (error) {
+    throw new SeedError(
+      `Could not turn on auto-receive: ${error instanceof Error ? error.message : String(error)} Fix that and seed again.`,
+    );
+  }
+  const deadline = Date.now() + (ctx.autoReceiveTimeoutMs ?? 60_000);
+  while (!(await hasAutoReceive(backend, holder))) {
+    if (Date.now() > deadline) {
+      throw new SeedError(
+        'Auto-receive was created but the registry does not show it yet. Wait a moment and seed again.',
+      );
+    }
+    await sleep(ctx.pollMs ?? 1000);
+  }
+  return 'done';
 }
 
 /** Runs every seeding step in order and prints one line for each. */
@@ -213,7 +269,20 @@ export async function runSeed(ctx: SeedContext): Promise<StepResult[]> {
     }
   }
 
-  // (e) Cycles ------------------------------------------------------------------------------
+  // (e) Auto-receive ------------------------------------------------------------------------
+  // Before the cycles, so their payments to Holders A to C settle at once; Holder D keeps the
+  // pending-acceptance path.
+  for (const name of AUTO_RECEIVE_HOLDERS) {
+    const step = `Auto-receive ${name}`;
+    const outcome = await ensureAutoReceive(ctx, demoParty(name));
+    report(
+      step,
+      outcome,
+      outcome === 'done' ? 'turned on' : 'already done (the registry reports direct)',
+    );
+  }
+
+  // (f) Cycles ------------------------------------------------------------------------------
   for (const demo of DEMO_CYCLES) {
     const step = `Cycle ${demo.cycleId}`;
     const symbol = config.asset.symbol;

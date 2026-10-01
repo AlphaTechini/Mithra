@@ -44,6 +44,8 @@ export interface AppModules {
   agent: AgentRouteOptions;
   /** The audit flow: requests, grants, the evidence room. */
   audit?: { routes: FastifyPluginAsync };
+  /** Options of the live updates stream (a test shortens the role refresh). */
+  events?: { roleRefreshMs?: number };
 }
 
 /** What the API routes need besides the configuration. Without it only health and config routes exist. */
@@ -150,7 +152,12 @@ export function buildApp(config: Config, deps?: AppDeps): FastifyInstance {
         if (modules.audit) void scope.register(modules.audit.routes);
         treasuryRoutes(scope, { ...modules.treasury, config, ledger, db: database.db });
         agentRoutes(scope, modules.agent);
-        eventsRoute(scope, { bus: modules.bus });
+        eventsRoute(scope, {
+          bus: modules.bus,
+          ...(modules.events?.roleRefreshMs === undefined
+            ? {}
+            : { roleRefreshMs: modules.events.roleRefreshMs }),
+        });
       }
       done();
     });

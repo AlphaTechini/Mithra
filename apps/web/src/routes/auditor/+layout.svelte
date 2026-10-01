@@ -8,7 +8,8 @@
   let { children }: { children: Snippet } = $props();
 </script>
 
-<SessionGate allow={['auditor']}>
+<!-- A party with no role yet may come in: this is where a prospective auditor asks for access. -->
+<SessionGate allow={['auditor', null]}>
   <header class="top">
     <a class="brand" href={resolve('/auditor')}>Mithra</a>
     <PartyBar />

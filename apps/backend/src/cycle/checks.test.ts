@@ -79,6 +79,16 @@ describe('non_holder', () => {
     });
   });
 
+  it('says "1 of 1 payee" for a single payee', () => {
+    const result = checkNonHolder({
+      payouts: [{ holder: 'a' }],
+      holdingsOnRecordDate: holdings,
+      recordDate: '2026-09-30',
+      nameOf,
+    });
+    expect(result.actual).toBe('1 of 1 payee held units on Sep 30');
+  });
+
   it('fails and names a payee who did not hold units', () => {
     const result = checkNonHolder({
       payouts: [{ holder: 'a' }, { holder: 'd' }],
@@ -192,6 +202,17 @@ describe('unit_spike', () => {
     expect(result).toMatchObject({ code: 'unit_spike', passed: false, blocking: true });
     expect(result.actual).toBe('Holder C: 600 → 1,500 units (+150%) in the 30 days before Sep 30');
     expect(result.limit).toBe('No holder changes by more than 100% in the 30 days before Sep 30');
+  });
+
+  it('writes "1 unit" for a holder who ends with one unit', () => {
+    const result = checkUnitSpike({
+      changes: [...baseChanges, { holder: 'd', delta: 1, effectiveDate: '2026-09-29' }],
+      recordDate: day,
+      windowDays: 30,
+      unitChangePct: '100',
+      nameOf,
+    });
+    expect(result.actual).toBe('Holder D: 0 → 1 unit (new holder) in the 30 days before Sep 30');
   });
 
   it('counts a holder who went from 0 to positive inside the window as a spike', () => {

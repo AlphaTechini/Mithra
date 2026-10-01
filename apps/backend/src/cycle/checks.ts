@@ -85,7 +85,7 @@ export function checkNonHolder(input: {
     blocking: true,
     actual:
       missing.length === 0
-        ? `${input.payouts.length} of ${input.payouts.length} payees held units on ${on}`
+        ? `${input.payouts.length} of ${plural(input.payouts.length, 'payee')} held units on ${on}`
         : `${missing.join(', ')} did not hold units on ${on}`,
     limit: 'Every payee must have held units on the record date',
   });
@@ -204,7 +204,7 @@ export function checkUnitSpike(input: {
     if (a !== b) changed.push({ holder, before: b, after: a, pct: pctChange(b, a) });
   }
   const describe = (s: Spike): string => {
-    const units = `${showAmountText(String(s.before))} → ${showAmountText(String(s.after))} units`;
+    const units = `${showAmountText(String(s.before))} → ${showAmountText(String(s.after))} ${s.after === 1 ? 'unit' : 'units'}`;
     const change = s.pct === null ? 'new holder' : formatSignedPct(s.pct);
     return `${input.nameOf(s.holder)}: ${units} (${change}) ${window}`;
   };
