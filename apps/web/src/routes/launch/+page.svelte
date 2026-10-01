@@ -7,6 +7,8 @@
   import { resolve } from '$app/paths';
   import { createGroftyClient } from '@groftylabs/dapp-sdk';
   import { onMount } from 'svelte';
+  import { page } from '$app/state';
+  import type { Pathname } from '$app/types';
   import { ApiError } from '$lib/api/client';
   import Button from '$lib/components/Button.svelte';
   import ErrorState from '$lib/components/ErrorState.svelte';
@@ -27,6 +29,26 @@
   const signedIn = $derived(sessionStore.session?.signedIn === true);
   const party = $derived(sessionStore.party);
 
+  /**
+   * `?next=<path>`: where to go after choosing a party (the invite page sends people here with
+   * `/invite/<code>`). Only same-site paths count: it must start with a single `/`, so
+   * `//evil.example` and `https://evil.example` are ignored.
+   */
+  const next = $derived.by((): Pathname | null => {
+    const value = page.url.searchParams.get('next');
+    if (value === null || !value.startsWith('/') || value.startsWith('//')) return null;
+    if (value.includes('\\')) return null;
+    // The parsed URL must stay on this origin.
+    try {
+      const parsed = new URL(value, 'http://same.site');
+      if (parsed.origin !== 'http://same.site') return null;
+    } catch {
+      return null;
+    }
+    return value as Pathname; // Not a typed route (it carries a code), so the cast is deliberate.
+  });
+  const destination = $derived(next ?? homeFor(party?.primaryRole ?? null));
+
   onMount(() => {
     void sessionStore.load();
   });
@@ -34,7 +56,7 @@
   // On MainNet a visitor who already has a session goes straight to their home.
   $effect(() => {
     if (sessionStore.network === 'mainnet' && signedIn) {
-      void navigate(homeFor(party?.primaryRole ?? null), { replaceState: true });
+      void navigate(destination, { replaceState: true });
     }
   });
 
@@ -129,7 +151,7 @@
             Signed in as <strong>{party.displayName}</strong>
             <PartyId partyId={party.partyId} />
           </p>
-          <Button href={homeFor(party.primaryRole)}>Continue as {party.displayName}</Button>
+          <Button href={destination}>Continue as {party.displayName}</Button>
         {/if}
       {/if}
     </section>

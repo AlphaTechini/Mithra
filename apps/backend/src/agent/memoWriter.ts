@@ -1,5 +1,5 @@
-import type { PartyRef } from '@mithra/shared';
 import { z } from 'zod';
+import type { MemoInput, MemoResult, MemoWriter } from '../cycle/memo';
 import {
   LlmInvalidOutputError,
   LlmUnavailableError,
@@ -8,33 +8,11 @@ import {
   type LlmTurn,
 } from '../llm/client';
 import type { CheckResult, Fingerprint } from '../ledger/mithra/templates';
-import { formatAmount } from './format';
+import { cycleLabelOf, formatAmount } from './format';
 
-// The types below are the contract with the cycle engine (src/cycle/memo.ts); they are
-// replicated here exactly and unified by the application wiring.
-
-export interface MemoInput {
-  cycleId: string;
-  cycleLabel: string;
-  total: string;
-  assetSymbol: string;
-  recordDate: string;
-  payouts: { holder: PartyRef; units: number; amount: string }[];
-  checks: CheckResult[];
-  history: { cycleLabel: string; total: string }[];
-  unitChanges: { holder: PartyRef; from: number; to: number; window: string }[];
-}
-
-export interface MemoResult {
-  memo: string;
-  memoSource: 'ai' | 'template' | 'ai-unavailable';
-  advisoryChecks: CheckResult[];
-  modelFingerprints: Fingerprint[];
-}
-
-export interface MemoWriter {
-  write(input: MemoInput): Promise<MemoResult>;
-}
+// The memo contract (MemoInput, MemoResult, MemoWriter) belongs to the cycle engine
+// (src/cycle/memo.ts); the AI writer implements it.
+export type { MemoInput, MemoResult, MemoWriter };
 
 /** What the model must return from `write_review`. It has no field that could change a check. */
 const WriteReviewSchema = z.object({
@@ -99,9 +77,12 @@ function reviewPayload(input: MemoInput): unknown {
     cycle: input.cycleLabel,
     total: `${formatAmount(input.total)} ${input.assetSymbol}`,
     recordDate: input.recordDate,
+    trigger: input.triggerDetail,
+    ...(input.promptText === null ? {} : { prompt: input.promptText }),
     payouts: input.payouts.map((p) => ({
-      holder: p.holder.displayName,
+      holder: p.displayName,
       units: p.units,
+      share: `${p.sharePct}%`,
       amount: `${formatAmount(p.amount)} ${input.assetSymbol}`,
     })),
     checks: input.checks.map((c) => ({
@@ -111,15 +92,20 @@ function reviewPayload(input: MemoInput): unknown {
       limit: c.limit,
     })),
     previousCycles: input.history.map((h) => ({
-      cycle: h.cycleLabel,
+      cycle: cycleLabelOf(h.cycleId),
       total: `${formatAmount(h.total)} ${input.assetSymbol}`,
     })),
-    unitChanges: input.unitChanges.map((u) => ({
-      holder: u.holder.displayName,
-      from: u.from,
-      to: u.to,
-      window: u.window,
+    unitChanges: input.holderChanges.map((u) => ({
+      holder: u.displayName,
+      from: u.unitsBefore,
+      to: u.unitsAfter,
     })),
+    mandate: {
+      verdict: input.verdict === 'within-mandate' ? 'within the mandate' : 'needs approval',
+      reasons: input.verdictReasons,
+      cap: `${formatAmount(input.mandate.cap)} ${input.assetSymbol}`,
+      approvals: `${input.mandate.approvalThreshold} of ${input.mandate.approverCount}`,
+    },
   };
 }
 

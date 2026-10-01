@@ -89,6 +89,7 @@ async function runCycle(
     recordDate?: string;
     trigger?: 'schedule' | 'prompt' | 'manual';
     promptText?: string;
+    seeded?: boolean;
   } = {},
 ): Promise<string> {
   const { cycleId } = await module.cycles.run({
@@ -99,6 +100,7 @@ async function runCycle(
     total: input.total ?? '300',
     recordDate: input.recordDate ?? RECORD_DATE,
     ...(input.promptText ? { promptText: input.promptText } : {}),
+    ...(input.seeded === undefined ? {} : { seeded: input.seeded }),
   });
   await module.cycles.settled();
   return cycleId;
@@ -660,6 +662,32 @@ describe('3b. the policy has a fixed amount: a prompt for another amount is flag
       'Not applicable',
     );
     expect(detail.proposal?.verdict).toBe('within-mandate');
+  });
+});
+
+describe('3c. seeded cycles (demo history) are tagged on the ledger, others are not', () => {
+  it('carries `seeded` from the run to the decision record, the proposal and the payments', async () => {
+    const world = await createCycleWorld(handle, { holders: FOUR_HOLDERS, funds: '1000000' });
+    const module = makeModule(world);
+    await runCycle(module, world, { cycleId: '2026-08', total: '300', seeded: true });
+    await runCycle(module, world, { cycleId: '2026-09', total: '300' });
+
+    const seededCycle = await module.cycles.getCycle('2026-08');
+    const normalCycle = await module.cycles.getCycle('2026-09');
+    expect(seededCycle.summary.seeded).toBe(true);
+    expect(normalCycle.summary.seeded).toBe(false);
+    const proposals = await world.ledger.reader.proposals();
+    expect(proposals.find((p) => p.payload.cycleId === '2026-08')?.payload.seeded).toBe(true);
+    expect(proposals.find((p) => p.payload.cycleId === '2026-09')?.payload.seeded).toBe(false);
+
+    await sleep(1200); // the 1 s countdown
+    await module.cycles.execute('2026-08');
+    const payments = await world.ledger.reader.payments();
+    expect(payments.length).toBe(4);
+    expect(payments.every((p) => p.payload.seeded)).toBe(true);
+    const outcomes = await world.ledger.reader.outcomes();
+    expect(outcomes.find((o) => o.payload.cycleId === '2026-08')?.payload.seeded).toBe(true);
+    module.cycles.dispose();
   });
 });
 

@@ -4,7 +4,12 @@ import fastifyCookie from '@fastify/cookie';
 import fastifyCors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { HealthResponseSchema, type HealthResponse } from '@mithra/shared';
-import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply } from 'fastify';
+import Fastify, {
+  type FastifyError,
+  type FastifyInstance,
+  type FastifyPluginAsync,
+  type FastifyReply,
+} from 'fastify';
 import { ZodError } from 'zod';
 import { version } from '../package.json';
 import { sessionPlugin } from './auth/plugin';
@@ -12,13 +17,34 @@ import { createRoleResolver } from './auth/roles';
 import { SessionService } from './auth/sessions';
 import type { Config } from './config/env';
 import type { DatabaseHandle } from './db';
+import type { EventBus } from './events/bus';
 import { ApiError, errorBody, upstreamErrorResponse } from './http/errors';
 import type { Ledger } from './ledger';
+import { agentRoutes, type AgentRouteOptions } from './routes/agent';
 import { configRoutes } from './routes/config';
+import { eventsRoute } from './routes/events';
 import { sessionRoutes, type SessionRouteOptions } from './routes/session';
 import { statusRoutes } from './routes/status';
+import { treasuryRoutes, type TreasuryRoutesDeps } from './routes/treasury';
 
 export type { ErrorBody } from './http/errors';
+
+/**
+ * The route modules of the product. They are built once by `createBackend` (src/wiring) from one
+ * event bus, one party-name lookup and one activity log, and registered after the session plugin.
+ */
+export interface AppModules {
+  /** Live updates (`GET /api/events`). */
+  bus: EventBus;
+  /** The cycle module's routes: cycles, approvals, the Mandate and its sealing, policy drafts. */
+  cycle: { routes: FastifyPluginAsync };
+  /** Everything the treasury routes need besides the configuration, the ledger and the database. */
+  treasury: Omit<TreasuryRoutesDeps, 'config' | 'ledger' | 'db'>;
+  /** The agent chat, the policy drafter and the audit scope drafter. */
+  agent: AgentRouteOptions;
+  /** The audit flow: requests, grants, the evidence room. */
+  audit?: { routes: FastifyPluginAsync };
+}
 
 /** What the API routes need besides the configuration. Without it only health and config routes exist. */
 export interface AppDeps {
@@ -26,6 +52,8 @@ export interface AppDeps {
   ledger: Ledger;
   /** Overrides for tests, such as the sign-in rate limit. */
   session?: SessionRouteOptions;
+  /** The product's route modules; without them only the session and status routes exist. */
+  modules?: AppModules;
 }
 
 const STATUS_CODES: Record<number, string> = {
@@ -53,6 +81,8 @@ function isApiPath(url: string): boolean {
 export function buildApp(config: Config, deps?: AppDeps): FastifyInstance {
   const prettyLogs = process.env['NODE_ENV'] !== 'production' && process.stdout.isTTY;
   const app = Fastify({
+    // Contract ids travel in URL parameters; the default limit of 100 characters is too short.
+    routerOptions: { maxParamLength: 300 },
     logger: {
       level: config.logLevel,
       ...(prettyLogs ? { transport: { target: 'pino-pretty' } } : {}),
@@ -114,6 +144,14 @@ export function buildApp(config: Config, deps?: AppDeps): FastifyInstance {
     void app.register((scope, _options, done) => {
       sessionRoutes(scope, config, deps.session);
       statusRoutes(scope, config, { ledger, pool: database.pool });
+      const { modules } = deps;
+      if (modules) {
+        void scope.register(modules.cycle.routes);
+        if (modules.audit) void scope.register(modules.audit.routes);
+        treasuryRoutes(scope, { ...modules.treasury, config, ledger, db: database.db });
+        agentRoutes(scope, modules.agent);
+        eventsRoute(scope, { bus: modules.bus });
+      }
       done();
     });
   }

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { startLlmStub, type LlmStub } from '../../test/llm-stub/server';
 import { createLlm } from '../llm/client';
 import type { CheckResult } from '../ledger/mithra/templates';
-import { FAKE_PARTIES } from './fakes';
+import type { MemoWriter } from '../cycle/memo';
 import { AiMemoWriter, type MemoInput } from './memoWriter';
 
 let stub: LlmStub;
@@ -51,20 +51,45 @@ function input(): MemoInput {
   return {
     cycleId: '2026-09',
     cycleLabel: 'September 2026',
+    recordDate: '2026-08-31',
     total: '50000',
     assetSymbol: 'CC',
-    recordDate: '2026-08-31',
+    trigger: 'prompt',
+    triggerDetail: 'Prompt from Treasurer: "Distribute 50,000 CC for September"',
+    promptText: 'Distribute 50,000 CC for September',
     payouts: [
-      { holder: FAKE_PARTIES.holderA, units: 100, amount: '5000' },
-      { holder: FAKE_PARTIES.holderB, units: 900, amount: '45000' },
+      {
+        holder: 'holderA::1220aa',
+        displayName: 'Holder A',
+        units: 100,
+        sharePct: '10.00',
+        amount: '5000',
+      },
+      {
+        holder: 'holderB::1220aa',
+        displayName: 'Holder B',
+        units: 900,
+        sharePct: '90.00',
+        amount: '45000',
+      },
     ],
     checks: [CAP_FLAG, DEVIATION_OK],
-    history: [{ cycleLabel: 'August 2026', total: '1000' }],
-    unitChanges: [{ holder: FAKE_PARTIES.holderB, from: 100, to: 900, window: '3 days' }],
+    history: [{ cycleId: '2026-08', total: '1000' }],
+    holderChanges: [
+      { holder: 'holderB::1220aa', displayName: 'Holder B', unitsBefore: 100, unitsAfter: 900 },
+    ],
+    verdict: 'needs-approval',
+    verdictReasons: ['Total is above the 5,000 CC cap'],
+    mandate: { version: 1, cap: '5000', approvalThreshold: 2, approverCount: 3 },
   };
 }
 
 describe('AiMemoWriter', () => {
+  it("implements the cycle engine memo contract (the types are the engine's own)", () => {
+    const asEngineWriter: MemoWriter = writer();
+    expect(typeof asEngineWriter.write).toBe('function');
+  });
+
   it('uses one forced write_review call and returns the memo with fingerprints memo.request / memo.response', async () => {
     stub.script({
       toolCalls: [
@@ -108,6 +133,9 @@ describe('AiMemoWriter', () => {
     const user = stub.requests[0]?.messages.find((m) => m.role === 'user')?.content ?? '';
     expect(user).toContain('45,000 CC');
     expect(user).toContain('Total 50,000 CC vs cap 5,000 CC');
+    expect(user).toContain('August 2026');
+    expect(user).toContain('Holder B');
+    expect(user).toContain('needs approval');
     const tool = stub.requests[0]?.tools?.[0]?.function;
     expect(Object.keys((tool?.parameters as { properties: object }).properties).sort()).toEqual([
       'advisoryFlags',

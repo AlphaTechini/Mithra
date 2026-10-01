@@ -98,6 +98,26 @@ describe('buildPosition', () => {
     autoReceive: true,
   };
 
+  it('links a Payment that Payment_MarkAccepted recreated: its new contract id has its own reference', () => {
+    // The reconciler records the accepting transaction against the new Paid Payment (kind
+    // "payment"); the archived AwaitingAcceptance Payment is no longer read, so only the new id counts.
+    const recreated = payment('alice', '30.0000000000', 'Paid', '2026-09-01T09:00:00Z', 'p-new');
+    const position = buildPosition({
+      ...base,
+      payments: [recreated],
+      updateIds: new Map([
+        ['p-old', 'upd-execute'],
+        ['p-new', 'upd-accept'],
+      ]),
+    });
+    expect(position.payments).toHaveLength(1);
+    expect(position.payments[0]).toMatchObject({
+      status: 'paid',
+      link: { updateId: 'upd-accept', href: '/holder/tx/upd-accept', external: false },
+    });
+    expect(position.totalReceived).toBe('30.0000000000');
+  });
+
   it('gives units, share, totals, links and pending units for the holder', () => {
     const position = buildPosition({
       ...base,

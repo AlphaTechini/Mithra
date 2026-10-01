@@ -16,9 +16,12 @@ import {
 } from '@mithra/shared';
 import type { FastifyError, FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { ZodError, z } from 'zod';
+import { and, eq } from 'drizzle-orm';
 import { requireRole, rolesOfRequest } from '../../auth/roles';
 import type { Config } from '../../config/env';
 import type { CycleService } from '../../cycle/engine';
+import type { Database } from '../../db';
+import { txRefs } from '../../db/schema';
 import { ApiError, errorBody, parse, upstreamErrorResponse } from '../../http/errors';
 import type { MandateSealer } from '../../governance/sealer';
 import { LedgerError, PaymentSchema, createdIn, type Ledger } from '../../ledger';
@@ -33,6 +36,8 @@ export interface CycleRouteDeps {
   drafts: PolicyDrafts;
   ledger: Pick<Ledger, 'client' | 'reader'>;
   names: PartyNames;
+  /** For payment links that point at the transaction that accepted a transfer (`tx_refs`). */
+  db: Database;
 }
 
 const CycleParams = z.object({ cycleId: z.string().min(1).max(40) });
@@ -78,7 +83,7 @@ function handleError(
 
 /** Registers the cycle, approval, Mandate, policy-draft and transaction routes (the contract in shared/api/treasury.ts). */
 export function cycleRoutes(app: FastifyInstance, deps: CycleRouteDeps): void {
-  const { cycles, sealer, drafts, ledger, names, config } = deps;
+  const { cycles, sealer, drafts, ledger, names, config, db } = deps;
   const treasuryTeam = requireRole('treasurer', 'approver');
   const treasurerOnly = requireRole('treasurer');
   const approverOnly = requireRole('approver');
@@ -281,6 +286,22 @@ export function cycleRoutes(app: FastifyInstance, deps: CycleRouteDeps): void {
       const payments = createdIn(tx, 'Mithra.Payment:Payment').map((e) =>
         PaymentSchema.parse(e.createArgument),
       );
+      // The link of a Payment that `Payment_MarkAccepted` recreated points at the transaction in
+      // which the holder accepted the transfer. That transaction creates no Payment; its payment
+      // is the one recorded against it in `tx_refs`, read as the viewer so a holder gets only theirs.
+      if (payments.length === 0) {
+        const refs = await db
+          .select({ contractId: txRefs.contractId })
+          .from(txRefs)
+          .where(and(eq(txRefs.updateId, updateId), eq(txRefs.kind, 'payment')));
+        const ids = new Set(refs.map((r) => r.contractId));
+        if (ids.size > 0) {
+          const reader = team ? ledger.reader : ledger.reader.as([partyId]);
+          payments.push(
+            ...(await reader.payments()).filter((p) => ids.has(p.contractId)).map((p) => p.payload),
+          );
+        }
+      }
       const visible = team ? payments : payments.filter((p) => p.holder === partyId);
       if (visible.length === 0) {
         throw new ApiError(404, 'not_found', 'No transaction with that id is visible to you.');

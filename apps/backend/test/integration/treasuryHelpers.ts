@@ -355,6 +355,8 @@ export interface TreasuryAppOptions {
   funding: Funding;
   cycles: CycleQueries;
   routeOptions?: TreasuryRoutesDeps['options'];
+  /** The `reconcilePayments` callback of the accept route (the cycle module's reconciler in the app). */
+  reconcilePayments?: TreasuryRoutesDeps['reconcilePayments'];
 }
 
 /**
@@ -408,6 +410,7 @@ export async function buildTreasuryApp(
       cycles: options.cycles,
       funding: options.funding,
       ...(options.routeOptions ? { options: options.routeOptions } : {}),
+      ...(options.reconcilePayments ? { reconcilePayments: options.reconcilePayments } : {}),
     });
     done();
   });

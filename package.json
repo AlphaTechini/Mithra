@@ -16,7 +16,8 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "daml:build": "scripts/daml.sh build",
-    "daml:test": "scripts/daml.sh test"
+    "daml:test": "scripts/daml.sh test",
+    "seed:localnet": "pnpm --filter @mithra/backend seed"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

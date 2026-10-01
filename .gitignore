@@ -11,3 +11,4 @@ test-results/
 .daml/
 *.log
 .DS_Store
+.sandbox-seed-world.json

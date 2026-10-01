@@ -26,9 +26,10 @@ import type { EventBus } from '../../events/bus';
 import { FundingError, type Funding } from '../../funding';
 import { AutoReceiveStatus } from '../../holders/autoReceive';
 import { transferInstructionAccept } from '../../holders/commands';
+import { createHolderAdmin } from '../../holders/admin';
 import { holderError } from '../../holders/errors';
 import { buildPosition, opaqueId } from '../../holders/position';
-import { buildHoldersResponse } from '../../holders/table';
+import { createHoldersReader } from '../../holders/response';
 import { ApiError, parse } from '../../http/errors';
 import { RateLimiter } from '../../http/rateLimit';
 import type { Ledger, MithraReader } from '../../ledger';
@@ -36,7 +37,7 @@ import type { PartyNames } from '../../parties/names';
 import type { AssetAdapter } from '../../wallet';
 import { formatAmount } from './format';
 import { createInfrastructureChecker, type InfrastructureChecker } from './infrastructure';
-import { isInviteCode, newInviteCode, normalizeInviteCode } from './invites';
+import { isInviteCode, normalizeInviteCode } from './invites';
 import { buildMandateView, buildOrgResponse } from './org';
 
 /**
@@ -58,6 +59,12 @@ export interface TreasuryRoutesDeps {
   db: Database;
   cycles: CycleQueries;
   funding: Funding;
+  /**
+   * Marks accepted payments Paid right away (the cycle module's `reconciler.reconcilePayments`).
+   * Called after a holder accepts a payment, so the Payment does not wait for the next pass. When
+   * absent the background reconciler does it.
+   */
+  reconcilePayments?: () => Promise<unknown>;
   /** Overrides for tests; the defaults are what production uses. */
   options?: {
     now?: () => Date;
@@ -145,6 +152,15 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
   }
 
   const treasuryTeam = requireRole('treasurer', 'approver');
+  const holderAdmin = createHolderAdmin({
+    config,
+    ledger,
+    names,
+    activity,
+    bus,
+    db,
+    now,
+  });
 
   // -------------------------------------------------------------------------------------------
   // Organization (userflow 4 step 1, 12)
@@ -264,27 +280,7 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
   // -------------------------------------------------------------------------------------------
   // Holders (userflow 5) and invites
 
-  async function holdersResponse(): Promise<HoldersResponse> {
-    const [register, fundUnits, payments] = await Promise.all([
-      reader.register(),
-      fundUnitsReadable ? reader.fundUnits() : Promise.resolve([]),
-      reader.payments(),
-    ]);
-    const changes = register?.payload.changes ?? [];
-    const holderIds = [...new Set(changes.map((c) => c.holder))];
-    const [nameList, status] = await Promise.all([
-      Promise.all(holderIds.map((h) => names.name(h))),
-      autoReceive.getMany(holderIds),
-    ]);
-    return buildHoldersResponse({
-      changes,
-      fundUnits,
-      fundUnitsReadable,
-      payments,
-      names: new Map(holderIds.map((h, i) => [h, nameList[i] ?? h])),
-      autoReceive: status,
-    });
-  }
+  const holdersResponse = createHoldersReader({ config, ledger, names, autoReceive });
 
   app.get('/api/holders', { preHandler: treasuryTeam }, () => holdersResponse());
 
@@ -295,56 +291,11 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
       const party = partyOf(request);
       const body = parse(IssueUnitsRequestSchema, request.body);
       requireServerSigning();
-
-      const today = now().toISOString().slice(0, 10);
-      const effectiveDate = body.effectiveDate ?? today;
-      if (effectiveDate > today) {
-        throw new ApiError(
-          400,
-          'future_date',
-          'The effective date cannot be in the future. Pick today or an earlier date.',
-        );
-      }
-      if (
-        [config.parties.treasury, config.parties.agent, config.parties.operator, party].includes(
-          body.holder,
-        )
-      ) {
-        throw new ApiError(
-          400,
-          'invalid_holder',
-          "Units can only be issued to a holder, not to the treasury, the treasurer, the agent or the operator. Pick the holder's party.",
-        );
-      }
-      const [organization, register] = await Promise.all([
-        reader.organization(),
-        reader.register(),
-      ]);
-      if (!organization || !register) {
-        throw new ApiError(
-          409,
-          'no_organization',
-          'There is no organization yet. Finish setup first, then issue units.',
-        );
-      }
-      await client.submit({
-        actAs: [party],
-        commands: [
-          commands.orgIssueUnits(organization.contractId, {
-            registerCid: register.contractId,
-            holder: body.holder,
-            units: body.units,
-            effectiveDate,
-            seeded: false,
-          }),
-        ],
-      });
-      bus.publish({ type: 'holder', change: 'units' }, { parties: [body.holder] });
-      await activity.record({
-        actorParty: party,
-        kind: 'units.issued',
-        subject: body.holder,
-        text: `Issued ${formatAmount(String(body.units))} units to ${await names.name(body.holder)}`,
+      await holderAdmin.issueUnits({
+        actor: party,
+        holder: body.holder,
+        units: body.units,
+        ...(body.effectiveDate ? { effectiveDate: body.effectiveDate } : {}),
       });
       return holdersResponse();
     },
@@ -356,44 +307,13 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
     async (request, reply): Promise<Invite> => {
       const party = partyOf(request);
       const body = parse(CreateInviteRequestSchema, request.body);
-      const org = await reader.organization();
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        const code = newInviteCode();
-        const [row] = await db
-          .insert(invites)
-          .values({
-            code,
-            kind: body.kind,
-            partyId: body.partyId ?? null,
-            displayName: body.displayName,
-            createdBy: party,
-          })
-          .onConflictDoNothing()
-          .returning();
-        if (!row) continue;
-        // The invite names its party for the whole app (PartyNames reads it).
-        names.invalidate();
-        await activity.record({
-          actorParty: party,
-          kind: 'invite.created',
-          subject: code,
-          text: `Created an invitation link for ${body.displayName}`,
-        });
-        return reply.code(201).send({
-          code,
-          kind: row.kind,
-          displayName: row.displayName,
-          path: `/invite/${code}`,
-          orgName: org?.payload.name ?? '',
-          used: false,
-          unitsOffered: null,
-        } satisfies Invite);
-      }
-      throw new ApiError(
-        500,
-        'invite_code_failed',
-        'Could not create a unique invitation code. Try again.',
-      );
+      const invite = await holderAdmin.createInvite({
+        actor: party,
+        kind: body.kind,
+        displayName: body.displayName,
+        partyId: body.partyId,
+      });
+      return reply.code(201).send(invite);
     },
   );
 
@@ -737,7 +657,6 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
         commands: [transferInstructionAccept(instructionCid, context.extraArgs)],
         disclosedContracts: context.disclosed,
       });
-      // The engine's reconciler marks the Payment Paid once it sees the accepted transfer.
       bus.publish({ type: 'holder', change: 'payments' }, { parties: [holder] });
       await activity.record({
         actorParty: holder,
@@ -745,6 +664,14 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
         subject: payment.contractId,
         text: `${await names.name(holder)} accepted a payment of ${formatAmount(payment.payload.amount)} ${config.asset.symbol} for ${payment.payload.cycleLabel}`,
       });
+      // The reconciler marks the Payment Paid once it sees the accepted transfer; run that pass
+      // now so the holder sees "Paid" in the answer instead of after the next background pass.
+      // The accept itself succeeded, so a failure here is only logged: the next pass retries.
+      if (deps.reconcilePayments) {
+        await deps.reconcilePayments().catch((error: unknown) => {
+          request.log.warn({ err: error }, 'could not mark the accepted payment Paid yet');
+        });
+      }
       return positionOf(holder);
     }),
   );

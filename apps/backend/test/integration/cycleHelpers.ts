@@ -139,7 +139,7 @@ function choicesOf(input: SubmitInput): string[] {
  * adapter (the Holding interface); legs come from the test factory, one-step for holders with a
  * preapproval and a pending transfer for the others. Not used by the application.
  */
-function testAssetAdapter(
+export function testAssetAdapter(
   ledger: Ledger,
   asset: { admin: string; id: string },
   factoryCid: string,
@@ -450,7 +450,12 @@ export async function acceptTransfer(
  * (`Org_ApplySeal`), the MainNet-style path the sandbox allows. The DecMan sealer is covered by
  * the unit tests against a stub server.
  */
-export function createTestSealer(world: CycleWorld, drafts: DraftSource): MandateSealer {
+export function createTestSealer(
+  world: Pick<CycleWorld, 'config' | 'ledger' | 'names'> & {
+    parties: { treasury: string; agent: string };
+  },
+  drafts: DraftSource,
+): MandateSealer {
   const seals = new Map<string, SealStatus>();
   const { ledger, parties } = world;
   const prepareDeps = { config: world.config, ledger, drafts, names: world.names };

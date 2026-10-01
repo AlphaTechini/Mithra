@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "e2e:server": "tsx test/e2e/server.ts",
+    "seed": "tsx ../../scripts/seed-localnet.ts"
   },
   "dependencies": {
     "@canton-network/wallet-sdk": "^1.5.3",

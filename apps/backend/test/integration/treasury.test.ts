@@ -59,6 +59,8 @@ describe('treasury, holder and overview routes against a Canton sandbox and Post
     failFunding: false,
   };
   const cycles = createStubCycles();
+  /** Stands in for the cycle module's `reconciler.reconcilePayments`; counts calls and can fail. */
+  const reconcile = { calls: 0, fail: false };
   let funding: ReturnType<typeof createTestFunding>;
   let cookies: Record<string, { cookie: string }>;
 
@@ -101,6 +103,10 @@ describe('treasury, holder and overview routes against a Canton sandbox and Post
       funding,
       cycles,
       routeOptions: { autoReceivePoll: { attempts: 3, delayMs: 50 } },
+      reconcilePayments: () => {
+        reconcile.calls += 1;
+        return reconcile.fail ? Promise.reject(new Error('reconciler down')) : Promise.resolve();
+      },
     });
     const mainnetConfig = {
       ...world.config,
@@ -390,8 +396,9 @@ describe('treasury, holder and overview routes against a Canton sandbox and Post
     // Public: no cookie. The invitee sees the fund, their own name and the units offered to them.
     const read = await get(`/api/invites/${invite.code}`);
     expect(read.statusCode).toBe(200);
-    expect(InviteSchema.parse(read.json())).toEqual(invite);
-    expect(read.json<{ unitsOffered: number | null }>().unitsOffered).toBe(100);
+    // Creating an invite offers nothing yet; the invitee's own read shows the units issued to them.
+    expect(invite.unitsOffered).toBeNull();
+    expect(InviteSchema.parse(read.json())).toEqual({ ...invite, unitsOffered: 100 });
     for (const other of [p().holderB, p().holderC, p().holderD]) {
       expect(read.body).not.toContain(other);
     }
@@ -798,8 +805,14 @@ describe('treasury, holder and overview routes against a Canton sandbox and Post
     const { parties } = world;
     const asset = createTestAssetAdapter(world, switches);
     expect(await asset.balance(parties.holderB)).toMatch(/^0/);
+    // The accept route runs the reconciler's payment pass right away; if that fails the accept
+    // itself still succeeded, so the holder gets their position and the next pass retries.
+    reconcile.calls = 0;
+    reconcile.fail = true;
     const res = await post(`/api/me/payments/${paymentIds[parties.holderB]}/accept`, 'holderB');
+    reconcile.fail = false;
     expect(res.statusCode).toBe(200);
+    expect(reconcile.calls).toBe(1);
     HolderPositionSchema.parse(res.json());
     // The transfer completed on the ledger: the funds are B's.
     expect(

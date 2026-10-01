@@ -1,7 +1,6 @@
-import { buildApp } from './app';
 import { ConfigError, loadConfig, loadDotEnv, type Config } from './config/env';
 import { createDatabase, runMigrations } from './db';
-import { createLedger } from './ledger';
+import { createBackend } from './wiring/backend';
 
 async function main(): Promise<void> {
   loadDotEnv();
@@ -27,16 +26,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const ledger = createLedger(config);
-  const app = buildApp(config, { database, ledger });
+  // Ledger, asset adapter, event bus, party names, activity log, cycle module with the AI memo
+  // writer, funding, agent, drafters and the app: one process serves the whole product.
+  const backend = createBackend(config, database);
+  const { app } = backend;
 
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     app.log.info({ signal }, 'shutting down');
-    app
-      .close()
+    // Stop the background jobs, then the app, then the database pool.
+    backend
+      .stop()
       .then(() => database.close())
       .then(
         () => process.exit(0),
@@ -49,10 +51,13 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-  app.listen({ host: config.host, port: config.port }).catch((error: unknown) => {
-    app.log.error({ err: error }, 'failed to start');
-    process.exit(1);
-  });
+  app
+    .listen({ host: config.host, port: config.port })
+    .then(() => backend.start())
+    .catch((error: unknown) => {
+      app.log.error({ err: error }, 'failed to start');
+      process.exit(1);
+    });
 }
 
 main().catch((error: unknown) => {

@@ -93,6 +93,8 @@ export interface RunInput {
   modelFingerprints?: Fingerprint[];
   /** The party that asked: the treasurer, or the agent for a scheduled run. */
   actorParty: string;
+  /** Marks the cycle as demo history: the decision record, outcome and payments carry `seeded`. */
+  seeded?: boolean;
 }
 
 /** What `advance` did, for the reconciler. */
@@ -792,7 +794,7 @@ class CycleEngine implements CycleService {
         memo: memoResult.memo,
         memoSource: memoResult.memoSource,
         modelFingerprints: [...(input.modelFingerprints ?? []), ...memoResult.modelFingerprints],
-        seeded: false,
+        seeded: input.seeded ?? false,
       };
       const { proposal, updateId, decisionRecordCid } = await this.propose(proposalInput);
 

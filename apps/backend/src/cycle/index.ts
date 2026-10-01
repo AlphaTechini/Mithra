@@ -116,6 +116,7 @@ export function createCycleModule(deps: CycleModuleDeps): CycleModule {
     drafts,
     ledger: deps.ledger,
     names: deps.names,
+    db: deps.db,
   });
   return { cycles, queries: cycles, sealer, drafts, reconciler, routes };
 }
