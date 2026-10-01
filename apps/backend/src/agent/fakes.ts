@@ -263,6 +263,7 @@ export function createFakeServices(): FakeServices {
           kind: input.kind,
           displayName: input.displayName,
           path: `/invite/INV${inviteCounter}`,
+          unitsOffered: null,
           orgName: 'Acme Fund',
           used: false,
         };

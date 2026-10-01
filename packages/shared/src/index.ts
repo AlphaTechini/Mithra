@@ -27,3 +27,4 @@ export {
 } from './api/status';
 export * from './api/treasury';
 export * from './api/agent';
+export * from './api/audit';

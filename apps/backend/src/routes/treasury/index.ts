@@ -386,6 +386,7 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
           path: `/invite/${code}`,
           orgName: org?.payload.name ?? '',
           used: false,
+          unitsOffered: null,
         } satisfies Invite);
       }
       throw new ApiError(

@@ -217,6 +217,8 @@ export const InviteSchema = z.object({
   path: z.string(),
   orgName: z.string(),
   used: z.boolean(),
+  /** Holder invites: units issued to the invited party, when known. */
+  unitsOffered: z.number().int().nullable(),
 });
 export type Invite = z.infer<typeof InviteSchema>;
 

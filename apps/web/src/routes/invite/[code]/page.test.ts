@@ -21,6 +21,7 @@ const holderInvite = {
   path: '/invite/AB12CD',
   orgName: 'Northwind Fund',
   used: false,
+  unitsOffered: 300,
 };
 
 beforeEach(() => {
