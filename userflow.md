@@ -84,13 +84,13 @@ Below the hero, three short sections, no more:
 2. **How it works**, as a real sequence: set the rules, the agent runs the cycle, your team approves what is flagged, auditors see only what you grant.
 3. **Why Canton**: each holder sees only their own payment; the agent's limits are enforced by the ledger, not by the app.
 
-Footer: network badge (DevNet test mode or MainNet), GitHub link.
+Footer: network badge (LocalNet test mode or MainNet), GitHub link.
 
 ## 3. Launch and connect
 
 1. User clicks **Launch app**.
 2. **MainNet mode:** "Connect Grofty Wallet". If the extension is missing, show how to install it and a link back. On connect, show the party ID shortened with a copy button.
-   **DevNet mode:** a sign-in screen against the shared node, then a role switcher listing the demo parties (Treasurer, Approver 1, 2, 3, Holders A to D, Auditor). A persistent "DevNet test mode" badge stays visible.
+   **LocalNet mode:** a sign-in screen, then a role switcher listing the demo parties (Treasurer, Approver 1, 2, 3, Holders A to D, Auditor). A persistent "LocalNet test mode" badge stays visible.
 3. Mithra checks the party's role and routes:
    - Unknown party: "Set up a treasury" or "I was invited" (enter invite code).
    - Treasurer: Overview.
@@ -122,7 +122,7 @@ A three-step setup with a progress indicator (this is a real sequence, so number
 ### Step 3: Seal the mandate
 - A clear two-column statement: "The agent can" / "The agent cannot".
 - Seal ring with one segment (the treasurer).
-- Button: **Seal mandate**. Wallet signature (MainNet) or confirmation (DevNet).
+- Button: **Seal mandate**. Wallet signature (MainNet) or confirmation (LocalNet).
 - Success: the seal closes, "Mandate sealed", then Overview.
 
 ## 5. Treasurer: holders
@@ -205,7 +205,8 @@ Triggered by schedule, by **Run cycle now**, or by a prompt.
 
 - **Organization:** name, approvers, threshold (changes require re-sealing).
 - **Mandate:** current terms and seal; **Edit and re-seal**.
-- **Network:** shows current mode (DevNet test mode or MainNet).
+- **Network:** shows current mode (LocalNet test mode or MainNet).
+- **Infrastructure (LocalNet):** the treasury party's hosting nodes, each node's operator, the hosting threshold (2 of 3) and live node status. When a node is offline it shows "Still running on 2 of 3 nodes".
 
 ## 13. States every screen must handle
 

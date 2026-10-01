@@ -49,7 +49,7 @@ Agent tool set (minimum): `draft_policy`, `propose_mandate_change`, `list_holder
 |---|---|---|
 | P1 | Payments MUST be real CC transfers using the Canton token standard (CIP-56) interfaces, so USDCx can be added later without redesign. | Code review: no CC-specific shortcuts outside an asset adapter. |
 | P2 | Holders with auto-receive (preapproval) MUST be paid in one step; holders without it MUST receive a pending transfer and the UI MUST show it as awaiting acceptance. | Both cases demonstrated. |
-| P3 | Each payment MUST link to its transaction on the network explorer where the explorer can show it. | Link opens the transfer. |
+| P3 | On MainNet, each payment MUST link to its transaction on a network explorer. On LocalNet, each payment links to its in-app transaction detail. | Link opens the transfer. |
 | P4 | The UI MUST NOT show "Paid" until the ledger confirms the transfer. | Test with a slow or failed submission. |
 | P5 | Before executing, the system MUST check the treasury balance covers the total plus an estimated fee buffer; if not, block with "Add funds". | Test with low balance. |
 
@@ -57,12 +57,14 @@ Agent tool set (minimum): `draft_policy`, `propose_mandate_change`, `list_holder
 
 | ID | Requirement | Acceptance |
 |---|---|---|
-| N1 | One codebase, network chosen by configuration: `devnet` or `mainnet`. | Switching config changes endpoints and wallet behavior without code changes. |
-| N2 | **DevNet:** connect to the shared HackCanton node (JSON Ledger API, OIDC token from the Noders Keycloak realm). Endpoints come from environment variables, never hard-coded. | App runs against the shared node. |
-| N3 | **DevNet:** since no wallet supports DevNet, the app signs via the shared node with a visible role switcher and a persistent "DevNet test mode" badge. | Badge visible on every screen in DevNet. |
+| N1 | One codebase, network chosen by configuration: `localnet` or `mainnet`. | Switching config changes endpoints and wallet behavior without code changes. |
+| N2 | **LocalNet:** a Docker Compose setup with three participant nodes plus BitSafe's Decentralization Manager. One command brings it up from a clean machine. Endpoints come from environment variables, never hard-coded. | Fresh clone plus documented commands runs the full happy path. |
+| N3 | **LocalNet:** since no wallet supports LocalNet, the app signs server-side with a visible role switcher and a persistent "LocalNet test mode" badge. | Badge visible on every screen in LocalNet. |
 | N4 | **MainNet:** Grofty Wallet is how users connect, sign and transact, through CIP-0103 or `@groftylabs/dapp-sdk`. Use `prepareExecuteAndWait()`. Handle Grofty specifics: single-party submission only (no `actAs` for others), approvals expire after 3 minutes (error -32603), Grofty Wallet 2.0.4 or newer required. | End-to-end MainNet demo with small amounts. |
 | N5 | **MainNet:** holder onboarding MUST guide the user through turning on auto-receive (preapproval) in Grofty. | Demonstrated in the Grofty video. |
-| N6 | **MainNet:** uses the same Daml package and the same flows as DevNet. Treasurer, approver, holder and auditor actions are signed by each user's own Grofty party. The agent and operator parties, ledger endpoints and package IDs come from environment variables. | MainNet config runs the same happy path as DevNet. |
+| N6 | **MainNet:** uses the same Daml package and the same flows as LocalNet. Treasurer, approver, holder and auditor actions are signed by each user's own Grofty party. The agent and operator parties, ledger endpoints and package IDs come from environment variables. | MainNet config runs the same happy path as LocalNet. |
+| N7 | **BitSafe (LocalNet):** the treasury organization's party is a Decentralized Party created with BitSafe's Decentralization Manager, hosted on all three nodes with a hosting threshold of 2. Each node is named with its operator. | README lists nodes, operators, thresholds. |
+| N8 | **BitSafe (LocalNet):** demonstrate one node going offline while a cycle still executes, and the app's behavior below the hosting threshold. Demonstrate that a governed action (Mandate change) cannot execute below its confirmation threshold and succeeds once met. | Recorded test results in the repo. |
 
 ## 5. UI and UX
 
@@ -100,7 +102,8 @@ Agent tool set (minimum): `draft_policy`, `propose_mandate_change`, `list_holder
 | Styling | Plain CSS with custom properties for the tokens in `userflow.md` Section 1; no component library that imposes its own look |
 | Fonts | Newsreader and Public Sans, self-hosted |
 | Testing | Daml Script (contracts), Vitest (backend domain, agent checks, pro-rata), Playwright (happy path in the browser) |
-| Config | `.env` per network; `NETWORK=devnet|mainnet` selects endpoints and signing mode |
+| LocalNet | Docker Compose: Canton LocalNet with three participants plus BitSafe's Decentralization Manager |
+| Config | `.env` per network; `NETWORK=localnet|mainnet` selects endpoints and signing mode |
 
 Constraints:
 
@@ -109,7 +112,7 @@ Constraints:
 | T1 | The frontend never talks to the ledger or the LLM directly, except Grofty wallet signing in the browser. Everything else goes through the Fastify API. |
 | T2 | No secrets in the repository. `.env.example` lists every variable with a one-line description. |
 | T3 | All amounts use decimal arithmetic. |
-| T4 | Seeding scripts that create demo history on DevNet live in `scripts/` and are idempotent. |
+| T4 | Seeding scripts that create demo history on LocalNet live in `scripts/` and are idempotent. |
 | T5 | Ledger, wallet and LLM access each sit behind one module, so swapping a network, wallet or model provider changes config, not feature code. |
 
 ## 7. Submission requirements
@@ -117,15 +120,16 @@ Constraints:
 | ID | Requirement |
 |---|---|
 | S1 | Public GitHub repository. |
-| S2 | README: what Mithra is, how to run the frontend and backend against DevNet and MainNet, how the Grofty integration works and how to run it (required by the Grofty bounty). |
+| S2 | README: what Mithra is, how to bring up LocalNet (including the BitSafe setup) from a clean machine, how to run the frontend and backend against LocalNet and MainNet, how the Grofty integration works and how to run it (required by the Grofty bounty). |
 | S3 | Grofty demo video, 3 minutes or less, showing the Grofty flow end to end on MainNet. |
 | S4 | Main demo video following the demo story in `details.md` Section 10. |
-| S5 | Submitted to Track 3 by October 9, 2026, 23:59 UTC. |
+| S5 | BitSafe evidence: test results for the hosting and threshold behavior, node and operator list, thresholds, remaining work and a named technical owner. |
+| S6 | Submitted to Track 3 by October 9, 2026, 23:59 UTC. |
 
 ## 8. Build order (suggested)
 
 1. Daml model plus Script tests for L1 to L11.
-2. Ledger client and DevNet connection; seeding script.
+2. LocalNet setup with three nodes and the Decentralized Party; ledger client; seeding script.
 3. Cycle engine: snapshot, pro-rata, deterministic checks, decision records.
 4. Agent with tools and the LLM client.
 5. Treasurer screens: setup, overview, cycle, approvals.
