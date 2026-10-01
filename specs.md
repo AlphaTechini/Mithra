@@ -15,7 +15,7 @@ These are enforced by the Daml contracts, not only by the UI or backend. Each MU
 | L1 | The agent can execute a distribution only through the Mandate, and only if the total is at or under the Mandate cap. | Script: total = cap succeeds; total = cap + 0.0000000001 fails. |
 | L2 | Every payee in an agent-executed distribution held fund units on the record date, and each amount equals the pro-rata share computed from the record-date snapshot (with a documented rounding rule). | Script: adding a non-holder fails; altering one amount fails. |
 | L3 | At most one distribution per cycle per organization. | Script: second execution for the same cycle fails. |
-| L4 | A proposal that needs approval cannot execute below the organization's threshold, and executes once the threshold is met. | Script: 1 of 2 fails; 2 of 2 succeeds. Matches the BitSafe "show it can't execute below threshold" expectation. |
+| L4 | A proposal that needs approval cannot execute below the organization's threshold, and executes once the threshold is met. | Script: 1 of 2 fails; 2 of 2 succeeds. |
 | L5 | An approver can approve a given proposal at most once; non-approvers cannot approve. | Script: duplicate approval fails; outsider approval fails. |
 | L6 | Changing the Mandate (cap, threshold, schedule, asset) requires a new treasurer signature. The agent cannot modify it. | Script: agent-submitted change fails. |
 | L7 | A holder can see only their own units and payments. | Script or ledger query test: holder A's view contains no holder B data. |
@@ -57,14 +57,12 @@ Agent tool set (minimum): `draft_policy`, `propose_mandate_change`, `list_holder
 
 | ID | Requirement | Acceptance |
 |---|---|---|
-| N1 | One codebase, network chosen by configuration: `devnet`, `mainnet`, `localnet`. | Switching config changes endpoints and wallet behavior without code changes. |
+| N1 | One codebase, network chosen by configuration: `devnet` or `mainnet`. | Switching config changes endpoints and wallet behavior without code changes. |
 | N2 | **DevNet:** connect to the shared HackCanton node (JSON Ledger API, OIDC token from the Noders Keycloak realm). Endpoints come from environment variables, never hard-coded. | App runs against the shared node. |
 | N3 | **DevNet:** since no wallet supports DevNet, the app signs via the shared node with a visible role switcher and a persistent "DevNet test mode" badge. | Badge visible on every screen in DevNet. |
 | N4 | **MainNet:** Grofty Wallet is how users connect, sign and transact, through CIP-0103 or `@groftylabs/dapp-sdk`. Use `prepareExecuteAndWait()`. Handle Grofty specifics: single-party submission only (no `actAs` for others), approvals expire after 3 minutes (error -32603), Grofty Wallet 2.0.4 or newer required. | End-to-end MainNet demo with small amounts. |
 | N5 | **MainNet:** holder onboarding MUST guide the user through turning on auto-receive (preapproval) in Grofty. | Demonstrated in the Grofty video. |
 | N6 | **MainNet:** uses the same Daml package and the same flows as DevNet. Treasurer, approver, holder and auditor actions are signed by each user's own Grofty party. The agent and operator parties, ledger endpoints and package IDs come from environment variables. | MainNet config runs the same happy path as DevNet. |
-| N7 | **LocalNet (BitSafe):** a reproducible setup where the treasury organization's party is a Decentralized Party hosted on three named nodes with a stated hosting threshold, using BitSafe's Decentralization Manager. | Clean-environment setup instructions work. |
-| N8 | **LocalNet (BitSafe):** demonstrate one node going offline while a cycle still runs, and report behavior when below threshold. Name each node and its operator and state which are independent. | Recorded test and README section. |
 
 ## 5. UI and UX
 
@@ -88,26 +86,27 @@ Agent tool set (minimum): `draft_policy`, `propose_mandate_change`, `list_holder
 | Package manager | pnpm, single repository |
 | Smart contracts | Daml, built and tested with `dpm` (Daml Script tests), targeting the Canton version of the configured network |
 | Token standard | Canton token standard (CIP-56) interfaces for holdings and transfers; CC via the network's registry |
-| Web app and backend | SvelteKit with Svelte 5, `@sveltejs/adapter-node`. Server routes (`+server.ts`, form actions) are the backend API |
-| Worker | Separate Node.js process in the same repository (`apps/worker` or `src/worker`), sharing the ledger, agent and domain code with the web app. Runs the scheduler, the agent loop and grant expiry |
-| Scheduling | `croner` (or equivalent) inside the worker, with cycle runs recorded so restarts never double-run a cycle |
+| Repository layout | Monorepo: `daml/` (contracts), `apps/backend` (Fastify), `apps/web` (SvelteKit), `packages/shared` (types and Zod schemas shared by both) |
+| Backend | One Fastify server (Node.js, TypeScript). It is the entire backend: REST API for the frontend, ledger access, the AI agent, the scheduler, grant expiry, and server-side transfers. One process to deploy |
+| Frontend | SvelteKit with Svelte 5, frontend only, multi-page using SvelteKit routing. No business logic or ledger access in SvelteKit server routes; all data comes from the Fastify API. Grofty signing runs in the browser |
+| Scheduling | `croner` (or equivalent) inside the Fastify process, with cycle runs recorded in the database so restarts never double-run a cycle |
+| Realtime | Server-Sent Events from Fastify for the live agent timeline and status updates |
 | Ledger access | JSON Ledger API v2 over HTTPS, OIDC client-credentials or password-grant tokens from the configured identity provider |
 | Wallet / transfers SDKs | `@canton-network/wallet-sdk` for party, transfer and preapproval operations on the server side; `@groftylabs/dapp-sdk` (CIP-0103) for user signing on MainNet |
 | App database | PostgreSQL with Drizzle ORM, for app-side data only: sessions, invites, chat history, cached ledger views, job state. The ledger stays the source of truth for every product record in `details.md` Section 6 |
-| LLM | One client using the Anthropic-compatible Messages API with tool use. `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` from env. Default base URL for the Z.ai Coding Plan: `https://api.z.ai/api/anthropic` |
+| LLM | OpenAI API through the official `openai` SDK (Chat Completions with function/tool calling), so any OpenAI-compatible provider works. `LLM_BASE_URL` (default `https://api.openai.com/v1`), `LLM_API_KEY`, `LLM_MODEL` from env |
 | Validation | Zod for all API inputs and all LLM tool-call arguments |
 | Decimal math | `decimal.js` (or Daml `Decimal` on-ledger). Never JavaScript floating point for amounts |
 | Styling | Plain CSS with custom properties for the tokens in `userflow.md` Section 1; no component library that imposes its own look |
 | Fonts | Newsreader and Public Sans, self-hosted |
-| Testing | Daml Script (contracts), Vitest (domain, agent checks, pro-rata), Playwright (happy path in the browser) |
-| LocalNet | Docker Compose: Canton LocalNet plus BitSafe's Decentralization Manager for the three-node hosting setup |
-| Config | `.env` per network; `NETWORK=devnet|mainnet|localnet` selects endpoints and signing mode |
+| Testing | Daml Script (contracts), Vitest (backend domain, agent checks, pro-rata), Playwright (happy path in the browser) |
+| Config | `.env` per network; `NETWORK=devnet|mainnet` selects endpoints and signing mode |
 
 Constraints:
 
 | ID | Constraint |
 |---|---|
-| T1 | No long-running loops inside SvelteKit request handlers; background work belongs to the worker. |
+| T1 | The frontend never talks to the ledger or the LLM directly, except Grofty wallet signing in the browser. Everything else goes through the Fastify API. |
 | T2 | No secrets in the repository. `.env.example` lists every variable with a one-line description. |
 | T3 | All amounts use decimal arithmetic. |
 | T4 | Seeding scripts that create demo history on DevNet live in `scripts/` and are idempotent. |
@@ -118,11 +117,10 @@ Constraints:
 | ID | Requirement |
 |---|---|
 | S1 | Public GitHub repository. |
-| S2 | README: what Mithra is, how to run DevNet mode, how to run the LocalNet BitSafe setup from a clean machine, how the Grofty integration works and how to run it (required by the Grofty bounty). |
+| S2 | README: what Mithra is, how to run the frontend and backend against DevNet and MainNet, how the Grofty integration works and how to run it (required by the Grofty bounty). |
 | S3 | Grofty demo video, 3 minutes or less, showing the Grofty flow end to end on MainNet. |
 | S4 | Main demo video following the demo story in `details.md` Section 10. |
-| S5 | BitSafe evidence: test results or recordings for the threshold and node-offline behavior, node and operator list, thresholds, remaining work and a named technical owner. |
-| S6 | Submitted to Track 3 by October 9, 2026, 23:59 UTC. |
+| S5 | Submitted to Track 3 by October 9, 2026, 23:59 UTC. |
 
 ## 8. Build order (suggested)
 
@@ -134,5 +132,4 @@ Constraints:
 6. Holder screens.
 7. Audit flow.
 8. MainNet Grofty path.
-9. LocalNet BitSafe setup.
-10. Landing page, polish, videos.
+9. Landing page, polish, videos.

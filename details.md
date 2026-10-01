@@ -9,7 +9,7 @@ Mithra is a treasury app on Canton where an AI agent runs a fund's recurring yie
 ## 2. Context
 
 - **Event:** HackCanton Season 3 (organized by Noders on AppsFactory). Track 3: Investment Infrastructure (Funds, DAOs and Governance Tools).
-- **Sponsor challenges entered:** Grofty Wallet bounty (wallet in the core flow, demo on Canton MainNet). BitSafe challenge (decentralized hosting of a party, reproducible LocalNet demo).
+- **Sponsor challenge entered:** Grofty Wallet bounty (wallet in the core flow, demo on Canton MainNet).
 - **Builder:** solo.
 - **Submission deadline:** October 9, 2026, 23:59 UTC.
 - **Judging criteria (whole hackathon):** Value, ICP, Metrics, GTM, MVP, Pitch. Track 3 asks for role-based workflows (managers, investors) and a demonstration of transparency, auditability and operational logic.
@@ -109,8 +109,7 @@ If prompted to exceed the Mandate ("pay 50,000 CC now" with a 5,000 cap), the ag
 16. Activity log.
 
 ### Should have
-17. Infrastructure panel showing the treasury party's hosting nodes and threshold (BitSafe; LocalNet only).
-18. Seeding scripts that create real demo history on DevNet, labeled as seeded in the UI.
+17. Seeding scripts that create real demo history on DevNet, labeled as seeded in the UI.
 
 ### Out of scope
 - Fiat on-ramp, KYC, sanctions screening.
@@ -121,7 +120,7 @@ If prompted to exceed the Mandate ("pay 50,000 CC now" with a 5,000 cap), the ag
 
 ## 9. Networks and modes
 
-The app runs in two configured modes. One codebase, a config switch.
+The app runs in two configured modes, DevNet and MainNet. One codebase, a config switch.
 
 **DevNet mode (full product).**
 - Runs on the shared HackCanton DevNet node.
@@ -137,9 +136,6 @@ The app runs in two configured modes. One codebase, a config switch.
 - Small amounts only.
 - Same Daml package and flows as DevNet; endpoints, operator and agent parties come from configuration.
 
-**LocalNet (BitSafe segment).**
-- A reproducible setup where the treasury party is hosted across three nodes with a hosting threshold, showing the app keeps working when one node goes offline.
-
 ## 10. Demo story (target under 3 minutes for the Grofty video; under 5 for the main pitch video)
 
 1. A treasurer arrives at the landing page and launches the app.
@@ -150,14 +146,12 @@ The app runs in two configured modes. One codebase, a config switch.
 6. Flagged cycle: one holder's units jumped before the record date and the amount is far above average. The agent flags both, writes a memo, and requires approvals. Two approvers sign; the payment executes.
 7. A holder's view shows only their own payments.
 8. An auditor asks "show Q3 distributions and the approvals behind any flagged one". The agent proposes a scope; the treasurer approves for 7 days; the auditor opens the evidence room; the grant later expires.
-9. Short infrastructure segment: one hosting node goes offline, the app keeps running (LocalNet).
 
 ## 11. Notes
 
 1. **Configuration.** All credentials, endpoints, party IDs and API keys are supplied by the product owner through environment variables. The build never waits on them.
 2. **Explorer visibility.** Public explorers show CC transfers but not Mithra's private records. The app is where private records are shown.
-3. **LLM endpoint.** Provider is configurable; default is the Z.ai Coding Plan endpoint.
-4. **BitSafe.** The shared DevNet node cannot host decentralized parties, so the BitSafe segment runs on LocalNet.
+3. **LLM.** OpenAI API (OpenAI-compatible), configurable through environment variables.
 
 ## 12. Glossary
 

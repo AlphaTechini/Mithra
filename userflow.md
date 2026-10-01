@@ -206,7 +206,6 @@ Triggered by schedule, by **Run cycle now**, or by a prompt.
 - **Organization:** name, approvers, threshold (changes require re-sealing).
 - **Mandate:** current terms and seal; **Edit and re-seal**.
 - **Network:** shows current mode (DevNet test mode or MainNet).
-- **Infrastructure (LocalNet only):** treasury party hosting nodes, their operators, hosting threshold, live node status. Shows "Still running with 2 of 3 nodes" when a node is offline.
 
 ## 13. States every screen must handle
 
