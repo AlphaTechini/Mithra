@@ -1,0 +1,175 @@
+-- | P2 (preapproved holders are paid in one step, others get a pending transfer) and
+-- the MainNet path where the treasurer signs the payout.
+module Mithra.Test.Payments where
+
+import Daml.Script
+import DA.Time
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.TransferInstructionV1
+import Mithra.Decision
+import Mithra.Mandate
+import Mithra.Org
+import Mithra.Payment
+import Mithra.Types
+import Mithra.Test.Setup
+
+-- | Every holder has a preapproval: all are paid in the same transaction.
+test_p2_preapproved_holder_paid_directly : Script ()
+test_p2_preapproved_holder_paid_directly = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  (_, outcomeCid) <- execute fx proposalCid
+  o <- outcomeOf fx outcomeCid
+  assertMsg "every payment reference is Paid, with no pending instruction"
+    (length o.payments == 3 && all (\r -> r.status == Paid && r.transferInstructionCid == None) o.payments)
+  payments <- query @Payment fx.agent
+  assertMsg "every Payment is Paid" (length payments == 3 && all (\(_, p) -> p.status == Paid) payments)
+  a <- holderBalance fx.holderA
+  b <- holderBalance fx.holderB
+  c <- holderBalance fx.holderC
+  assertMsg "holders hold the money" ((a, b, c) == (500.0, 1500.0, 3000.0))
+  balance <- treasuryBalance fx
+  assertMsg "the treasury kept the change" (balance == 995000.0)
+
+-- | A holder without a preapproval gets a pending transfer. When the holder accepts it,
+-- the agent marks the payment Paid.
+test_p2_holder_without_preapproval_gets_pending_transfer : Script ()
+test_p2_holder_without_preapproval_gets_pending_transfer = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  cmd <- executeCmdFor fx fx.mandateCid proposalCid [fx.holderC]
+  (_, outcomeCid) <- submit (asAgent fx) cmd
+  o <- outcomeOf fx outcomeCid
+  let statuses = [(r.holder, r.status) | r <- o.payments]
+  assertMsg "A and B are paid, C awaits acceptance"
+    (statuses == [(fx.holderA, Paid), (fx.holderB, Paid), (fx.holderC, AwaitingAcceptance)])
+  a <- holderBalance fx.holderA
+  c0 <- holderBalance fx.holderC
+  assertMsg "A is paid and C holds nothing yet" (a == 500.0 && c0 == 0.0)
+  balance <- treasuryBalance fx
+  assertMsg "the treasury already paid out the total" (balance == 995000.0)
+  -- C's payment points at the pending instruction
+  [(paymentCid, payment)] <- query @Payment fx.holderC
+  Some instructionCid <- pure payment.transferInstructionCid
+  assertMsg "the Payment is awaiting acceptance" (payment.status == AwaitingAcceptance)
+  -- only the receiver can accept
+  let accept = exerciseCmd instructionCid TransferInstruction_Accept with
+        extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+  failsWith notAuthorized (actAs fx.holderC) (exerciseCmd instructionCid TransferInstruction_Withdraw with
+        extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata)
+  _ <- submit fx.holderC accept
+  c1 <- holderBalance fx.holderC
+  assertMsg "C holds the money after accepting" (c1 == 3000.0)
+  -- the holder cannot mark the payment; the agent does
+  failsWith notAuthorized (actAs fx.holderC) (exerciseCmd paymentCid Payment_MarkAccepted)
+  paidCid <- submit fx.agent $ exerciseCmd paymentCid Payment_MarkAccepted
+  Some paid <- queryContractId fx.holderC paidCid
+  assertMsg "the Payment is now Paid" (paid.status == Paid && paid.holder == fx.holderC && paid.amount == 3000.0)
+  -- and only once
+  failsWith "not awaiting acceptance" (actAs fx.agent) (exerciseCmd paidCid Payment_MarkAccepted)
+
+-- | If the holder rejects the pending transfer, the funds return to the treasury.
+test_p2_rejected_transfer_returns_funds : Script ()
+test_p2_rejected_transfer_returns_funds = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  cmd <- executeCmdFor fx fx.mandateCid proposalCid [fx.holderC]
+  _ <- submit (asAgent fx) cmd
+  [(_, payment)] <- query @Payment fx.holderC
+  Some instructionCid <- pure payment.transferInstructionCid
+  _ <- submit fx.holderC $ exerciseCmd instructionCid TransferInstruction_Reject with
+    extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+  c <- holderBalance fx.holderC
+  balance <- treasuryBalance fx
+  assertMsg "C holds nothing and the treasury has C's share back" (c == 0.0 && balance == 998000.0)
+
+-- | Payouts are atomic: if a transfer cannot be made, no payment, outcome or cycle is recorded.
+test_payments_insufficient_funds_roll_back : Script ()
+test_payments_insufficient_funds_roll_back = do
+  fx <- setup
+  -- the treasury holds 1,000,000; ask for far more than that, with approvals
+  (proposalCid, _) <- proposeTotal fx "2026-09" 2000000.0
+  approved <- approveBoth fx proposalCid
+  cmd <- executeCmd fx fx.mandateCid approved
+  failsWith "Input holdings do not cover the amount" (asAgent fx) cmd
+  payments <- query @Payment fx.treasury
+  outcomes <- query @DistributionOutcome fx.treasury
+  assertMsg "nothing was recorded" (null payments && null outcomes)
+  balance <- treasuryBalance fx
+  assertMsg "the treasury still has its money" (balance == 1000000.0)
+
+-- | Legs must match the payouts: wrong order, wrong holder or missing legs are rejected.
+test_payments_legs_must_match_payouts : Script ()
+test_payments_legs_must_match_payouts = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  holdings <- treasuryHoldings fx
+  now <- getTime
+  p <- proposalOf fx proposalCid
+  let legs = legsFor fx p.payouts []
+      run ls = exerciseCmd fx.mandateCid Mandate_AgentExecute with
+        proposalCid; legs = ls; inputHoldingCids = holdings; executeBefore = addRelTime now (days 1)
+  failsWith "line up one-to-one" (asAgent fx) (run (reverse legs))
+  failsWith "line up one-to-one" (asAgent fx) (run (take 2 legs))
+  failsWith "line up one-to-one" (asAgent fx) (run (map (\l -> l with holder = fx.outsider) legs))
+  failsWith "executeBefore must be in the future" (asAgent fx)
+    (exerciseCmd fx.mandateCid Mandate_AgentExecute with
+      proposalCid; legs; inputHoldingCids = holdings; executeBefore = now)
+  _ <- submit (asAgent fx) (run legs)
+  pure ()
+
+-- | MainNet: the treasurer is the treasury and signs the payout. The same proposal, the same
+-- checks, and the payments are still signed by the treasury and the agent.
+test_mainnet_treasury_executes : Script ()
+test_mainnet_treasury_executes = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  holdings <- treasuryHoldings fx
+  now <- getTime
+  p <- proposalOf fx proposalCid
+  let treasuryRun = exerciseCmd fx.mandateCid Mandate_TreasuryExecute with
+        proposalCid
+        legs = legsFor fx p.payouts []
+        inputHoldingCids = holdings
+        executeBefore = addRelTime now (days 1)
+  -- the agent cannot use the treasury's choice
+  failsWith notAuthorized (asAgent fx) treasuryRun
+  (mandateCid, outcomeCid) <- submit fx.treasury treasuryRun
+  o <- outcomeOf fx outcomeCid
+  assertMsg "the treasury is the actor" (o.kind == Executed && o.actor == fx.treasury)
+  m <- mandateOf fx mandateCid
+  assertMsg "the cycle is recorded" (m.executedCycles == ["2026-09"])
+  payments <- query @Payment fx.holderB
+  assertMsg "B was paid 1,500" (map (\(_, pay) -> pay.amount) payments == [1500.0])
+  -- the cap still binds the treasury's own execution path
+  (second, _) <- proposeTotal (fx with mandateCid) "2026-10" 5000.0000000001
+  holdings2 <- treasuryHoldings fx
+  p2 <- proposalOf fx second
+  failsWith "needs 2 approval(s)" (actAs fx.treasury)
+    (exerciseCmd mandateCid Mandate_TreasuryExecute with
+      proposalCid = second
+      legs = legsFor fx p2.payouts []
+      inputHoldingCids = holdings2
+      executeBefore = addRelTime now (days 1))
+
+-- | A Mandate that does not let the agent execute still lets the treasurer sign the payout.
+test_mainnet_agent_execution_can_be_switched_off : Script ()
+test_mainnet_agent_execution_can_be_switched_off = do
+  fx <- setup
+  req <- sealRequest fx fx.terms False
+  (org, mandate) <- submit fx.treasury $ exerciseCmd fx.orgCid Org_ApplySeal with
+    sealRequestCid = req; currentMandateCid = Some fx.mandateCid
+  let fx1 = fx with orgCid = org; mandateCid = mandate
+  (proposalCid, _) <- proposeTotal fx1 "2026-09" 1000.0
+  cmd <- executeCmd fx1 fx1.mandateCid proposalCid
+  failsWith "does not let the agent execute" (asAgent fx1) cmd
+  holdings <- treasuryHoldings fx1
+  now <- getTime
+  p <- proposalOf fx1 proposalCid
+  (_, outcomeCid) <- submit fx.treasury $ exerciseCmd mandate Mandate_TreasuryExecute with
+    proposalCid
+    legs = legsFor fx1 p.payouts []
+    inputHoldingCids = holdings
+    executeBefore = addRelTime now (days 1)
+  o <- outcomeOf fx1 outcomeCid
+  assertMsg "executed by the treasury" (o.kind == Executed && o.actor == fx.treasury)

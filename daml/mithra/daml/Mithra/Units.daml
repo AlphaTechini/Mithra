@@ -1,0 +1,45 @@
+module Mithra.Units where
+
+import Mithra.Types
+
+-- | The ledger of unit changes. Holders are never stakeholders (L7), so the
+-- record date snapshot can be computed on-ledger without exposing it to holders.
+template UnitRegister
+  with
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    changes : [UnitChange]
+  where
+    signatory treasury
+    observer treasurer, agent
+
+    choice Register_Record : ContractId UnitRegister
+      with
+        change : UnitChange
+      controller treasury
+      do
+        assertMsg "Unit change must not be zero" (change.delta /= 0)
+        create this with changes = changes ++ [change]
+
+-- | A holder's own record of units issued to them. The holder sees only this (L7).
+template FundUnit
+  with
+    treasury : Party
+    holder : Party
+    orgName : Text
+    units : Int
+    effectiveDate : Date
+    issuedAt : Time
+    accepted : Bool
+    seeded : Bool
+  where
+    signatory treasury
+    observer holder
+    ensure units > 0
+
+    choice FundUnit_Accept : ContractId FundUnit
+      controller holder
+      do
+        assertMsg "Units are already accepted" (not accepted)
+        create this with accepted = True

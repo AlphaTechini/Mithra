@@ -1,0 +1,42 @@
+module Mithra.Charter where
+
+import Splice.Api.Token.HoldingV1 (InstrumentId)
+import Mithra.Org
+import Mithra.Units
+
+-- | Created with the treasury's authority (a governed action on LocalNet, the treasurer
+-- directly on MainNet). Consumed by creating the organization, so there is one per charter.
+template TreasuryCharter
+  with
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    operator : Party
+  where
+    signatory treasury
+    observer treasurer, agent, operator
+
+    choice Charter_CreateOrganization : (ContractId Organization, ContractId UnitRegister)
+      with
+        name : Text
+        asset : InstrumentId
+        approvers : [Party]
+        approvalThreshold : Int
+      controller treasurer
+      do
+        orgCid <- create Organization with
+          treasury
+          treasurer
+          agent
+          operator
+          name
+          asset
+          approvers
+          approvalThreshold
+          mandateVersion = 0
+        registerCid <- create UnitRegister with
+          treasury
+          treasurer
+          agent
+          changes = []
+        pure (orgCid, registerCid)

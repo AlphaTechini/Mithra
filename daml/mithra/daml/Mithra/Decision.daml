@@ -1,0 +1,70 @@
+module Mithra.Decision where
+
+import qualified DA.Text as T
+import Mithra.Payment (PaymentRef)
+import Mithra.Types
+
+-- | Why the agent proposed what it proposed. Immutable. Created only inside
+-- `Mandate_Propose`, so a distribution cannot exist without one (L10).
+template DecisionRecord
+  with
+    recordId : Text        -- "decision/<cycleId>/<n>"
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    approvers : [Party]
+    cycleId : Text
+    cycleLabel : Text
+    trigger : Trigger
+    triggerDetail : Text
+    recordDate : Date
+    total : Decimal
+    payouts : [Payout]
+    inputFingerprints : [Fingerprint]
+    checks : [CheckResult]
+    memo : Text
+    memoSource : Text
+    modelFingerprints : [Fingerprint]
+    verdict : Verdict
+    mandateVersion : Int
+    cap : Decimal
+    createdAt : Time
+    seeded : Bool
+  where
+    signatory treasury, agent
+    observer treasurer, approvers
+    ensure total > 0.0 && not (null payouts)
+
+data OutcomeKind = Executed | Rejected | Cancelled deriving (Eq, Show)
+
+-- | How a proposal ended: executed with payment references, rejected or cancelled.
+template DistributionOutcome
+  with
+    recordId : Text        -- "outcome/<cycleId>/<n>"
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    approvers : [Party]
+    decisionRecordId : Text
+    cycleId : Text
+    cycleLabel : Text
+    kind : OutcomeKind
+    approvals : [ApprovalEntry]
+    payments : [PaymentRef]
+    actor : Party
+    reason : Optional Text
+    at : Time
+    seeded : Bool
+  where
+    signatory treasury, agent
+    observer treasurer, approvers
+
+-- | The attempt number at the end of a "<kind>/<cycleId>/<n>" record id.
+attemptOf : Text -> Text
+attemptOf recordId = case reverse (T.splitOn "/" recordId) of
+  n :: _ -> n
+  [] -> "1"
+
+-- | Record id of the outcome that belongs to a decision record id.
+outcomeIdFor : Text -> Text -> Text
+outcomeIdFor cycleId decisionRecordId = "outcome/" <> cycleId <> "/" <> attemptOf decisionRecordId

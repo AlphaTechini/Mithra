@@ -1,0 +1,174 @@
+module Mithra.Org where
+
+import DA.Date (toDateUTC)
+import DA.Foldable (forA_)
+import DA.List (dedup)
+import Splice.Api.Token.HoldingV1 (InstrumentId)
+import Mithra.Audit
+import Mithra.Mandate
+import Mithra.Types
+import Mithra.Units
+
+-- | The fund. Created once per charter; units, Mandate seals and audit grants all run
+-- through it, with the treasurer's signature.
+template Organization
+  with
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    operator : Party
+    name : Text
+    asset : InstrumentId
+    approvers : [Party]
+    approvalThreshold : Int
+    mandateVersion : Int   -- 0 until the first Mandate is sealed
+  where
+    signatory treasury, treasurer
+    observer agent, operator, approvers
+    ensure name /= ""
+      && length approvers == length (dedup approvers)
+      && approvalThreshold >= 1
+      && approvalThreshold <= length approvers
+      && agent `notElem` approvers
+      && mandateVersion >= 0
+
+    nonconsuming choice Org_IssueUnits : (ContractId UnitRegister, ContractId FundUnit)
+      with
+        registerCid : ContractId UnitRegister
+        holder : Party
+        units : Int
+        effectiveDate : Date
+        seeded : Bool
+      controller treasurer
+      do
+        assertMsg "Units issued must be greater than zero" (units > 0)
+        now <- getTime
+        assertMsg "Units cannot take effect in the future" (effectiveDate <= toDateUTC now)
+        register <- fetch registerCid
+        assertMsg "The unit register belongs to a different treasury" (register.treasury == treasury)
+        newRegisterCid <- exercise registerCid Register_Record with
+          change = UnitChange with
+            holder
+            delta = units
+            effectiveDate
+            recordedAt = now
+            seeded
+        unitCid <- create FundUnit with
+          treasury
+          holder
+          orgName = name
+          units
+          effectiveDate
+          issuedAt = now
+          accepted = False
+          seeded
+        pure (newRegisterCid, unitCid)
+
+    -- | L6, N8: turns a treasurer-signed request into the new Mandate. The treasury's
+    -- authority is required, so on LocalNet this runs only through a governed action.
+    choice Org_ApplySeal : (ContractId Organization, ContractId Mandate)
+      with
+        sealRequestCid : ContractId MandateSealRequest
+        currentMandateCid : Optional (ContractId Mandate)
+      controller treasury
+      do
+        request <- exercise sealRequestCid SealRequest_Consume
+        assertMsg "The seal request is for a different treasury" (request.treasury == treasury)
+        assertMsg "The seal request was signed by a different treasurer" (request.treasurer == treasurer)
+        assertMsg "The seal request names a different agent" (request.agent == agent)
+        executed <- case (currentMandateCid, mandateVersion) of
+          (None, 0) -> pure []
+          (Some cid, v) | v > 0 -> do
+            current <- fetch cid
+            assertMsg "The current Mandate does not belong to this organization"
+              (current.treasury == treasury && current.version == mandateVersion)
+            exercise cid Mandate_Supersede
+          (None, _) -> abort "The current Mandate must be given once a Mandate has been sealed"
+          (Some _, _) -> abort "No Mandate has been sealed yet, so there is none to supersede"
+        now <- getTime
+        orgCid <- create this with
+          asset = request.terms.asset
+          approvers = request.terms.approvers
+          approvalThreshold = request.terms.approvalThreshold
+          mandateVersion = mandateVersion + 1
+        mandateCid <- create Mandate with
+          treasury
+          treasurer
+          agent
+          version = mandateVersion + 1
+          terms = request.terms
+          agentExecutes = request.agentExecutes
+          executedCycles = executed
+          sealedAt = now
+          summaryFingerprint = request.summaryFingerprint
+        pure (orgCid, mandateCid)
+
+    -- | L8: shares exactly the listed records, and only ones the auditor asked for.
+    nonconsuming choice Org_GrantAccess : ContractId AccessGrant
+      with
+        requestCid : ContractId AuditRequest
+        expiresAt : Time
+        evidence : [EvidenceRef]
+      controller treasurer
+      do
+        request <- exercise requestCid AuditRequest_Resolve
+        assertMsg "The audit request is for a different treasury" (request.treasury == treasury)
+        now <- getTime
+        assertMsg "The grant must expire in the future" (expiresAt > now)
+        assertMsg "List at least one record to share" (not (null evidence))
+        items <- forA evidence $ \ref -> case ref of
+          RefDecision cid -> do
+            d <- fetch cid
+            assertMsg "The decision record belongs to a different treasury" (d.treasury == treasury)
+            pure (EvDecision d)
+          RefOutcome cid -> do
+            o <- fetch cid
+            assertMsg "The outcome belongs to a different treasury" (o.treasury == treasury)
+            pure (EvOutcome o)
+        let recordIds = map evidenceRecordId items
+            inScope = map (.recordId) request.scope
+        assertMsg "A record is listed more than once" (length recordIds == length (dedup recordIds))
+        forA_ recordIds $ \rid ->
+          assertMsg ("Record " <> rid <> " is outside the scope of this audit request") (rid `elem` inScope)
+        let grantId = "grant/" <> request.requestId
+        sharedCids <- forA items $ \ev -> create SharedRecord with
+          treasury
+          treasurer
+          agent
+          auditor = request.auditor
+          grantId
+          recordId = evidenceRecordId ev
+          evidence = ev
+          sharedAt = now
+          expiresAt
+        create AccessGrant with
+          treasury
+          treasurer
+          agent
+          auditor = request.auditor
+          grantId
+          requestId = request.requestId
+          question = request.question
+          recordIds
+          sharedCids
+          grantedAt = now
+          expiresAt
+
+    nonconsuming choice Org_DenyAccess : ContractId AccessDenied
+      with
+        requestCid : ContractId AuditRequest
+        reason : Text
+      controller treasurer
+      do
+        assertMsg "A denial needs a reason" (reason /= "")
+        request <- exercise requestCid AuditRequest_Resolve
+        assertMsg "The audit request is for a different treasury" (request.treasury == treasury)
+        now <- getTime
+        create AccessDenied with
+          treasury
+          treasurer
+          agent
+          auditor = request.auditor
+          requestId = request.requestId
+          reason
+          at = now

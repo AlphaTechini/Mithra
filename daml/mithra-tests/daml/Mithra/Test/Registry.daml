@@ -1,0 +1,181 @@
+-- | A small token registry for tests. It implements the real CIP-56 token standard
+-- interfaces (holding, transfer factory, transfer instruction), so Mithra's Mandate
+-- exercises exactly the API it uses against real registries.
+module Mithra.Test.Registry where
+
+import Daml.Script
+import qualified DA.TextMap as TextMap
+import Splice.Api.Token.HoldingV1
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.TransferInstructionV1
+import Mithra.Types (TransferLeg(..))
+
+preapprovalKey : Text
+preapprovalKey = "mithra-test/preapproval"
+
+testInstrument : Party -> InstrumentId
+testInstrument admin = InstrumentId with admin; id = "CC"
+
+template TestHolding
+  with
+    admin : Party
+    owner : Party
+    instrumentId : InstrumentId
+    amount : Decimal
+  where
+    signatory admin, owner
+    ensure amount > 0.0
+
+    interface instance Holding for TestHolding where
+      view = HoldingView with
+        owner
+        instrumentId
+        amount
+        lock = None
+        meta = emptyMetadata
+
+-- | A receiver's standing consent to receive transfers in one step.
+template TestPreapproval
+  with
+    admin : Party
+    receiver : Party
+    observers : [Party]
+  where
+    signatory receiver, admin
+    observer observers
+
+    nonconsuming choice TestPreapproval_Deposit : ContractId Holding
+      with
+        amount : Decimal
+        instrumentId : InstrumentId
+      controller admin
+      do
+        holdingCid <- create TestHolding with admin; owner = receiver; instrumentId; amount
+        pure (toInterfaceContractId holdingCid)
+
+template TestTransferInstruction
+  with
+    admin : Party
+    transfer : Transfer
+  where
+    signatory admin, transfer.sender
+    observer transfer.receiver
+
+    interface instance TransferInstruction for TestTransferInstruction where
+      view = TransferInstructionView with
+        originalInstructionCid = None
+        transfer
+        status = TransferPendingReceiverAcceptance
+        meta = emptyMetadata
+
+      transferInstruction_acceptImpl _self _arg = do
+        holdingCid <- create TestHolding with
+          admin
+          owner = transfer.receiver
+          instrumentId = transfer.instrumentId
+          amount = transfer.amount
+        pure TransferInstructionResult with
+          output = TransferInstructionResult_Completed with
+            receiverHoldingCids = [toInterfaceContractId holdingCid]
+          senderChangeCids = []
+          meta = emptyMetadata
+
+      transferInstruction_rejectImpl _self _arg = refundSender admin transfer
+      transferInstruction_withdrawImpl _self _arg = refundSender admin transfer
+      transferInstruction_updateImpl _self _arg = abort "TestTransferInstruction cannot be updated"
+
+-- | Reject and withdraw both return the funds to the sender.
+refundSender : Party -> Transfer -> Update TransferInstructionResult
+refundSender admin transfer = do
+  holdingCid <- create TestHolding with
+    admin
+    owner = transfer.sender
+    instrumentId = transfer.instrumentId
+    amount = transfer.amount
+  pure TransferInstructionResult with
+    output = TransferInstructionResult_Failed
+    senderChangeCids = [toInterfaceContractId holdingCid]
+    meta = emptyMetadata
+
+template TestTransferFactory
+  with
+    admin : Party
+    observers : [Party]
+  where
+    signatory admin
+    observer observers
+
+    interface instance TransferFactory for TestTransferFactory where
+      view = TransferFactoryView with admin; meta = emptyMetadata
+
+      transferFactory_publicFetchImpl _self _arg =
+        pure (TransferFactoryView with admin; meta = emptyMetadata)
+
+      transferFactory_transferImpl _self arg = do
+        let t = arg.transfer
+        assertMsg "Wrong registry admin" (arg.expectedAdmin == admin && t.instrumentId.admin == admin)
+        assertMsg "Transfer amount must be positive" (t.amount > 0.0)
+        now <- getTime
+        assertMsg "The transfer has expired" (t.executeBefore > now)
+        held <- forA t.inputHoldingCids $ \cid -> do
+          h <- fetch cid
+          let v = view h
+          assertMsg "Input holding is not owned by the sender" (v.owner == t.sender)
+          assertMsg "Input holding is a different instrument" (v.instrumentId == t.instrumentId)
+          archive (fromInterfaceContractId @TestHolding cid)
+          pure v.amount
+        let total = sum held
+        assertMsg "Input holdings do not cover the amount" (total >= t.amount)
+        changeCids <-
+          if total > t.amount
+            then do
+              c <- create TestHolding with
+                admin
+                owner = t.sender
+                instrumentId = t.instrumentId
+                amount = total - t.amount
+              pure [toInterfaceContractId c]
+            else pure []
+        case TextMap.lookup preapprovalKey arg.extraArgs.context.values of
+          Some (AV_ContractId anyCid) -> do
+            receivedCid <- exercise (coerceContractId anyCid : ContractId TestPreapproval)
+              TestPreapproval_Deposit with amount = t.amount; instrumentId = t.instrumentId
+            pure TransferInstructionResult with
+              output = TransferInstructionResult_Completed with receiverHoldingCids = [receivedCid]
+              senderChangeCids = changeCids
+              meta = emptyMetadata
+          _ -> do
+            instructionCid <- create TestTransferInstruction with admin; transfer = t
+            pure TransferInstructionResult with
+              output = TransferInstructionResult_Pending with
+                transferInstructionCid = toInterfaceContractId instructionCid
+              senderChangeCids = changeCids
+              meta = emptyMetadata
+
+-- | Mint `amount` of the test instrument (admin = the registry admin) to `owner`.
+mintTo : Party -> Party -> Decimal -> Script (ContractId Holding)
+mintTo admin owner amount = do
+  cid <- submit (actAs [admin, owner]) $ createCmd TestHolding with
+    admin
+    owner
+    instrumentId = testInstrument admin
+    amount
+  pure (toInterfaceContractId cid)
+
+-- | A standing preapproval for `receiver`, visible to `observers` (the parties whose
+-- participants would otherwise need it disclosed).
+preapprovalFor : Party -> Party -> [Party] -> Script (ContractId TestPreapproval)
+preapprovalFor admin receiver observers =
+  submit (actAs [admin, receiver]) $ createCmd TestPreapproval with admin; receiver; observers
+
+-- | The leg for one payee: one-step payment with a preapproval, otherwise a pending transfer.
+legFor : ContractId TransferFactory -> Party -> Optional (ContractId TestPreapproval) -> TransferLeg
+legFor factoryCid holder preapproval = TransferLeg with
+  holder
+  factoryCid
+  extraArgs = ExtraArgs with
+    context = case preapproval of
+      None -> emptyChoiceContext
+      Some cid -> ChoiceContext with
+        values = TextMap.fromList [(preapprovalKey, AV_ContractId (coerceContractId cid))]
+    meta = emptyMetadata

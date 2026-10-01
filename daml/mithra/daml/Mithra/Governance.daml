@@ -1,0 +1,57 @@
+module Mithra.Governance where
+
+import Governance.Action
+import Mithra.Charter
+import Mithra.Mandate
+import Mithra.Org
+
+-- | LocalNet: creates the TreasuryCharter with the Decentralized Party's authority,
+-- after the governance threshold of node confirmations.
+template CharterProposal
+  with
+    governanceParty : Party
+    proposer : Party
+    treasurer : Party
+    agent : Party
+    operator : Party
+  where
+    signatory proposer
+    observer governanceParty
+
+    interface instance GovernableAction for CharterProposal where
+      view = GovernableActionView with
+        governanceParty
+        proposer
+        actionLabel = "MithraCreateCharter"
+        description = "Create the Mithra treasury charter"
+      executeImpl = do
+        _ <- create TreasuryCharter with
+          treasury = governanceParty
+          treasurer
+          agent
+          operator
+        pure ()
+
+-- | LocalNet: seals a new Mandate. Needs the treasurer's signed request (L6) and the
+-- governance threshold of node confirmations (N8).
+template MandateChangeProposal
+  with
+    governanceParty : Party
+    proposer : Party
+    orgCid : ContractId Organization
+    sealRequestCid : ContractId MandateSealRequest
+    currentMandateCid : Optional (ContractId Mandate)
+    description : Text
+  where
+    signatory proposer
+    observer governanceParty
+
+    interface instance GovernableAction for MandateChangeProposal where
+      view = GovernableActionView with
+        governanceParty
+        proposer
+        actionLabel = "MithraSealMandate"
+        description
+      executeImpl = do
+        _ <- exercise orgCid Org_ApplySeal with sealRequestCid; currentMandateCid
+        pure ()

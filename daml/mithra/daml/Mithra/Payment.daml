@@ -1,0 +1,46 @@
+module Mithra.Payment where
+
+import Splice.Api.Token.TransferInstructionV1 (TransferInstruction)
+import Mithra.Types
+
+-- | One payee's payment. A holder sees only their own (L7).
+template Payment
+  with
+    treasury : Party
+    agent : Party
+    holder : Party
+    cycleId : Text
+    cycleLabel : Text
+    units : Int
+    amount : Decimal
+    status : PaymentStatus
+    transferInstructionCid : Optional (ContractId TransferInstruction)
+    executedAt : Time
+    seeded : Bool
+  where
+    signatory treasury, agent
+    observer holder
+    ensure units > 0 && amount > 0.0
+
+    -- | The holder accepted the pending transfer; the agent records it.
+    choice Payment_MarkAccepted : ContractId Payment
+      controller agent
+      do
+        assertMsg "Payment is not awaiting acceptance" (status == AwaitingAcceptance)
+        create this with status = Paid
+
+-- | Reference to a payment inside a distribution outcome.
+data PaymentRef = PaymentRef with
+    holder : Party
+    amount : Decimal
+    paymentCid : ContractId Payment
+    status : PaymentStatus
+    transferInstructionCid : Optional (ContractId TransferInstruction)
+  deriving (Eq, Show)
+
+-- | How one payee's transfer ended, reported to `Proposal_MarkExecuted`.
+data Settlement = Settlement with
+    holder : Party
+    status : PaymentStatus
+    transferInstructionCid : Optional (ContractId TransferInstruction)
+  deriving (Eq, Show)

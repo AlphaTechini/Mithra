@@ -73,9 +73,13 @@ data MandateTerms = MandateTerms with
   deriving (Eq, Show)
 data ApprovalEntry = ApprovalEntry with approver : Party; at : Time; note : Text deriving (Eq, Show)
 data PaymentStatus = Paid | AwaitingAcceptance deriving (Eq, Show)
+-- Mithra.Payment (it refers to the Payment template, so it cannot live in Types):
 data PaymentRef = PaymentRef with
     holder : Party; amount : Decimal; paymentCid : ContractId Payment; status : PaymentStatus
     transferInstructionCid : Optional (ContractId TransferInstruction)
+  deriving (Eq, Show)
+data Settlement = Settlement with    -- how one payee's transfer ended; input to Proposal_MarkExecuted
+    holder : Party; status : PaymentStatus; transferInstructionCid : Optional (ContractId TransferInstruction)
   deriving (Eq, Show)
 data TransferLeg = TransferLeg with
     holder : Party; factoryCid : ContractId TransferFactory; extraArgs : ExtraArgs
@@ -92,19 +96,22 @@ data ScopeItem = ScopeItem with recordId : Text; kind : Text; reason : Text deri
 2. `T` = total units. For each holder, `share = floor10(total * units / T)` where `floor10` rounds **down** to 10 decimal places (Daml `Decimal` scale).
 3. `residual = total - sum shares` (always `0 <= residual < n * 0.0000000001`). Add the residual to the holder with the most units; ties go to the first holder in sort order.
 4. Result: `[Payout holder units amount]` in sorted order. `sum amounts == total` exactly.
+5. The split is rejected (`proRata` returns `Left`, `computeProRata` and `Mandate_Propose` fail) if the total is not positive, there are no holders, or any resulting amount is below `0.0000000001` (a payment of zero cannot be made). This is a stricter rule than "total at least n x 1e-10": a very small holder can still get less than 1e-10 when the total is small.
 
-Daml implementation of `floor10 n d` (n, d Decimal, d > 0): `q = n / d`; if `q * d > n` then `q - 0.0000000001` else `q`. This is correct whatever rounding mode Daml's division uses. The backend implements the same rule with `decimal.js` (`ROUND_DOWN`, 10 places) and a shared test vector file keeps both sides in step (`packages/shared/test-vectors/prorata.json`).
+`Mithra.Types` exports `proRata : Decimal -> [(Party, Int)] -> Either Text [Payout]` (the rule, without throwing), `computeProRata` (throws on `Left`), `unitsAt : Date -> [UnitChange] -> [(Party, Int)]`, `floor10`, `termsValid : Party -> MandateTerms -> Bool` and `showAmount : Decimal -> Text` (thousands separators, no trailing zeros, used in error messages, for example `5,000.0000000001`).
+
+Daml implementation of `floor10 n d` (n, d Decimal, d > 0): `q = n / d`; if `q * d > n` then `q - 0.0000000001` else `q`. This is correct whatever rounding mode Daml's division uses. The backend implements the same rule with `decimal.js` (`ROUND_DOWN`, 10 places) and a shared test vector file keeps both sides in step (`daml/test-vectors/prorata.json`, read by the backend tests).
 
 ## Templates
 
 ### `TreasuryCharter` (`Mithra.Charter`)
 `signatory treasury; observer treasurer, agent, operator`. Fields: `treasury, treasurer, agent, operator : Party`.
-- `Charter_CreateOrganization` (consuming) `controller treasurer` with `name : Text, asset : InstrumentId, approvers : [Party], approvalThreshold : Int` → creates `Organization` and an empty `UnitRegister`. Consuming, so an organization can be created once.
+- `Charter_CreateOrganization` (consuming) `controller treasurer` with `name : Text, asset : InstrumentId, approvers : [Party], approvalThreshold : Int` → creates `Organization` and an empty `UnitRegister`, returns `(ContractId Organization, ContractId UnitRegister)`. Consuming, so an organization can be created once.
 
 ### `Organization` (`Mithra.Org`)
 `signatory treasury, treasurer; observer agent, operator, approvers`. Fields: `treasury, treasurer, agent, operator, name, asset, approvers, approvalThreshold, mandateVersion : Int` (0 before the first seal). `ensure` unique approvers, `1 <= threshold <= length approvers`, `agent notElem approvers`.
 - `Org_IssueUnits` (nonconsuming) `controller treasurer` with `registerCid, holder, units : Int (> 0), effectiveDate : Date (<= today), seeded : Bool` → `Register_Record` + creates `FundUnit` (not yet accepted). Returns `(ContractId UnitRegister, ContractId FundUnit)`.
-- `Org_ApplySeal` (consuming) `controller treasury` with `sealRequestCid, currentMandateCid : Optional (ContractId Mandate)` → consumes the treasurer-signed `MandateSealRequest` (must match this org's treasury/treasurer), requires `currentMandateCid` to be `None` iff `mandateVersion == 0`, supersedes the current mandate (carrying `executedCycles`), recreates the `Organization` with the request's approvers/threshold and `mandateVersion + 1`, creates the new `Mandate`. Returns `(ContractId Organization, ContractId Mandate)`.
+- `Org_ApplySeal` (consuming) `controller treasury` with `sealRequestCid, currentMandateCid : Optional (ContractId Mandate)` → consumes the treasurer-signed `MandateSealRequest` (must match this org's treasury/treasurer), requires `currentMandateCid` to be `None` iff `mandateVersion == 0`, supersedes the current mandate (carrying `executedCycles`), recreates the `Organization` with the request's asset, approvers and threshold and `mandateVersion + 1`, creates the new `Mandate`. Returns `(ContractId Organization, ContractId Mandate)`.
 - `Org_GrantAccess` (nonconsuming) `controller treasurer` with `requestCid, expiresAt : Time (> now), evidence : [EvidenceRef]` → resolves the request, fetches each referenced record, checks each record's `recordId` is in the request scope, creates one `SharedRecord` per record and an `AccessGrant`. Returns the grant cid.
 - `Org_DenyAccess` (nonconsuming) `controller treasurer` with `requestCid, reason : Text` → resolves the request, creates `AccessDenied`.
 
@@ -123,8 +130,9 @@ Daml implementation of `floor10 n d` (n, d Decimal, d > 0): `q = n / d`; if `q *
 
 ### `Mandate` (`Mithra.Mandate`)
 `signatory treasury, treasurer; observer agent, terms.approvers`. Fields: `treasury, treasurer, agent, version : Int, terms : MandateTerms, agentExecutes : Bool, executedCycles : [Text], sealedAt : Time, summaryFingerprint : Text`.
-- `Mandate_Propose` (nonconsuming) `controller agent` with `ProposalInput { cycleId, cycleLabel, total, recordDate, trigger, triggerDetail, payouts, registerCid, inputFingerprints, checks, memo, memoSource, modelFingerprints, seeded }`:
+- `Mandate_Propose` (nonconsuming) `controller agent` with `input : ProposalInput`, where `ProposalInput { cycleId, cycleLabel, attempt : Int, total, recordDate, trigger, triggerDetail, payouts, registerCid, inputFingerprints, checks, memo, memoSource, modelFingerprints, seeded }` (`attempt` is 1 for the first proposal of a cycle and counts up after a cancel or reject; it only numbers the record ids, because the ledger has no keys to count with):
   - `cycleId notElem executedCycles` (L3, early),
+  - every check has `source` `"deterministic"` or `"ai"`, and an `"ai"` check cannot be `blocking` (A5: the AI can add advisory flags, not block or clear anything),
   - fetch the register; `payouts == computeProRata total (unitsAt recordDate register.changes)` and non-empty (L2),
   - `total > 0`,
   - verdict is computed **here**: `NeedsApproval` if `total > terms.cap` or any check has `blocking && not passed`, else `AutoExecute` (A5, A6: the agent cannot pick the verdict, and an AI flag can add a failed check but the deterministic ones are supplied and kept as given),
@@ -137,7 +145,7 @@ Daml implementation of `floor10 n d` (n, d Decimal, d > 0): `q = n / d`; if `q *
   - `NeedsApproval` proposals: distinct approvers in `proposal.approvals` that are in current `terms.approvers` must number `>= terms.approvalThreshold` (L4),
   - `legs` line up one-to-one with `proposal.payouts` (same holder, same order),
   - for each payout: `exercise leg.factoryCid TransferFactory_Transfer with expectedAdmin = terms.asset.admin, transfer = Transfer { sender = treasury, receiver = holder, amount, instrumentId = terms.asset, requestedAt = now, executeBefore, inputHoldingCids = current, meta }, extraArgs = leg.extraArgs`; the next transfer's inputs are this result's `senderChangeCids`; `Completed` → `Paid`, `Pending` → `AwaitingAcceptance` with the instruction cid, `Failed` → abort,
-  - creates one `Payment` per payee and a `DistributionOutcome` (kind `Executed`), archives the proposal (`Proposal_MarkExecuted`).
+  - then exercises `Proposal_MarkExecuted` with the `Settlement`s, which creates one `Payment` per payee and a `DistributionOutcome` (kind `Executed`) and archives the proposal. That choice carries both the treasury's and the agent's authority, so the same body works for `Mandate_AgentExecute` and for `Mandate_TreasuryExecute` (where the agent does not submit).
 - `Mandate_Supersede` `controller treasury` → returns `executedCycles`.
 - No choice lets the agent change terms (L6).
 
@@ -146,16 +154,16 @@ Daml implementation of `floor10 n d` (n, d Decimal, d > 0): `q = n / d`; if `q *
 - `Proposal_Approve` (consuming, recreated) `controller approver` with `approver, note`: approver in `approvers`, not already in `approvals` (L5), verdict is `NeedsApproval`; also creates an `Approval` (sig: approver). Returns `(ContractId Proposal, ContractId Approval)`.
 - `Proposal_Reject` (consuming) `controller approver` with `approver, reason` (non-empty) → `DistributionOutcome` kind `Rejected`.
 - `Proposal_Cancel` (consuming) `controller treasurer` → `DistributionOutcome` kind `Cancelled` (L11).
-- `Proposal_MarkExecuted` (consuming) `controller treasury` → returns `this`.
+- `Proposal_MarkExecuted` (consuming) `controller treasury` with `settlements : [Settlement]` (one per payout, same holders in the same order) and `actor : Party` → creates the `Payment`s and the `Executed` `DistributionOutcome`, returns `ContractId DistributionOutcome`.
 
 ### `Approval` (`Mithra.Proposal`)
 `signatory approver; observer treasury, treasurer, agent`. Fields: `approver, treasury, treasurer, agent, proposalId, cycleId, decisionRecordId, at, note`. The approver's signed decision.
 
 ### `DecisionRecord` (`Mithra.Decision`)
-`signatory treasury, agent; observer treasurer, approvers`. Immutable. Fields: `recordId` (`"decision/<cycleId>/<n>"`), `treasury, agent, cycleId, cycleLabel, trigger, triggerDetail, recordDate, total, payouts, inputFingerprints, checks, memo, memoSource, modelFingerprints, verdict, mandateVersion, cap, createdAt, seeded`. Created only inside `Mandate_Propose` (L10 by construction: a `Proposal` can only come from `Mandate_Propose`, and execution needs a `Proposal`).
+`signatory treasury, agent; observer treasurer, approvers`. Immutable. Fields: `recordId` (`"decision/<cycleId>/<n>"`, `n` = `attempt`), `treasury, treasurer, agent, approvers, cycleId, cycleLabel, trigger, triggerDetail, recordDate, total, payouts, inputFingerprints, checks, memo, memoSource, modelFingerprints, verdict, mandateVersion, cap, createdAt, seeded`. Created only inside `Mandate_Propose` (L10 by construction: a `Proposal` can only come from `Mandate_Propose`, and execution needs a `Proposal`).
 
 ### `DistributionOutcome` (`Mithra.Decision`)
-`signatory treasury, agent; observer treasurer, approvers`. Fields: `recordId` (`"outcome/<cycleId>/<n>"`), `decisionRecordId, cycleId, cycleLabel, kind : OutcomeKind, approvals, payments : [PaymentRef], actor : Party, reason : Optional Text, at : Time, seeded`. `OutcomeKind = Executed | Rejected | Cancelled`. Together with the `DecisionRecord` this gives L10's "approvals and payment references".
+`signatory treasury, agent; observer treasurer, approvers`. Fields: `recordId` (`"outcome/<cycleId>/<n>"`), `treasury, treasurer, agent, approvers, decisionRecordId, cycleId, cycleLabel, kind : OutcomeKind, approvals, payments : [PaymentRef], actor : Party, reason : Optional Text, at : Time, seeded`. `OutcomeKind = Executed | Rejected | Cancelled`. Together with the `DecisionRecord` this gives L10's "approvals and payment references".
 
 ### `Payment` (`Mithra.Payment`)
 `signatory treasury, agent; observer holder`. Fields: `treasury, agent, holder, cycleId, cycleLabel, units, amount, status, transferInstructionCid, executedAt, seeded`. A holder sees only their own (L7).
@@ -164,12 +172,12 @@ Daml implementation of `floor10 n d` (n, d Decimal, d > 0): `q = n / d`; if `q *
 ### Audit (`Mithra.Audit`)
 - `AuditRequest`: `signatory auditor; observer treasurer, agent`. Fields: `auditor, treasury, treasurer, agent, requestId, question, scope : [ScopeItem], excluded : Text, requestedAt`. `AuditRequest_Withdraw` (`controller auditor`), `AuditRequest_Resolve` (`controller treasurer`, returns `this`).
 - `EvidenceRef = RefDecision (ContractId DecisionRecord) | RefOutcome (ContractId DistributionOutcome)`; `Evidence = EvDecision DecisionRecord | EvOutcome DistributionOutcome`.
-- `SharedRecord`: `signatory treasury; observer auditor`. Fields: `treasury, auditor, grantId, recordId, evidence : Evidence, sharedAt, expiresAt`. `SharedRecord_Revoke` `controller treasury`.
+- `SharedRecord`: `signatory treasury; observer auditor, treasurer, agent` (treasurer and agent can close a grant from their own participant, also on MainNet where they do not host the treasury). Fields: `treasury, treasurer, agent, auditor, grantId, recordId, evidence : Evidence, sharedAt, expiresAt`. `SharedRecord_Revoke` `controller treasury`.
 - `AccessGrant`: `signatory treasury, treasurer; observer auditor, agent`. Fields: `treasury, treasurer, agent, auditor, grantId, requestId, question, recordIds, sharedCids, grantedAt, expiresAt`.
   - `AccessGrant_CloseExpired` `controller closer` with `closer`: closer is the agent, treasurer or auditor; `now >= expiresAt` (L9); revokes every shared record; creates `AccessClosed`.
   - `AccessGrant_Revoke` `controller treasurer` any time; same effect with reason `"revoked"`.
-- `AccessClosed`: `signatory treasury, treasurer; observer auditor, agent`. Fields: `grantId, requestId, closedAt, closedBy, reason`.
-- `AccessDenied`: `signatory treasury, treasurer; observer auditor, agent`. Fields: `requestId, reason, at`.
+- `AccessClosed`: `signatory treasury, treasurer; observer auditor, agent`. Fields: `treasury, treasurer, agent, auditor, grantId, requestId, closedAt, closedBy, reason`.
+- `AccessDenied`: `signatory treasury, treasurer; observer auditor, agent`. Fields: `treasury, treasurer, agent, auditor, requestId, reason, at`.
 
 Auditor visibility (L8): the auditor is a stakeholder only of `AuditRequest`, `SharedRecord`, `AccessGrant`, `AccessClosed`, `AccessDenied`. Before a grant, queries for `DecisionRecord`, `DistributionOutcome`, `SharedRecord` return nothing; after, exactly one `SharedRecord` per listed record; after close, nothing. (Archived contracts remain in the auditor participant's transaction history; the app and the active contract set no longer show them. Stated in README.)
 

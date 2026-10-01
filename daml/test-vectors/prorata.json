@@ -1,0 +1,76 @@
+[
+  {
+    "name": "equal split with residual",
+    "total": "100",
+    "holdings": [{"holder": "A", "units": 1}, {"holder": "B", "units": 1}, {"holder": "C", "units": 1}],
+    "expected": [{"holder": "A", "amount": "33.3333333334"}, {"holder": "B", "amount": "33.3333333333"}, {"holder": "C", "amount": "33.3333333333"}]
+  },
+  {
+    "name": "single holder",
+    "total": "5000",
+    "holdings": [{"holder": "A", "units": 10}],
+    "expected": [{"holder": "A", "amount": "5000"}]
+  },
+  {
+    "name": "large total",
+    "total": "123456789.1234567891",
+    "holdings": [{"holder": "A", "units": 3}, {"holder": "B", "units": 5}, {"holder": "C", "units": 7}],
+    "expected": [{"holder": "A", "amount": "24691357.8246913578"}, {"holder": "B", "amount": "41152263.041152263"}, {"holder": "C", "amount": "57613168.2576131683"}]
+  },
+  {
+    "name": "many holders",
+    "total": "1000",
+    "holdings": [{"holder": "A", "units": 1}, {"holder": "B", "units": 2}, {"holder": "C", "units": 3}, {"holder": "D", "units": 4}, {"holder": "E", "units": 5}, {"holder": "F", "units": 6}, {"holder": "G", "units": 7}, {"holder": "H", "units": 8}],
+    "expected": [{"holder": "A", "amount": "27.7777777777"}, {"holder": "B", "amount": "55.5555555555"}, {"holder": "C", "amount": "83.3333333333"}, {"holder": "D", "amount": "111.1111111111"}, {"holder": "E", "amount": "138.8888888888"}, {"holder": "F", "amount": "166.6666666666"}, {"holder": "G", "amount": "194.4444444444"}, {"holder": "H", "amount": "222.2222222226"}]
+  },
+  {
+    "name": "units issued after the record date are excluded",
+    "total": "1000",
+    "recordDate": "2026-09-30",
+    "changes": [{"holder": "A", "delta": 100, "effectiveDate": "2026-01-01"}, {"holder": "B", "delta": 300, "effectiveDate": "2026-01-01"}, {"holder": "B", "delta": 50, "effectiveDate": "2026-10-01"}, {"holder": "C", "delta": 600, "effectiveDate": "2026-10-15"}],
+    "holdings": [{"holder": "A", "units": 100}, {"holder": "B", "units": 300}],
+    "expected": [{"holder": "A", "amount": "250"}, {"holder": "B", "amount": "750"}]
+  },
+  {
+    "name": "ties for the largest holder go to the first in sort order",
+    "total": "10",
+    "holdings": [{"holder": "A", "units": 1}, {"holder": "B", "units": 3}, {"holder": "C", "units": 3}],
+    "expected": [{"holder": "A", "amount": "1.4285714285"}, {"holder": "B", "amount": "4.2857142858"}, {"holder": "C", "amount": "4.2857142857"}]
+  },
+  {
+    "name": "very unequal units",
+    "total": "100",
+    "holdings": [{"holder": "A", "units": 1000000}, {"holder": "B", "units": 1}],
+    "expected": [{"holder": "A", "amount": "99.9999000001"}, {"holder": "B", "amount": "0.0000999999"}]
+  },
+  {
+    "name": "every holder gets the smallest amount",
+    "total": "0.0000000003",
+    "holdings": [{"holder": "A", "units": 1}, {"holder": "B", "units": 1}, {"holder": "C", "units": 1}],
+    "expected": [{"holder": "A", "amount": "0.0000000001"}, {"holder": "B", "amount": "0.0000000001"}, {"holder": "C", "amount": "0.0000000001"}]
+  },
+  {
+    "name": "repeating fraction with three holders",
+    "total": "0.1",
+    "holdings": [{"holder": "A", "units": 1}, {"holder": "B", "units": 1}, {"holder": "C", "units": 1}],
+    "expected": [{"holder": "A", "amount": "0.0333333334"}, {"holder": "B", "amount": "0.0333333333"}, {"holder": "C", "amount": "0.0333333333"}]
+  },
+  {
+    "name": "large total and large units",
+    "total": "999999999999.9999999999",
+    "holdings": [{"holder": "A", "units": 123456789}, {"holder": "B", "units": 987654321}],
+    "expected": [{"holder": "A", "amount": "111111110211.111110211"}, {"holder": "B", "amount": "888888889788.8888897889"}]
+  },
+  {
+    "name": "total below holders times 1e-10 is rejected",
+    "total": "0.0000000001",
+    "holdings": [{"holder": "A", "units": 1}, {"holder": "B", "units": 1}],
+    "expectError": true
+  },
+  {
+    "name": "small holder would get less than 1e-10 is rejected",
+    "total": "0.0000000002",
+    "holdings": [{"holder": "A", "units": 1}, {"holder": "B", "units": 1000}],
+    "expectError": true
+  }
+]

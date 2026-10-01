@@ -21,8 +21,8 @@ Orchestrator plans, briefs, reviews and integrates; a Sonnet 5.5 implementer wri
 
 | ID | Milestone | Spec IDs | Depends on | Parallel with | Status |
 |---|---|---|---|---|---|
-| M0 | Monorepo scaffold | T1–T5, N1 | — | M1 | pending |
-| M1 | Daml model + Script tests | L1–L11, N8 (Daml part) | — | M0 | pending |
+| M0 | Monorepo scaffold | T1–T5, N1 | — | M1 | done (Oct 1) |
+| M1 | Daml model + Script tests | L1–L11, N8 (Daml part) | — | M0 | done (Oct 1), 53 Script tests |
 | M2 | LocalNet compose + DecMan + bootstrap scripts | N2, N7, T4 | M1 | M3 | pending |
 | M3 | Backend foundation (config, ledger module, auth, DB, roles, seeding) | N1–N3, T2, T5 | M0, M1 | M2, M6 | pending |
 | M4 | Cycle engine (snapshot, pro-rata, checks, decision records, payments) | L1–L4, L10, A3, A4, P1, P2, P4, P5 | M3 | M6 | pending |
