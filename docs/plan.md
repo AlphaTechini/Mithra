@@ -25,11 +25,11 @@ Orchestrator plans, briefs, reviews and integrates; a Sonnet 5.5 implementer wri
 | M1 | Daml model + Script tests | L1–L11, N8 (Daml part) | — | M0 | done (Oct 1), 53 Script tests |
 | M2 | LocalNet compose + DecMan + bootstrap scripts | N2, N7, T4 | M1 | M3 | done (Oct 1), runtime verify on owner machine |
 | M3 | Backend foundation (config, ledger module, auth, DB, roles, seeding) | N1–N3, T2, T5 | M0, M1 | M2, M6 | done (Oct 1), 23 sandbox integration tests |
-| M4 | Cycle engine (snapshot, pro-rata, checks, decision records, payments) | L1–L4, L10, A3, A4, P1, P2, P4, P5 | M3 | M6 | pending |
-| M5 | Agent, scheduler, grant expiry, SSE | A1–A12 | M4 | M6 (late) | pending |
+| M4 | Cycle engine (snapshot, pro-rata, checks, decision records, payments) | L1–L4, L10, A3, A4, P1, P2, P4, P5 | M3 | M6 | done (Oct 1), plus M4b treasury routes |
+| M5 | Agent, scheduler, grant expiry, SSE | A1–A12 | M4 | M6 (late) | done (Oct 1); wiring in MW |
 | M6 | Frontend foundation | U2–U5, U9, N3 | M0 | M1, M3, M4 | done (Oct 1) |
-| M7 | Treasurer screens | U1, U6, userflow 4, 5, 7, 8, 9, 12 | M5, M6 | — | pending |
-| M8 | Approver and holder screens | L5, L7, U7, P2, userflow 6, 10 | M7 | M9 backend | pending |
+| M7 | Treasurer screens | U1, U6, userflow 4, 5, 7, 8, 9, 12 | M5, M6 | — | done (Oct 1) |
+| M8 | Approver and holder screens | L5, L7, U7, P2, userflow 6, 10 | M7 | M9 backend | done (Oct 1) |
 | M9 | Audit flow | L8, L9, A8, A9, userflow 11 | M5, M6 | M10 backend | pending |
 | M10 | MainNet with Grofty | N4–N6, P3 | M8 | M9 frontend | pending |
 | M11 | BitSafe evidence | N8, S5 | M2, M5 | M12 | pending |
