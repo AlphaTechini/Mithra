@@ -135,7 +135,7 @@ The app runs in two configured modes. One codebase, a config switch.
 - Holders onboard through Grofty and turn on auto-receive (preapproval).
 - The treasurer executes the payout batch by signing in Grofty; real CC moves.
 - Small amounts only.
-- Limits to verify before building (see Section 11): which Mithra records can exist on MainNet depends on answers from Grofty and on whether Mithra has a MainNet node.
+- Same Daml package and flows as DevNet; endpoints, operator and agent parties come from configuration.
 
 **LocalNet (BitSafe segment).**
 - A reproducible setup where the treasury party is hosted across three nodes with a hosting threshold, showing the app keeps working when one node goes offline.
@@ -152,13 +152,12 @@ The app runs in two configured modes. One codebase, a config switch.
 8. An auditor asks "show Q3 distributions and the approvals behind any flagged one". The agent proposes a scope; the treasurer approves for 7 days; the auditor opens the evidence room; the grant later expires.
 9. Short infrastructure segment: one hosting node goes offline, the app keeps running (LocalNet).
 
-## 11. Open questions to resolve before or during the build
+## 11. Notes
 
-1. **Grofty and custom Daml.** Grofty submits only as the connected user's party. Can Grofty users sign commands against Mithra's own Daml package on MainNet? That requires the package to be accepted on the node hosting Grofty users. Ask the Grofty team. If not, MainNet mode is limited to standard CC actions (auto-receive setup, transfers) and Mithra-specific records stay in the app on MainNet.
-2. **Mithra on MainNet.** The agent and organization records need a MainNet node to live on-ledger. Without one, MainNet mode uses treasurer-signed Grofty transfers and app-side records.
-3. **Explorer visibility.** Public explorers should show CC transfers but not Mithra's private records. Confirm on the DevNet explorer early.
-4. **LLM endpoint.** The builder uses the Z.ai Coding Plan endpoint. Z.ai's docs say that plan is limited to supported tools. Keep the provider configurable.
-5. **BitSafe.** The shared DevNet node cannot host decentralized parties; the BitSafe segment runs on LocalNet.
+1. **Configuration.** All credentials, endpoints, party IDs and API keys are supplied by the product owner through environment variables. The build never waits on them.
+2. **Explorer visibility.** Public explorers show CC transfers but not Mithra's private records. The app is where private records are shown.
+3. **LLM endpoint.** Provider is configurable; default is the Z.ai Coding Plan endpoint.
+4. **BitSafe.** The shared DevNet node cannot host decentralized parties, so the BitSafe segment runs on LocalNet.
 
 ## 12. Glossary
 

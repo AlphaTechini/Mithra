@@ -4,7 +4,7 @@ Requirements that must be met. Each has an ID and an acceptance check. "MUST" is
 
 Global rules for the builder:
 - Nothing is mocked unless the product owner explicitly says so. Demo actors (treasury, approvers, holders, auditor) are real parties; payments are real CC transfers on the configured network.
-- When a requirement conflicts with what the network or a wallet actually supports, stop and report it to the product owner instead of faking it.
+- Build the full happy path for every network mode. All credentials, endpoints, party IDs and API keys come from environment variables that the product owner sets. Never block on missing credentials: read them from config, list them in `.env.example`, and fail with a clear message at startup if one is missing.
 
 ## 1. Ledger guarantees (the core of the product)
 
@@ -62,7 +62,7 @@ Agent tool set (minimum): `draft_policy`, `propose_mandate_change`, `list_holder
 | N3 | **DevNet:** since no wallet supports DevNet, the app signs via the shared node with a visible role switcher and a persistent "DevNet test mode" badge. | Badge visible on every screen in DevNet. |
 | N4 | **MainNet:** Grofty Wallet is how users connect, sign and transact, through CIP-0103 or `@groftylabs/dapp-sdk`. Use `prepareExecuteAndWait()`. Handle Grofty specifics: single-party submission only (no `actAs` for others), approvals expire after 3 minutes (error -32603), Grofty Wallet 2.0.4 or newer required. | End-to-end MainNet demo with small amounts. |
 | N5 | **MainNet:** holder onboarding MUST guide the user through turning on auto-receive (preapproval) in Grofty. | Demonstrated in the Grofty video. |
-| N6 | Before building MainNet features that need custom Daml signatures from Grofty users, the builder MUST confirm with the Grofty team that Mithra's package can be used from Grofty-hosted parties. If not, report to the product owner; do not fake it. | Written confirmation or a reported limitation. |
+| N6 | **MainNet:** uses the same Daml package and the same flows as DevNet. Treasurer, approver, holder and auditor actions are signed by each user's own Grofty party. The agent and operator parties, ledger endpoints and package IDs come from environment variables. | MainNet config runs the same happy path as DevNet. |
 | N7 | **LocalNet (BitSafe):** a reproducible setup where the treasury organization's party is a Decentralized Party hosted on three named nodes with a stated hosting threshold, using BitSafe's Decentralization Manager. | Clean-environment setup instructions work. |
 | N8 | **LocalNet (BitSafe):** demonstrate one node going offline while a cycle still runs, and report behavior when below threshold. Name each node and its operator and state which are independent. | Recorded test and README section. |
 
@@ -80,18 +80,38 @@ Agent tool set (minimum): `draft_policy`, `propose_mandate_change`, `list_holder
 | U8 | Seeded demo data is tagged "Seeded" in the UI. | Visual check. |
 | U9 | Copy follows the vocabulary table; buttons say exactly what happens. | Copy review. |
 
-## 6. Technical constraints
+## 6. Tech stack
+
+| Layer | Choice |
+|---|---|
+| Language | TypeScript everywhere (strict mode), except Daml for contracts |
+| Package manager | pnpm, single repository |
+| Smart contracts | Daml, built and tested with `dpm` (Daml Script tests), targeting the Canton version of the configured network |
+| Token standard | Canton token standard (CIP-56) interfaces for holdings and transfers; CC via the network's registry |
+| Web app and backend | SvelteKit with Svelte 5, `@sveltejs/adapter-node`. Server routes (`+server.ts`, form actions) are the backend API |
+| Worker | Separate Node.js process in the same repository (`apps/worker` or `src/worker`), sharing the ledger, agent and domain code with the web app. Runs the scheduler, the agent loop and grant expiry |
+| Scheduling | `croner` (or equivalent) inside the worker, with cycle runs recorded so restarts never double-run a cycle |
+| Ledger access | JSON Ledger API v2 over HTTPS, OIDC client-credentials or password-grant tokens from the configured identity provider |
+| Wallet / transfers SDKs | `@canton-network/wallet-sdk` for party, transfer and preapproval operations on the server side; `@groftylabs/dapp-sdk` (CIP-0103) for user signing on MainNet |
+| App database | PostgreSQL with Drizzle ORM, for app-side data only: sessions, invites, chat history, cached ledger views, job state. The ledger stays the source of truth for every product record in `details.md` Section 6 |
+| LLM | One client using the Anthropic-compatible Messages API with tool use. `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` from env. Default base URL for the Z.ai Coding Plan: `https://api.z.ai/api/anthropic` |
+| Validation | Zod for all API inputs and all LLM tool-call arguments |
+| Decimal math | `decimal.js` (or Daml `Decimal` on-ledger). Never JavaScript floating point for amounts |
+| Styling | Plain CSS with custom properties for the tokens in `userflow.md` Section 1; no component library that imposes its own look |
+| Fonts | Newsreader and Public Sans, self-hosted |
+| Testing | Daml Script (contracts), Vitest (domain, agent checks, pro-rata), Playwright (happy path in the browser) |
+| LocalNet | Docker Compose: Canton LocalNet plus BitSafe's Decentralization Manager for the three-node hosting setup |
+| Config | `.env` per network; `NETWORK=devnet|mainnet|localnet` selects endpoints and signing mode |
+
+Constraints:
 
 | ID | Constraint |
 |---|---|
-| T1 | Smart contracts in Daml, built and tested with `dpm`, compatible with the shared node's Canton version. |
-| T2 | Web app in SvelteKit (Svelte 5) using adapter-node; server routes act as the backend. |
-| T3 | Scheduler and agent run as a separate long-running worker process in the same repository, sharing code with the web app. No long-running loops inside request handlers. |
-| T4 | Ledger access through the JSON Ledger API v2. |
-| T5 | LLM access through a single configurable client (base URL, API key, model in environment variables). Default: the Z.ai Coding Plan endpoint the product owner provides. Switching providers must require only config changes. |
-| T6 | No secrets in the repository. `.env.example` lists every variable. |
-| T7 | All amounts use decimal arithmetic, never floating point. |
-| T8 | Seeding scripts that create demo history on DevNet live in `scripts/` and are idempotent. |
+| T1 | No long-running loops inside SvelteKit request handlers; background work belongs to the worker. |
+| T2 | No secrets in the repository. `.env.example` lists every variable with a one-line description. |
+| T3 | All amounts use decimal arithmetic. |
+| T4 | Seeding scripts that create demo history on DevNet live in `scripts/` and are idempotent. |
+| T5 | Ledger, wallet and LLM access each sit behind one module, so swapping a network, wallet or model provider changes config, not feature code. |
 
 ## 7. Submission requirements
 
@@ -113,6 +133,6 @@ Agent tool set (minimum): `draft_policy`, `propose_mandate_change`, `list_holder
 5. Treasurer screens: setup, overview, cycle, approvals.
 6. Holder screens.
 7. Audit flow.
-8. MainNet Grofty path (after N6 is answered).
+8. MainNet Grofty path.
 9. LocalNet BitSafe setup.
 10. Landing page, polish, videos.
