@@ -25,3 +25,5 @@ export {
   StatusResponseSchema,
   type StatusResponse,
 } from './api/status';
+export * from './api/treasury';
+export * from './api/agent';
