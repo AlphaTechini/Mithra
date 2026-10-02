@@ -146,6 +146,16 @@ Result of the last run: **1 passed (about 50 s of test, about 1 minute with the 
 
 What the run found and fixed (real dead ends, each with a unit test): after creating the organization the app sent the new treasurer back to `/start` until a reload (the session was read before the organization existed); the auditor's "Propose scope" failed with "The server sent something Mithra could not read" (the route's answer lacked the `label` and `notice` fields the screen needs); the evidence room showed raw status names, and kept showing "awaiting-acceptance" or "awaiting-signature" for payments recorded as paid after the outcome was written. What it did not cover: MainNet payouts (needs Grofty), LocalNet with real images and BitSafe nodes, the OpenAI model, Settings, Activity and invites in the browser.
 
+## Active contracts above the participant's list limit (sandbox)
+
+What was checked on 2026-10-02 against the sandbox that `scripts/sandbox.sh start` runs (Canton 3.4.0-rc2, no authentication, default list limit):
+
+1. The plain HTTP read refuses a result above the limit. With 201 or more matching contracts, `POST /v2/state/active-contracts` answers `413` with code `JSON_API_MAXIMUM_LIST_ELEMENTS_NUMBER_REACHED` ("The number of matching elements (201) is greater than the node limit (200)."). The error says `errorCategory: 2` (transient), but the same request fails again, so the client does not retry it.
+2. The WebSocket stream of the same endpoint (`ws://localhost:7575/v2/state/active-contracts`, subprotocol `daml.ws.auth`, the HTTP request body as the first message) returned all 712 active contracts the sandbox held at that moment, one message each, then closed with code 1000. Without the `daml.ws.auth` subprotocol Node 22's `WebSocket` crashes in undici, because the sandbox answers with it anyway; the client always sends it.
+3. `test/integration/ledger.test.ts`, "reads more active contracts than the list limit allows over the WebSocket stream": creates 205 `TestHolding` contracts for a new party, shows the HTTP read answering 413, then reads them through `LedgerClient.activeContracts`, which opens exactly one WebSocket and returns 205 distinct contracts with their payloads. A read below the limit does not open one. Run it with `scripts/sandbox.sh start` and `cd apps/backend && npx vitest run --config vitest.integration.config.ts test/integration/ledger.test.ts`.
+
+The client uses the stream only after a 413, not for every read. Not verified: a participant that requires a token (the sandbox has none), where the token goes in the `jwt.token.<token>` subprotocol; a unit test (`src/ledger/client.test.ts`) checks the subprotocols and the `wss://` URL for https. To raise the limit on a LocalNet participant instead, see the operator note in [localnet/README.md](../localnet/README.md).
+
 ## BitSafe evidence (owner's machine)
 
 `scripts/bitsafe-demo.sh` runs the whole N8 demonstration against the running LocalNet and backend and writes a timestamped report to `docs/bitsafe-evidence/`. It was written without a LocalNet (images cannot be pulled in the build environment): `bash -n`, `shellcheck`, `--dry-run` and a run against stub services were checked, the real run is yours. What it proves and the node, operator and threshold list: [docs/bitsafe.md](bitsafe.md).

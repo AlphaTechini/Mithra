@@ -15,6 +15,7 @@ import {
   choiceResults,
   createdIn,
   DistributionOutcomeSchema,
+  type DistributionOutcome,
   LedgerError,
   ProposalSchema,
   type Contract,
@@ -139,7 +140,11 @@ export interface CycleService extends CycleQueries {
   decisionRecord(recordId: string): Promise<DecisionRecordView>;
   /** One reconciler pass over one cycle: executes it when it is ready. */
   advance(cycleId: string): Promise<AdvanceResult>;
-  /** Cycle ids with a proposal that is waiting (countdown, held, approvals or funds). */
+  /**
+   * Cycle ids the reconciler has to look at: a proposal that is waiting (countdown, held,
+   * approvals or funds), or an execution that no live run of this process covers (`advance`
+   * settles it from the ledger).
+   */
   waitingCycleIds(): Promise<string[]>;
   /** Frees runs and submissions that a crash left half done. */
   recoverStale(): Promise<void>;
@@ -173,6 +178,10 @@ export interface CycleDeps {
   rail?: PayoutRail;
   /** How long a payout may take on the ledger. Default 10 minutes. */
   executeWindowMs?: number;
+  /** Where bookkeeping failures after a confirmed payout are logged. */
+  log?: { warn(object: unknown, message?: string): void };
+  /** Replaces the cycle store (tests); default: PostgreSQL through `db`. */
+  store?: CycleStore;
 }
 
 const DEFAULT_COUNTDOWN_SECONDS = 30;
@@ -198,6 +207,13 @@ const STEP_LABELS: Record<StepId, string> = {
   review: 'Review written',
   verdict: 'Verdict',
   execute: 'Payments',
+};
+
+/** What putting an execution back to `proposed` may also change on the row. */
+type RevertPatch = {
+  error?: string | null;
+  fundsShortfall?: Shortfall | null;
+  waitingForWallets?: boolean;
 };
 
 /** A failure of one pipeline step, with the message people see on the timeline. */
@@ -268,7 +284,7 @@ class CycleEngine implements CycleService {
     this.treasury = deps.config.parties.treasury;
     this.agent = deps.config.parties.agent;
     this.symbol = deps.config.asset.symbol;
-    this.store = new CycleStore(deps.db, this.treasury);
+    this.store = deps.store ?? new CycleStore(deps.db, this.treasury);
     this.memoWriter = deps.memoWriter ?? new TemplateMemoWriter();
     this.now = deps.now ?? (() => new Date());
     const seconds =
@@ -532,6 +548,17 @@ class CycleEngine implements CycleService {
         'no_mandate',
         'There is no sealed Mandate yet. Seal one in Settings before running a cycle.',
       );
+    }
+    // L3: a cycle the Mandate already executed is not run again. Its run row is settled from the
+    // ledger and left as it is, so a stale `failed` row cannot start another attempt that would
+    // show an executed cycle as failed. Without a row (a restored database) the run goes on and
+    // the duplicate_cycle check fails it with an explicit reason.
+    if (mandate.payload.executedCycles.includes(cycleId)) {
+      const existing = await this.store.get(cycleId);
+      if (existing) {
+        await this.syncFromLedger(existing);
+        return { cycleId };
+      }
     }
     const terms = mandate.payload.terms;
     const total = input.total ?? terms.fixedAmount;
@@ -1349,12 +1376,18 @@ class CycleEngine implements CycleService {
   }
 
   async waitingCycleIds(): Promise<string[]> {
-    return (await this.store.withStatus(['proposed'])).map((r) => r.cycleId);
+    return (await this.store.withStatus(['proposed', 'executing'])).map((r) => r.cycleId);
   }
 
   async advance(cycleId: string): Promise<AdvanceResult> {
     if (this.inflight.has(cycleId)) return 'busy';
     const row = await this.store.get(cycleId);
+    if (row?.status === 'executing') {
+      // No execution of this process is running (that would be `busy`): it was cut short after
+      // the ledger may have confirmed the payout. The ledger's outcome settles it; without one,
+      // `recoverStale` returns the row to `proposed` once it is stale.
+      return (await this.syncFromLedger(row)) === 'executed' ? 'executed' : 'idle';
+    }
     if (!row || row.status !== 'proposed') return 'idle';
     const [proposal, mandate] = await Promise.all([
       this.activeProposal(cycleId),
@@ -1397,26 +1430,104 @@ class CycleEngine implements CycleService {
     }
   }
 
-  /** The ledger shows how a cycle ended even when this app did not see it (another instance, a crash). */
-  private async syncFromLedger(row: CycleRunRow): Promise<void> {
+  /**
+   * The ledger shows how a cycle ended even when this app did not see it (another instance, a
+   * crash, a bookkeeping failure after the payout). Returns the status the row was moved to, or
+   * null when the ledger has no outcome yet or the row had already moved on.
+   */
+  private async syncFromLedger(row: CycleRunRow): Promise<RunStatus | null> {
     const outcomes = (await this.deps.ledger.reader.outcomes())
       .filter((o) => o.payload.cycleId === row.cycleId)
-      .sort((a, b) => (a.payload.at < b.payload.at ? 1 : a.payload.at > b.payload.at ? -1 : 0));
+      .sort((a, b) => Date.parse(b.payload.at) - Date.parse(a.payload.at));
     const latest = outcomes[0];
-    if (!latest) return;
+    if (!latest) return null;
     const status =
       latest.payload.kind === 'Executed'
         ? 'executed'
         : latest.payload.kind === 'Rejected'
           ? 'rejected'
           : 'cancelled';
-    await this.store.transition(row.id, ['proposed', 'executing', 'running'], {
+    // An execution cut short after the ledger confirmed it missed its timeline step and links;
+    // they are written before the row is marked, as `afterExecution` does.
+    if (status === 'executed' && row.status === 'executing') await this.backfillExecution(latest);
+    // Money that moved is final (L3): an executed outcome settles even a row marked failed.
+    const from: RunStatus[] =
+      status === 'executed'
+        ? ['proposed', 'executing', 'running', 'failed']
+        : ['proposed', 'executing', 'running'];
+    const moved = await this.store.transition(row.id, from, {
       status,
       finishedAt: this.now(),
       fundsShortfall: null,
+      waitingForWallets: false,
       error: null,
     });
+    if (!moved) return null;
     await this.emitStatus(row.cycleId);
+    return status;
+  }
+
+  /**
+   * Writes what `afterExecution` (or `afterAuthorization` on MainNet) would have, from the outcome
+   * on the ledger, for a payout whose bookkeeping was cut short. Skips what is already there.
+   * Never throws.
+   */
+  private async backfillExecution(outcome: Contract<DistributionOutcome>): Promise<void> {
+    const { cycleId, payments, seeded } = outcome.payload;
+    try {
+      if (outcome.offset !== undefined) {
+        const viewers = this.deps.config.ledger.readAsTreasury ? [this.treasury] : [this.agent];
+        const tx = await this.deps.ledger.client.updateByOffset(outcome.offset, viewers);
+        await this.store.setTxRef(outcome.contractId, tx.updateId, 'outcome');
+        for (const payment of createdIn(tx, 'Mithra.Payment:Payment')) {
+          await this.store.setTxRef(payment.contractId, tx.updateId, 'payment');
+        }
+      }
+      const mainnet = this.rail.kind === 'grofty-mainnet';
+      const last = currentTimeline(await this.store.timeline(cycleId)).find(
+        (s) => s.id === 'execute',
+      );
+      const written = mainnet
+        ? last?.detail?.startsWith('Authorized on the ledger') === true
+        : last?.status === 'done';
+      if (written) return;
+      const total = formatAmount(
+        formatDecimal(payments.reduce((sum, p) => sum.plus(toDecimal(p.amount)), toDecimal('0'))),
+        this.symbol,
+      );
+      const count = plural(payments.length, 'holder');
+      if (mainnet) {
+        await this.step(
+          cycleId,
+          'execute',
+          'running',
+          `Authorized on the ledger. Sign ${payments.length === 1 ? 'the payout' : `${payments.length} payouts`} of ${total} in Grofty`,
+        );
+        await this.record(
+          this.agent,
+          'payout.authorized',
+          cycleId,
+          `${labelOf(cycleId)} is ready to pay: ${total} to ${count}, waiting for the treasurer to sign in Grofty`,
+          undefined,
+          seeded,
+        );
+      } else {
+        await this.step(cycleId, 'execute', 'done', `Paid ${total} to ${count}`);
+        await this.record(
+          this.agent,
+          'payment.paid',
+          cycleId,
+          `Paid ${total} to ${count} for ${labelOf(cycleId)}`,
+          undefined,
+          seeded,
+        );
+      }
+    } catch (error) {
+      this.deps.log?.warn(
+        { err: error, cycleId },
+        'could not complete the records of a paid cycle',
+      );
+    }
   }
 
   private async recordNeedsFunds(
@@ -1451,29 +1562,33 @@ class CycleEngine implements CycleService {
     if (!claimed) return 'busy';
     this.unschedule(cycleId);
     const label = labelOf(cycleId);
-    const revert = async (patch: {
-      error?: string | null;
-      fundsShortfall?: Shortfall | null;
-    }): Promise<void> => {
-      await this.store.transition(row.id, ['executing'], { status: 'proposed', ...patch });
+    const revert = async (patch: RevertPatch): Promise<void> => {
+      await this.store.transition(row.id, ['executing'], {
+        status: 'proposed',
+        waitingForWallets: false,
+        ...patch,
+      });
     };
+    let proposal: Contract<Proposal>;
+    let result: RailResult;
     try {
-      const [proposal, mandate] = await Promise.all([
+      const [active, mandate] = await Promise.all([
         this.activeProposal(cycleId),
         this.deps.ledger.reader.mandate(),
       ]);
-      if (!proposal || !mandate) {
+      if (!active || !mandate) {
         await revert({});
         await this.syncFromLedger(row);
         return 'idle';
       }
+      proposal = active;
       const gate = this.readiness({ ...row, status: 'proposed' }, proposal, mandate);
       if (!gate.ready) {
         await revert({});
         return 'waiting';
       }
 
-      const result = await this.rail.run(
+      result = await this.rail.run(
         { cycleId, label, proposal, mandate },
         {
           announce: async () => {
@@ -1489,7 +1604,6 @@ class CycleEngine implements CycleService {
           },
         },
       );
-      return await this.afterRail(row, proposal, result, label, revert);
     } catch (error) {
       if (isTransient(error)) {
         const text = `The ledger has not confirmed the payments for ${label} yet (${errorMessage(error)}). Mithra checks again shortly; nothing is paid twice.`;
@@ -1513,6 +1627,19 @@ class CycleEngine implements CycleService {
       await this.emitStatus(cycleId);
       throw error;
     }
+
+    // The rail has answered: the ledger may already have moved the money. A failure in the
+    // bookkeeping below must never be reported as a failed payout. The row stays `executing`
+    // and `advance` and `recoverStale` reconcile it from the ledger's outcome.
+    try {
+      return await this.afterRail(row, proposal, result, label, revert);
+    } catch (error) {
+      this.deps.log?.warn(
+        { err: error, cycleId },
+        'bookkeeping after the payout failed; the cycle is reconciled from the ledger',
+      );
+      return 'retry';
+    }
   }
 
   /** What to do with the rail's answer. */
@@ -1521,14 +1648,15 @@ class CycleEngine implements CycleService {
     proposal: Contract<Proposal>,
     result: RailResult,
     label: string,
-    revert: (patch: { error?: string | null; fundsShortfall?: Shortfall | null }) => Promise<void>,
+    revert: (patch: RevertPatch) => Promise<void>,
   ): Promise<AdvanceResult> {
     const cycleId = row.cycleId;
     switch (result.kind) {
       case 'needs-funds': {
         const shortfall: Shortfall = { balance: result.balance, required: result.required };
         const changed = JSON.stringify(row.fundsShortfall) !== JSON.stringify(shortfall);
-        await revert({ fundsShortfall: shortfall });
+        // The activity entry first: the shortfall on the row is what makes the cycle show
+        // `needs-funds`, so it is stored only once the entry is written.
         if (changed) {
           await this.recordNeedsFunds(
             cycleId,
@@ -1536,12 +1664,14 @@ class CycleEngine implements CycleService {
             result.required,
             proposal.payload.seeded,
           );
-          await this.emitStatus(cycleId);
         }
+        await revert({ fundsShortfall: shortfall });
+        if (changed) await this.emitStatus(cycleId);
         return 'needs-funds';
       }
       case 'needs-wallets': {
-        await revert({});
+        // The step and the activity entry come first: the row is marked as waiting (which is what
+        // makes the cycle show `needs-wallets`) only once they are written.
         const names = await Promise.all(result.holders.map((h) => this.nameOf(h)));
         const text = `Waiting for ${names.join(', ')} to connect Grofty Wallet`;
         await this.step(cycleId, 'execute', 'pending', text);
@@ -1556,6 +1686,7 @@ class CycleEngine implements CycleService {
             proposal.payload.seeded,
           );
         }
+        await revert({ waitingForWallets: true });
         await this.emitStatus(cycleId);
         return 'needs-wallets';
       }
@@ -1582,12 +1713,6 @@ class CycleEngine implements CycleService {
     const cycleId = row.cycleId;
     const created = createdIn(tx, 'Mithra.Decision:DistributionOutcome')[0];
     if (created) await this.store.setTxRef(created.contractId, tx.updateId, 'outcome');
-    await this.store.transition(row.id, ['executing'], {
-      status: 'executed',
-      finishedAt: this.now(),
-      error: null,
-      fundsShortfall: null,
-    });
     this.walletsNoted.delete(cycleId);
     const count = proposal.payload.payouts.length;
     await this.step(
@@ -1604,7 +1729,20 @@ class CycleEngine implements CycleService {
       { updateId: tx.updateId },
       proposal.payload.seeded,
     );
+    // Last: the cycle shows as authorized only once everything above is written.
+    await this.markExecuted(row);
     await this.emitStatus(cycleId);
+  }
+
+  /** Marks the run row `executed`. It is the last write of a confirmed payout (see `deriveStatus`). */
+  private async markExecuted(row: CycleRunRow): Promise<void> {
+    await this.store.transition(row.id, ['executing'], {
+      status: 'executed',
+      finishedAt: this.now(),
+      error: null,
+      fundsShortfall: null,
+      waitingForWallets: false,
+    });
   }
 
   private async afterExecution(
@@ -1620,12 +1758,6 @@ class CycleEngine implements CycleService {
     for (const payment of createdIn(tx, 'Mithra.Payment:Payment')) {
       await this.store.setTxRef(payment.contractId, tx.updateId, 'payment');
     }
-    await this.store.transition(row.id, ['executing'], {
-      status: 'executed',
-      finishedAt: this.now(),
-      error: null,
-      fundsShortfall: null,
-    });
     const refs = outcome?.payments ?? [];
     const awaiting = refs.filter((r) => r.status === 'AwaitingAcceptance');
     await this.step(
@@ -1654,6 +1786,8 @@ class CycleEngine implements CycleService {
         proposal.payload.seeded,
       );
     }
+    // Last: the cycle shows as paid only once the timeline, the activity and the links are written.
+    await this.markExecuted(row);
     for (const payout of proposal.payload.payouts) {
       this.deps.bus.publish({ type: 'holder', change: 'payments' }, { parties: [payout.holder] });
     }

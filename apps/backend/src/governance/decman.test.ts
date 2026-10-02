@@ -260,6 +260,25 @@ describe('DecMan sealer against a stub Decentralization Manager', () => {
     for (const n of nodes) await n.stop();
   });
 
+  /** The ledger shows the Mandate this request asked for: its summary fingerprint, a new version. */
+  function ledgerSealsLastRequest(version: number): void {
+    const request = submitted.find(
+      (i) =>
+        i.commands[0] &&
+        'CreateCommand' in i.commands[0] &&
+        i.commands[0].CreateCommand.templateId.endsWith('MandateSealRequest'),
+    );
+    const created = (
+      request?.commands[0] as { CreateCommand: { createArguments: Record<string, string> } }
+    ).CreateCommand.createArguments;
+    orgVersion = version;
+    currentMandate = {
+      contractId: `mandate-${String(version)}`,
+      createdAt: '2026-10-01T10:00:00Z',
+      payload: { version, summaryFingerprint: created['summaryFingerprint'] } as unknown as Mandate,
+    };
+  }
+
   const sealer = (fetchOverride?: typeof fetch) =>
     createDecmanSealer({
       config,
@@ -386,8 +405,8 @@ describe('DecMan sealer against a stub Decentralization Manager', () => {
       nodes.flatMap((n) => n.requests).filter((r) => r.path === '/governance/execute'),
     ).toHaveLength(1);
 
-    // Org_ApplySeal ran: the organization's version moved.
-    orgVersion = 1;
+    // Org_ApplySeal ran: the organization's version moved and the Mandate is this request's.
+    ledgerSealsLastRequest(1);
     const sealed = await s.advance(started.sealId);
     expect(sealed).toMatchObject({ state: 'sealed', mandateVersion: 1, error: null });
   });
@@ -441,9 +460,77 @@ describe('DecMan sealer against a stub Decentralization Manager', () => {
     const s = sealer();
     const started = await s.start('draft-1', TREASURER);
     expect(await s.pending()).toEqual([started.sealId]);
-    orgVersion = 1;
+    ledgerSealsLastRequest(1);
     await s.advance(started.sealId);
     expect(await s.pending()).toEqual([]);
+  });
+
+  it('refuses a second start with 409 seal_in_progress while one waits for the nodes', async () => {
+    const s = sealer();
+    const first = await s.start('draft-1', TREASURER);
+    const refused = await s.start('draft-1', TREASURER).catch((error: unknown) => error);
+    expect(refused).toMatchObject({
+      status: 409,
+      code: 'seal_in_progress',
+      message:
+        'A Mandate change is already waiting for the nodes. Wait for it to finish, then try again.',
+    });
+    // Nothing was signed or filed for the refused one.
+    expect(submitted).toHaveLength(2);
+    expect(await s.pending()).toEqual([first.sealId]);
+    // Once the first is done, the next change may start.
+    ledgerSealsLastRequest(1);
+    await s.advance(first.sealId);
+    submitted.length = 0;
+    expect((await s.start('draft-1', TREASURER)).state).toBe('awaiting-nodes');
+  });
+
+  it('lets only one of two concurrent starts through', async () => {
+    const s = sealer();
+    const results = await Promise.allSettled([
+      s.start('draft-1', TREASURER),
+      s.start('draft-1', TREASURER),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected']);
+    const rejected = results.find((r) => r.status === 'rejected');
+    expect((rejected as PromiseRejectedResult).reason).toMatchObject({
+      status: 409,
+      code: 'seal_in_progress',
+    });
+    expect(submitted.filter((i) => i.actAs[0] === TREASURER)).toHaveLength(1);
+    expect(store.rows.size).toBe(1);
+  });
+
+  it('is not sealed by a version change that another Mandate caused', async () => {
+    const s = sealer();
+    const started = await s.start('draft-1', TREASURER);
+    // The version moved, but the Mandate on the ledger is not the one this request asked for.
+    orgVersion = 1;
+    currentMandate = {
+      contractId: 'mandate-other',
+      createdAt: '2026-10-01T10:00:00Z',
+      payload: { version: 1, summaryFingerprint: 'someone-elses' } as unknown as Mandate,
+    };
+    expect((await s.advance(started.sealId)).state).toBe('awaiting-nodes');
+    expect(store.rows.get(started.sealId)).toMatchObject({
+      state: 'awaiting-nodes',
+      mandateVersion: null,
+    });
+    // Its own Mandate appears: now it is sealed.
+    ledgerSealsLastRequest(2);
+    expect(await s.advance(started.sealId)).toMatchObject({ state: 'sealed', mandateVersion: 2 });
+  });
+
+  it('seals a request stored before fingerprints were kept when the version moved', async () => {
+    const s = sealer();
+    const started = await s.start('draft-1', TREASURER);
+    const row = store.rows.get(started.sealId);
+    if (!row) throw new Error('no row');
+    const legacy = { ...(row.confirmations as Record<string, unknown>) };
+    delete legacy['summaryFingerprint'];
+    store.rows.set(started.sealId, { ...row, confirmations: legacy });
+    orgVersion = 1;
+    expect(await s.advance(started.sealId)).toMatchObject({ state: 'sealed', mandateVersion: 1 });
   });
 
   it('the description numbers the next version when a Mandate already exists', async () => {

@@ -169,6 +169,15 @@ export class AiMemoWriter implements MemoWriter {
           modelFingerprints: [],
         };
       }
+      if (error instanceof LlmInvalidOutputError) {
+        // The client refused the answer itself (a tool call that is not a function call).
+        return {
+          memo: unavailableMemo('the model answered in a form I could not use', input),
+          memoSource: 'ai-unavailable',
+          advisoryChecks: [],
+          modelFingerprints: [],
+        };
+      }
       throw error;
     }
 

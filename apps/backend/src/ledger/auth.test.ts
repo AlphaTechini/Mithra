@@ -65,6 +65,41 @@ describe('oidcClientCredentials', () => {
     scope: 'daml_ledger_api',
   };
 
+  it('refuses a token URL that is not https, except on loopback', () => {
+    expect(() =>
+      oidcClientCredentials({ ...options, tokenUrl: 'http://idp.example/token' }),
+    ).toThrow(/LEDGER_OIDC_TOKEN_URL.*https:\/\//s);
+    expect(() => oidcClientCredentials({ ...options, tokenUrl: 'not a url' })).toThrow(
+      /LEDGER_OIDC_TOKEN_URL/,
+    );
+    for (const tokenUrl of [
+      'https://idp.example/token',
+      'http://localhost:8080/token',
+      'http://keycloak.localhost/token',
+      'http://127.0.0.1:8080/token',
+      'http://[::1]:8080/token',
+    ]) {
+      expect(() => oidcClientCredentials({ ...options, tokenUrl })).not.toThrow();
+    }
+  });
+
+  it('does not follow a redirect of the token endpoint, and fails with what to change', async () => {
+    const seen: RequestInit[] = [];
+    const provider = oidcClientCredentials({
+      ...options,
+      fetch: (_input, init) => {
+        seen.push(init ?? {});
+        return Promise.resolve(
+          new Response(null, { status: 302, headers: { location: 'https://evil.example/steal' } }),
+        );
+      },
+    });
+    await expect(provider.getToken()).rejects.toThrow(
+      /redirect \(HTTP 302 to https:\/\/evil.example\).*LEDGER_OIDC_TOKEN_URL/,
+    );
+    expect(seen[0]?.redirect).toBe('manual');
+  });
+
   it('posts a client credentials form and caches the token until near expiry', async () => {
     const { calls, fetchStub } = stub([
       { access_token: 't1', expires_in: 300 },

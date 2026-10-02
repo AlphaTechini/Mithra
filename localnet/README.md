@@ -76,6 +76,16 @@ All three participants run in one container, so `docker stop` would stop them al
 
 `scripts/bitsafe-demo.sh` runs the whole BitSafe evidence (one node offline and a cycle still pays, below the hosting threshold, a governed Mandate change below and at its confirmation threshold) against the running backend and writes a report to `docs/bitsafe-evidence/`; see [docs/bitsafe.md](../docs/bitsafe.md) and [docs/verification.md](../docs/verification.md). The console command names are marked "verify on owner's machine" in `console/node-offline.sc`; `scripts/localnet-node.sh console` opens the stock console to check them.
 
+## Operator note: the participant's list limit
+
+The backend reads the ledger's active contracts with `POST /v2/state/active-contracts`. A participant refuses a result larger than its `http-list-max-elements-limit` (200 by default) with HTTP 413. The backend then repeats the read over the JSON API's WebSocket stream, which has no such limit, so a larger treasury keeps working with the default setting. If you want the plain HTTP read to cover your data too, raise the limit on the participant the backend talks to (node A), in its Canton configuration:
+
+```
+canton.participants.<participant-name>.http-ledger-api.websocket-config.http-list-max-elements-limit = 5000
+```
+
+Nothing in Mithra needs it. The WebSocket path needs the participant's JSON API port to accept WebSocket upgrades (it does by default) and, when the participant requires a token, accepts it as the `jwt.token.<token>` subprotocol; see [docs/research/ledger-api.md](../docs/research/ledger-api.md).
+
 ## Reset and troubleshooting
 
 - `scripts/localnet-down.sh` stops everything and keeps data. `scripts/localnet-up.sh` brings it back.

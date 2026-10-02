@@ -44,6 +44,8 @@ export interface CycleModuleDeps {
   /** Milliseconds between reconciler passes. Default 10 000. */
   reconcileIntervalMs?: number;
   fetch?: typeof fetch;
+  /** Where bookkeeping failures are logged. */
+  log?: { warn(object: unknown, message?: string): void };
 }
 
 export interface CycleModule {
@@ -82,6 +84,7 @@ export function createCycleModule(deps: CycleModuleDeps): CycleModule {
     ...(deps.timers === undefined ? {} : { timers: deps.timers }),
     ...(deps.agentExecutor ? { agentExecutor: deps.agentExecutor } : {}),
     ...(deps.wallets ? { wallets: deps.wallets } : {}),
+    ...(deps.log ? { log: deps.log } : {}),
   });
   const store = createSealStore(deps.db);
   const sealPrepare = { config: deps.config, ledger: deps.ledger, drafts, names: deps.names };
@@ -107,6 +110,7 @@ export function createCycleModule(deps: CycleModuleDeps): CycleModule {
       activity: deps.activity,
       bus: deps.bus,
       sealer,
+      ...(deps.log ? { log: deps.log } : {}),
     },
     deps.reconcileIntervalMs,
   );

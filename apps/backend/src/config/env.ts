@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { NetworkSchema, type Network } from '@mithra/shared';
 import { z } from 'zod';
+import { isSecureForCredentials, originOf } from '../ledger/secureUrl';
 
 /**
  * Description of every environment variable the backend reads. These strings are printed in
@@ -410,6 +411,25 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     if (network !== undefined) authInput['LEDGER_HMAC_SECRET'] ??= 'unsafe';
     auth = readLedgerAuth(authMode, authInput, authProblems);
     problems.push(...authProblems);
+  }
+
+  // A token or client secret goes to these URLs: they must be https unless they are loopback.
+  if (parsed.success && authMode !== undefined && authMode !== 'none') {
+    const insecure = (name: string, url: string | undefined): void => {
+      if (url !== undefined && !isSecureForCredentials(url)) {
+        problems.push(
+          `Invalid environment variable ${name}: ${originOf(url)} is not https, so the ${authMode === 'oidc-client-credentials' ? 'client secret or token' : 'ledger token'} would cross the network in cleartext. Set ${name} to an https:// URL; only localhost addresses may use http.`,
+        );
+      }
+    };
+    insecure('LEDGER_JSON_API_URL', parsed.data.LEDGER_JSON_API_URL);
+    if (authMode === 'oidc-client-credentials') {
+      insecure('LEDGER_OIDC_TOKEN_URL', input['LEDGER_OIDC_TOKEN_URL']);
+    }
+    const nodes = (localnetParsed ?? mainnetParsed)?.data?.LOCALNET_NODES ?? [];
+    nodes.forEach((node, index) => {
+      insecure(`LOCALNET_NODES[${index}].jsonApiUrl`, node.jsonApiUrl);
+    });
   }
 
   if (problems.length > 0 || network === undefined || !parsed.success) {

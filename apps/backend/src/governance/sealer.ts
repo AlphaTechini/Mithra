@@ -39,6 +39,12 @@ export interface SealProgress {
   count: number;
   executedAt: string | null;
   lastError: string | null;
+  /**
+   * Fingerprint of the Mandate summary this request asks for. The seal is done when the Mandate
+   * on the ledger carries it, not merely when the version moved (another change may have moved
+   * it). Null for requests stored before it was kept.
+   */
+  summaryFingerprint: string | null;
 }
 
 export function emptyProgress(): SealProgress {
@@ -49,6 +55,7 @@ export function emptyProgress(): SealProgress {
     count: 0,
     executedAt: null,
     lastError: null,
+    summaryFingerprint: null,
   };
 }
 
@@ -61,6 +68,7 @@ export function progressOf(row: Pick<SealRequestRow, 'confirmations'>): SealProg
     count: typeof raw?.count === 'number' ? raw.count : 0,
     executedAt: typeof raw?.executedAt === 'string' ? raw.executedAt : null,
     lastError: typeof raw?.lastError === 'string' ? raw.lastError : null,
+    summaryFingerprint: typeof raw?.summaryFingerprint === 'string' ? raw.summaryFingerprint : null,
   };
 }
 

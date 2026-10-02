@@ -65,16 +65,23 @@ export interface FundingDeps {
 export interface FundingResult {
   /** The amount added, as given. */
   amount: string;
-  /** True when the registry made the transfer pending and the agent accepted it for the treasury. */
+  /** True when the registry made a transfer pending and the agent accepted it for the treasury. */
   acceptedPending: boolean;
-  tapUpdateId: string;
-  transferUpdateId: string;
+  /** Null when the operator already held the funds (an earlier attempt tapped them). */
+  tapUpdateId: string | null;
+  /** Null when an earlier attempt's pending transfer already covered the amount. */
+  transferUpdateId: string | null;
   acceptUpdateId: string | null;
 }
 
 /** LocalNet test funds and auto-receive (the two things only the registry's own SDK can build). */
 export interface Funding {
-  /** Taps CC to the operator, sends it to the treasury and accepts it for the treasury. */
+  /**
+   * Taps CC to the operator, sends it to the treasury and accepts it for the treasury. Safe to
+   * repeat after a partial failure: a transfer that is already waiting for the treasury is
+   * accepted first and counts toward the amount, and the tap is skipped when the operator
+   * already holds the funds.
+   */
   fundTreasury(amount: string): Promise<FundingResult>;
   /** Creates a CC transfer preapproval (auto-receive) for `receiver`, submitted as the receiver. */
   createPreapproval(receiver: string): Promise<void>;
@@ -202,6 +209,16 @@ const TransferResultSchema = z.looseObject({
   ]),
 });
 
+/** The part of a `TransferInstruction` interface view this module reads. */
+const TransferInstructionViewSchema = z.looseObject({
+  transfer: z.looseObject({
+    sender: z.string(),
+    receiver: z.string(),
+    amount: z.string(),
+    instrumentId: z.looseObject({ admin: z.string(), id: z.string() }),
+  }),
+});
+
 const REQUESTED_AT_SKEW_MS = 60_000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -236,25 +253,106 @@ export function createFunding(deps: FundingDeps): Funding {
     }
     if (sum.lt(toDecimal(amount))) {
       throw new FundingError(
-        `The operator holds ${formatDecimal(sum)} ${config.asset.symbol} after the tap, less than the ${amount} to send. Check that the tap worked and try again.`,
+        `The operator holds ${formatDecimal(sum)} ${config.asset.symbol} after the tap, less than the ${amount} to send. Check that the tap worked and try again; the funds the operator holds are reused, not tapped again.`,
       );
     }
     return chosen;
   }
 
+  /** Transfers from the operator that wait for the treasury to accept them, with their amounts. */
+  async function pendingTransfers(): Promise<{ cid: string; amount: string }[]> {
+    const { operator, treasury } = config.parties;
+    const instrument = asset.instrument();
+    const active = await ledger.client.activeContracts({
+      parties: [treasury],
+      interfaceIds: [TRANSFER_INSTRUCTION_INTERFACE],
+    });
+    const found: { cid: string; amount: string }[] = [];
+    for (const contract of active) {
+      for (const view of contract.interfaceViews) {
+        if (!view.interfaceId.endsWith('TransferInstructionV1:TransferInstruction')) continue;
+        const parsed = TransferInstructionViewSchema.safeParse(view.viewValue);
+        if (!parsed.success) continue;
+        const { transfer } = parsed.data;
+        if (
+          transfer.sender === operator &&
+          transfer.receiver === treasury &&
+          transfer.instrumentId.admin === instrument.admin &&
+          transfer.instrumentId.id === instrument.id
+        ) {
+          found.push({ cid: contract.contractId, amount: transfer.amount });
+        }
+      }
+    }
+    return found;
+  }
+
+  const NO_ORGANIZATION =
+    'The funds were sent but the treasury has no organization to accept them yet. Create the organization first, then add funds again: Mithra accepts the transfer that is already waiting and does not tap again.';
+
+  /** The agent accepts a pending transfer for the treasury (`Org_AcceptDeposit`). */
+  async function acceptForTreasury(orgCid: string, instructionCid: string): Promise<string> {
+    const { treasury, agent } = config.parties;
+    const accept = await asset.acceptContext(instructionCid);
+    const acceptTx = await ledger.client.submit({
+      actAs: [agent],
+      readAs: [treasury],
+      commands: [
+        ledger.commands.orgAcceptDeposit(orgCid, {
+          instructionCid,
+          extraArgs: accept.extraArgs,
+        }),
+      ],
+      disclosedContracts: accept.disclosed,
+      commandId: `fund-accept-${instructionCid.slice(0, 24)}`,
+    });
+    return acceptTx.updateId;
+  }
+
   return {
     async fundTreasury(amount) {
-      const { operator, treasury, agent } = config.parties;
-      const value = encodeDecimal(amount);
+      const { operator, treasury } = config.parties;
+      const requested = encodeDecimal(amount);
 
-      // (1) Tap CC to the operator party. The SDK builds the command; the app submits it.
-      const [tapCommand, tapDisclosed] = await (await sdk()).amulet.tap(operator, value);
-      const tapTx = await ledger.client.submit({
-        actAs: [operator],
-        commands: [toLedgerCommand(tapCommand, 'tap')],
-        disclosedContracts: toDisclosed(tapDisclosed, 'the tap'),
-        commandId: `fund-tap-${randomUUID()}`,
-      });
+      // (0) A failed earlier attempt may have left a transfer waiting for the treasury. Accept it
+      // first and count it: tapping and sending again would fund the treasury twice.
+      let credited = toDecimal('0');
+      let acceptUpdateId: string | null = null;
+      const waiting = await pendingTransfers();
+      if (waiting.length > 0) {
+        const org = await ledger.reader.organization();
+        if (!org) throw new FundingError(NO_ORGANIZATION);
+        for (const transfer of waiting) {
+          acceptUpdateId = await acceptForTreasury(org.contractId, transfer.cid);
+          credited = credited.plus(toDecimal(transfer.amount));
+        }
+        if (credited.gte(toDecimal(requested))) {
+          return {
+            amount: requested,
+            acceptedPending: true,
+            tapUpdateId: null,
+            transferUpdateId: null,
+            acceptUpdateId,
+          };
+        }
+      }
+      const value = credited.isZero()
+        ? requested
+        : encodeDecimal(formatDecimal(toDecimal(requested).minus(credited)));
+
+      // (1) Tap CC to the operator party, unless the operator already holds enough (an earlier
+      // attempt tapped and then failed). The SDK builds the command; the app submits it.
+      let tapUpdateId: string | null = null;
+      if (toDecimal(await asset.balance(operator)).lt(toDecimal(value))) {
+        const [tapCommand, tapDisclosed] = await (await sdk()).amulet.tap(operator, value);
+        const tapTx = await ledger.client.submit({
+          actAs: [operator],
+          commands: [toLedgerCommand(tapCommand, 'tap')],
+          disclosedContracts: toDisclosed(tapDisclosed, 'the tap'),
+          commandId: `fund-tap-${randomUUID()}`,
+        });
+        tapUpdateId = tapTx.updateId;
+      }
 
       // (2) Send it from the operator to the treasury with the token standard.
       const leg = await asset.transferLeg({ sender: operator, receiver: treasury, amount: value });
@@ -303,46 +401,29 @@ export function createFunding(deps: FundingDeps): Funding {
       const { output } = result.data;
       if (output.tag === 'TransferInstructionResult_Failed') {
         throw new FundingError(
-          'The registry refused the transfer to the treasury. Check the operator balance and try again.',
+          'The registry refused the transfer to the treasury. Check the operator balance and try again; funds already tapped to the operator are reused, not tapped again.',
         );
       }
       if (output.tag === 'TransferInstructionResult_Completed') {
         return {
-          amount: value,
-          acceptedPending: false,
-          tapUpdateId: tapTx.updateId,
+          amount: requested,
+          acceptedPending: acceptUpdateId !== null,
+          tapUpdateId,
           transferUpdateId: transferTx.updateId,
-          acceptUpdateId: null,
+          acceptUpdateId,
         };
       }
 
       // (3) The transfer is pending: the treasury cannot submit, so the agent accepts for it.
-      const instructionCid = output.value.transferInstructionCid;
       const org = await ledger.reader.organization();
-      if (!org) {
-        throw new FundingError(
-          'The funds were sent but the treasury has no organization to accept them yet. Create the organization first, then add funds again.',
-        );
-      }
-      const accept = await asset.acceptContext(instructionCid);
-      const acceptTx = await ledger.client.submit({
-        actAs: [agent],
-        readAs: [treasury],
-        commands: [
-          ledger.commands.orgAcceptDeposit(org.contractId, {
-            instructionCid,
-            extraArgs: accept.extraArgs,
-          }),
-        ],
-        disclosedContracts: accept.disclosed,
-        commandId: `fund-accept-${instructionCid.slice(0, 24)}`,
-      });
+      if (!org) throw new FundingError(NO_ORGANIZATION);
+      const accepted = await acceptForTreasury(org.contractId, output.value.transferInstructionCid);
       return {
-        amount: value,
+        amount: requested,
         acceptedPending: true,
-        tapUpdateId: tapTx.updateId,
+        tapUpdateId,
         transferUpdateId: transferTx.updateId,
-        acceptUpdateId: acceptTx.updateId,
+        acceptUpdateId: accepted,
       };
     },
 

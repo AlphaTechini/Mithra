@@ -28,8 +28,40 @@ export interface RoleFacts {
   denied: Contract<MithraPayloads['AccessDenied']>[];
 }
 
-function newestFirst<T>(a: Contract<T>, b: Contract<T>): number {
-  return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
+const ISO_INSTANT = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z$/;
+
+/**
+ * Orders two ISO-8601 instants. The ledger writes microseconds (`…24.254844Z`) but drops trailing
+ * zeros of the fraction (`…24.254Z`), so the strings do not sort as instants: compare the whole
+ * seconds as dates and the fraction as digits padded to nanoseconds. Unparseable text sorts first.
+ */
+export function compareInstants(a: string, b: string): number {
+  const parse = (iso: string): { seconds: number; fraction: string } | null => {
+    const match = ISO_INSTANT.exec(iso);
+    if (!match) return null;
+    const seconds = Date.parse(`${match[1] ?? ''}Z`);
+    return Number.isNaN(seconds) ? null : { seconds, fraction: (match[2] ?? '').padEnd(9, '0') };
+  };
+  const left = parse(a);
+  const right = parse(b);
+  if (!left || !right) return left ? 1 : right ? -1 : 0;
+  if (left.seconds !== right.seconds) return left.seconds < right.seconds ? -1 : 1;
+  const l = left.fraction.slice(0, 9);
+  const r = right.fraction.slice(0, 9);
+  return l < r ? -1 : l > r ? 1 : 0;
+}
+
+/**
+ * Newest first: by ledger offset when both contracts carry different ones, else by creation
+ * instant, with the contract id as the final tiebreak so the order never depends on read order.
+ */
+export function newestFirst<T>(a: Contract<T>, b: Contract<T>): number {
+  if (a.offset !== undefined && b.offset !== undefined && a.offset !== b.offset) {
+    return b.offset - a.offset;
+  }
+  const byInstant = compareInstants(b.createdAt, a.createdAt);
+  if (byInstant !== 0) return byInstant;
+  return a.contractId < b.contractId ? 1 : a.contractId > b.contractId ? -1 : 0;
 }
 
 /**
@@ -184,5 +216,6 @@ function decode<K extends MithraTemplateName>(
     contractId: contract.contractId,
     payload: result.data as MithraPayloads[K],
     createdAt: contract.createdAt,
+    offset: contract.offset,
   };
 }

@@ -49,7 +49,16 @@ export function clearSessionCookie(reply: FastifyReply): void {
 }
 
 /**
- * Loads the session of every request into `request.session`. Register it after `@fastify/cookie`
+ * True for requests that can use a session: the API routes, except the health probe. Static assets
+ * and `/api/health` never read the session, so they skip the cookie check and the database lookup.
+ */
+export function needsSession(url: string): boolean {
+  const path = url.split('?')[0] ?? url;
+  return path.startsWith('/api/') && path !== '/api/health';
+}
+
+/**
+ * Loads the session of API requests into `request.session`. Register it after `@fastify/cookie`
  * (configured with the signing secret). It is marked as a non-encapsulated plugin, as
  * fastify-plugin would do, so its decorators and hook reach every route.
  */
@@ -59,6 +68,7 @@ export const sessionPlugin: FastifyPluginAsync<SessionPluginOptions> = (app, opt
   app.decorateRequest('session', null);
   app.addHook('onRequest', async (request) => {
     request.session = null;
+    if (!needsSession(request.url)) return;
     const raw = request.cookies[SESSION_COOKIE];
     if (!raw) return;
     const unsigned = request.unsignCookie(raw);

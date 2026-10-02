@@ -170,7 +170,12 @@ export function createLlm(config: LlmConfig): Llm {
       }
       const toolCalls: LlmToolCall[] = [];
       for (const call of raw.tool_calls ?? []) {
-        if (call.type !== 'function') continue;
+        if (call.type !== 'function') {
+          // Dropping it silently would look like "the model called no tool".
+          throw new LlmInvalidOutputError(
+            `The model made a tool call of type "${String(call.type)}"; only function calls are supported.`,
+          );
+        }
         toolCalls.push({
           id: call.id,
           name: call.function.name,

@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { startLlmStub, type LlmStub } from '../../test/llm-stub/server';
-import { createLlm, LlmUnavailableError, type LlmChatInput, type LlmConfig } from './client';
+import {
+  createLlm,
+  LlmInvalidOutputError,
+  LlmUnavailableError,
+  type LlmChatInput,
+  type LlmConfig,
+} from './client';
 import { canonicalJson, fingerprintOf } from './fingerprint';
 
 const TOOL = {
@@ -63,6 +69,15 @@ describe('createLlm', () => {
     expect(turn.toolCalls).toEqual([{ id: 'call_1', name: 'get_balance', arguments: '{"x":1}' }]);
     expect(turn.message.content).toBe('Checking.');
     expect(turn.message.tool_calls?.[0]?.function.name).toBe('get_balance');
+  });
+
+  it('throws LlmInvalidOutputError naming the type of a tool call that is not a function call', async () => {
+    stub.script({ toolCalls: [{ name: 'get_balance', arguments: {}, type: 'custom' }] });
+    const failure = await createLlm(config())
+      .chat(INPUT)
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(LlmInvalidOutputError);
+    expect((failure as Error).message).toContain('"custom"');
   });
 
   it('sends model, messages, tools, tool_choice and parallel_tool_calls: false', async () => {

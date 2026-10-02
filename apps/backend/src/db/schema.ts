@@ -51,6 +51,8 @@ export const agentEvents = pgTable(
   'agent_events',
   {
     id: bigserial('id', { mode: 'number' }).primaryKey(),
+    /** The treasury of the timeline events of a cycle; null for events that are not per treasury. */
+    orgTreasury: text('org_treasury'),
     cycleId: text('cycle_id'),
     kind: text('kind').notNull(),
     payload: jsonb('payload')
@@ -58,7 +60,10 @@ export const agentEvents = pgTable(
       .default(sql`'{}'::jsonb`),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('agent_events_cycle_idx').on(t.cycleId, t.id)],
+  (t) => [
+    index('agent_events_cycle_idx').on(t.cycleId, t.id),
+    index('agent_events_treasury_cycle_idx').on(t.orgTreasury, t.cycleId, t.id),
+  ],
 );
 
 /**
@@ -106,6 +111,11 @@ export const cycleRuns = pgTable(
     held: boolean('held').notNull().default(false),
     /** Set when the live balance is below total plus fee buffer: { balance, required } (P5). */
     fundsShortfall: jsonb('funds_shortfall'),
+    /**
+     * True once the engine looked at the ready proposal and found payees without a MainNet wallet
+     * (the `needs-wallets` status, shown only after the engine recorded it, like a shortfall).
+     */
+    waitingForWallets: boolean('waiting_for_wallets').notNull().default(false),
   },
   (t) => [unique('cycle_runs_org_cycle_unique').on(t.orgTreasury, t.cycleId)],
 );

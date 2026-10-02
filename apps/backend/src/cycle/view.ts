@@ -49,6 +49,8 @@ export interface RunState {
   recordDate: string | null;
   executesAt: Date | null;
   held: boolean;
+  /** The engine found payees without a MainNet wallet; `needs-wallets` shows only then. */
+  waitingForWallets: boolean;
   fundsShortfall: { balance: string; required: string } | null;
 }
 
@@ -184,6 +186,15 @@ function executedStatus(cf: CycleFacts): CycleStatus {
 }
 
 /**
+ * Payees still lack a MainNet wallet and the engine has recorded that. Without the engine's
+ * record the status stays `executing`, so a client that sees `needs-wallets` also finds the
+ * activity entry and the timeline step the engine wrote for it.
+ */
+function waitsForWallets(cf: CycleFacts): boolean {
+  return (cf.missingWallets?.length ?? 0) > 0 && cf.row?.waitingForWallets === true;
+}
+
+/**
  * The status of a cycle. "Paid" statuses come only from a DistributionOutcome of kind Executed and
  * the Payment contracts (P4); a run row that says `executed` without them never shows as paid.
  */
@@ -202,7 +213,10 @@ export function deriveStatus(
   if (outcome && !(rowNewerThanOutcome && !proposal)) {
     switch (outcome.payload.kind) {
       case 'Executed':
-        return executedStatus(cf);
+        // The engine records a payout (timeline, activity, links) before it marks the row
+        // executed. Until then the cycle is still executing, so a client that sees it paid also
+        // finds everything the engine writes for it.
+        return row?.status === 'executing' ? 'executing' : executedStatus(cf);
       case 'Rejected':
         return 'rejected';
       case 'Cancelled':
@@ -218,7 +232,7 @@ export function deriveStatus(
       if (shortfall) return 'needs-funds';
       if (row?.held) return 'held';
       const due = row?.executesAt != null && row.executesAt.getTime() <= now.getTime();
-      if (due && (cf.missingWallets?.length ?? 0) > 0) return 'needs-wallets';
+      if (due && waitsForWallets(cf)) return 'needs-wallets';
       return due ? 'executing' : 'countdown';
     }
     const approvers = mandate?.payload.terms.approvers ?? proposal.payload.approvers;
@@ -227,7 +241,7 @@ export function deriveStatus(
       return 'awaiting-approval';
     if (row?.status === 'failed') return 'failed';
     if (shortfall) return 'needs-funds';
-    if ((cf.missingWallets?.length ?? 0) > 0) return 'needs-wallets';
+    if (waitsForWallets(cf)) return 'needs-wallets';
     return 'executing';
   }
 

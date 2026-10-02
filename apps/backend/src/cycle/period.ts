@@ -105,6 +105,28 @@ export interface Schedule {
   tz: string;
 }
 
+/** More than the runs of an every-minute schedule between the earliest and latest month end. */
+const MAX_RUNS_SCANNED = 2000;
+
+/**
+ * The payment run of a cycle: the first schedule run whose date in `schedule.tz` is after the
+ * cycle month. Local midnight of the 1st of the next month is earliest in UTC+14 (10:00 UTC on
+ * the last day of the cycle month), so the search starts just before that and skips runs that are
+ * still inside the cycle month where the schedule's time zone is behind UTC. Null when there is
+ * none.
+ */
+export function paymentRunFor(cycleId: string, schedule: Schedule): Date | null {
+  const lastDay = lastDayOfCycleMonth(cycleId);
+  let from = new Date(`${lastDay}T09:59:59.999Z`);
+  for (let scanned = 0; scanned < MAX_RUNS_SCANNED; scanned += 1) {
+    const run = nextRun(schedule.cron, schedule.tz, from);
+    if (!run) return null;
+    if (localDate(run, schedule.tz) > lastDay) return run;
+    from = run;
+  }
+  return null;
+}
+
 /**
  * The record date for a cycle by the policy's rule. The payment date is the first schedule run
  * after the cycle month ends (the 1st of the next month at 09:00 for `0 9 1 * *`).
@@ -112,13 +134,14 @@ export interface Schedule {
  *   last day of the cycle month;
  * - `day_before_payment`: the day before the payment date, kept inside the cycle month because the
  *   ledger accepts only record dates inside it (`Mandate_Propose`). Without a schedule the payment
- *   date is the first of the next month, so this is also the last day of the cycle month.
+ *   date is the first of the next month, so this is also the last day of the cycle month. The
+ *   payment run is found by its local date in the schedule's time zone (`paymentRunFor`), not by
+ *   the UTC month end.
  */
 export function recordDateFor(rule: RecordDateRule, cycleId: string, schedule?: Schedule): string {
   const lastDay = lastDayOfCycleMonth(cycleId);
   if (rule === 'last_day_of_previous_month' || !schedule) return lastDay;
-  const monthEnd = new Date(`${lastDay}T23:59:59.999Z`);
-  const payment = nextRun(schedule.cron, schedule.tz, monthEnd);
+  const payment = paymentRunFor(cycleId, schedule);
   if (!payment) return lastDay;
   const dayBefore = addDays(localDate(payment, schedule.tz), -1);
   return dayBefore < firstDayOfCycleMonth(cycleId)

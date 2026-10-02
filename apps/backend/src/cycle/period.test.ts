@@ -8,6 +8,7 @@ import {
   isCycleId,
   lastDayOfCycleMonth,
   nextRun,
+  paymentRunFor,
   recordDateFor,
   recordDateProblem,
 } from './period';
@@ -60,9 +61,31 @@ describe('record date rules', () => {
     // the first payment after the month ends is on November 1 in Auckland (UTC+13 in summer)
     const auckland = { cron: '0 9 1 * *', tz: 'Pacific/Auckland' };
     expect(recordDateFor('day_before_payment', '2026-09', auckland)).toBe('2026-09-30');
-    // paid on the 30th at 17:00 in Los Angeles: the day before is still in the month
+    // The 30th at 17:00 in Los Angeles: September 30 17:00 is the run that pays August (it is
+    // still inside September there), so September is paid on October 30 and the day before is
+    // clamped into the cycle month.
     const la = { cron: '0 17 30 * *', tz: 'America/Los_Angeles' };
-    expect(recordDateFor('day_before_payment', '2026-09', la)).toBe('2026-09-29');
+    expect(recordDateFor('day_before_payment', '2026-09', la)).toBe('2026-09-30');
+  });
+
+  it('finds the payment run by its date in the schedule time zone, not by the UTC month end', () => {
+    // 0 0 1 * * in Tokyo (UTC+9): October 1 00:00 JST is September 30 15:00 UTC, before the UTC
+    // month end 23:59:59 that the search used to start from.
+    const tokyo = { cron: '0 0 1 * *', tz: 'Asia/Tokyo' };
+    expect(paymentRunFor('2026-09', tokyo)?.toISOString()).toBe('2026-09-30T15:00:00.000Z');
+    expect(recordDateFor('day_before_payment', '2026-09', tokyo)).toBe('2026-09-30');
+    // 0 23 L * * in Los Angeles (UTC-7): September 30 23:00 PDT is October 1 06:00 UTC, after the
+    // UTC month end but still September locally, so it is the August run. September's payment is
+    // the last day of October (23:00 PDT = November 1 06:00 UTC).
+    const la = { cron: '0 23 L * *', tz: 'America/Los_Angeles' };
+    expect(paymentRunFor('2026-09', la)?.toISOString()).toBe('2026-11-01T06:00:00.000Z');
+    expect(recordDateFor('day_before_payment', '2026-09', la)).toBe('2026-09-30');
+    // The first of the month at 23:30 in Kiritimati (UTC+14) is on the last day of the month in UTC.
+    const kiritimati = { cron: '30 23 1 * *', tz: 'Pacific/Kiritimati' };
+    expect(paymentRunFor('2026-09', kiritimati)?.toISOString()).toBe('2026-10-01T09:30:00.000Z');
+    // Earlier in the day than any local midnight: a run before the cycle month ended is skipped.
+    const hourly = { cron: '0 * * * *', tz: 'America/Los_Angeles' };
+    expect(paymentRunFor('2026-09', hourly)?.toISOString()).toBe('2026-10-01T07:00:00.000Z');
   });
 
   it('day_before_payment without a schedule falls back to the last day of the month', () => {

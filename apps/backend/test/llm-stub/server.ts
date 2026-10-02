@@ -12,6 +12,8 @@ export interface StubToolCall {
   /** An object is sent as JSON; a string is sent as it is (to script malformed arguments). */
   arguments: unknown;
   id?: string;
+  /** The tool call type; default `function`. Another value scripts a call the client cannot use. */
+  type?: string;
 }
 
 export type StubStep =
@@ -79,7 +81,7 @@ function completion(
             ? {
                 tool_calls: toolCalls.map((c, i) => ({
                   id: c.id ?? `call_${counter}_${i}`,
-                  type: 'function',
+                  type: c.type ?? 'function',
                   function: {
                     name: c.name,
                     arguments:

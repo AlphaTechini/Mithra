@@ -7,6 +7,7 @@ export class RateLimiter {
   private readonly limit: number;
   private readonly windowMs: number;
   private readonly now: () => number;
+  private lastSweep = Number.NEGATIVE_INFINITY;
 
   constructor(options: { limit: number; windowMs: number; now?: () => number }) {
     this.limit = options.limit;
@@ -24,8 +25,9 @@ export class RateLimiter {
     }
     recent.push(now);
     this.hits.set(key, recent);
-    // Drop idle keys so the map cannot grow without bound.
-    if (this.hits.size > 10_000) {
+    // Drop idle keys so the map cannot grow without bound, at most once per window.
+    if (this.hits.size > 10_000 && now - this.lastSweep >= this.windowMs) {
+      this.lastSweep = now;
       for (const [k, times] of this.hits) {
         if (times.every((t) => now - t >= this.windowMs)) this.hits.delete(k);
       }

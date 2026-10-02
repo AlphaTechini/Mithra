@@ -67,6 +67,10 @@ export interface ReconcilerDeps {
   bus: EventBus;
   /** Advanced on every pass when present. */
   sealer?: MandateSealer;
+  /** Where bookkeeping failures are logged. */
+  log?: { warn(object: unknown, message?: string): void };
+  /** Replaces the cycle store (tests); default: PostgreSQL through `db`. */
+  store?: CycleStore;
 }
 
 export interface Reconciler {
@@ -94,7 +98,7 @@ const EMPTY = (): ReconcileReport => ({
  * - advances Mandate seal requests waiting for node confirmations.
  */
 export function createReconciler(deps: ReconcilerDeps, intervalMs = 10_000): Reconciler {
-  const store = new CycleStore(deps.db, deps.config.parties.treasury);
+  const store = deps.store ?? new CycleStore(deps.db, deps.config.parties.treasury);
   const treasury = deps.config.parties.treasury;
   const agent = deps.config.parties.agent;
   const viewers = deps.config.ledger.readAsTreasury ? [treasury] : [agent];
@@ -134,15 +138,31 @@ export function createReconciler(deps: ReconcilerDeps, intervalMs = 10_000): Rec
             commands: [deps.ledger.commands.paymentMarkAccepted(payment.contractId)],
             shape: 'LEDGER_EFFECTS',
           });
-          const { paymentCid } = choiceResults.paymentMarkAccepted(marked);
-          await store.setTxRef(paymentCid, updateId, 'payment');
-          await deps.activity.record({
-            actorParty: agent,
-            kind: 'payment.accepted',
-            subject: payment.payload.cycleId,
-            text: `${holderName} accepted the payment of ${amount} for ${label}`,
-            link: `/app/cycles/${payment.payload.cycleId}`,
-          });
+          // The ledger has the payment marked now. A failure in the bookkeeping below is logged
+          // and must neither fail the pass nor skip the payments after this one.
+          try {
+            const { paymentCid } = choiceResults.paymentMarkAccepted(marked);
+            await store.setTxRef(paymentCid, updateId, 'payment');
+          } catch (error) {
+            deps.log?.warn(
+              { err: error, cycleId: payment.payload.cycleId },
+              'could not save the link of an accepted payment',
+            );
+          }
+          try {
+            await deps.activity.record({
+              actorParty: agent,
+              kind: 'payment.accepted',
+              subject: payment.payload.cycleId,
+              text: `${holderName} accepted the payment of ${amount} for ${label}`,
+              link: `/app/cycles/${payment.payload.cycleId}`,
+            });
+          } catch (error) {
+            deps.log?.warn(
+              { err: error, cycleId: payment.payload.cycleId },
+              'could not record an accepted payment in the activity log',
+            );
+          }
           deps.bus.publish(
             { type: 'holder', change: 'payments' },
             { parties: [payment.payload.holder] },
@@ -182,8 +202,11 @@ export function createReconciler(deps: ReconcilerDeps, intervalMs = 10_000): Rec
     report.declined.push(...payments.declined);
     if (deps.sealer) {
       for (const sealId of await deps.sealer.pending().catch(() => [] as string[])) {
-        await deps.sealer.advance(sealId).catch(() => undefined);
-        report.sealsAdvanced.push(sealId);
+        const advanced = await deps.sealer.advance(sealId).then(
+          () => true,
+          () => false,
+        );
+        if (advanced) report.sealsAdvanced.push(sealId);
       }
     }
     return report;

@@ -166,8 +166,11 @@ export function ledgerErrorFromResponse(status: number, body: unknown): LedgerEr
         rawCause: cause,
       });
     }
+    // 413 is the participant's list limit (`http-list-max-elements-limit`): the same request
+    // fails the same way again, although the error category calls it transient.
     const retryable =
       !definite &&
+      status !== 413 &&
       ((category !== undefined && RETRYABLE_CATEGORIES.has(category)) ||
         RETRYABLE_CODES.has(code) ||
         status === 502 ||

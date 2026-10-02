@@ -228,6 +228,16 @@ describe('AiMemoWriter', () => {
     expect(result.modelFingerprints).toEqual([]);
   });
 
+  it('falls back to the template memo when the model makes a tool call that is not a function call', async () => {
+    stub.always({
+      toolCalls: [{ name: 'write_review', arguments: { memo: 'x' }, type: 'custom' }],
+    });
+    const result = await writer().write(input());
+    expect(result.memoSource).toBe('ai-unavailable');
+    expect(result.memo.startsWith('AI review unavailable:')).toBe(true);
+    expect(result.modelFingerprints).toEqual([]);
+  });
+
   it('falls back when the model does not call the tool or sends invalid arguments', async () => {
     for (const step of [
       { text: 'Just text, no tool.' },

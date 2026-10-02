@@ -6,6 +6,7 @@ import { createCycleModule, type CycleModule, type CycleModuleDeps } from '../..
 import { lastDayOfCycleMonth } from '../../src/cycle/period';
 import { computeProRata, unitsAt } from '../../src/cycle/prorata';
 import { fingerprint } from '../../src/cycle/fingerprint';
+import { Mutex } from '../../src/cycle/mutex';
 import type { DatabaseHandle } from '../../src/db';
 import { EventBus } from '../../src/events/bus';
 import {
@@ -470,75 +471,81 @@ export function createTestSealer(
   const seals = new Map<string, SealStatus>();
   const { ledger, parties } = world;
   const prepareDeps = { config: world.config, ledger, drafts, names: world.names };
+  // One change at a time, like the DecMan sealer: a second start waits instead of reading the
+  // same current Mandate and applying a stale seal. (This sealer seals at once, so nothing is
+  // ever pending and no start is refused.)
+  const lock = new Mutex();
   return {
-    async start(draftId, treasurer) {
-      const prepared = await prepareSeal(prepareDeps, draftId, treasurer);
-      const requestTx = await submitAs(
-        ledger,
-        [treasurer],
-        [
-          ledger.commands.createMandateSealRequest({
-            treasury: parties.treasury,
-            treasurer,
-            agent: parties.agent,
-            terms: prepared.terms,
-            agentExecutes: true,
-            summary: prepared.summary,
-            summaryFingerprint: prepared.summaryFingerprint,
-            requestedAt: new Date(),
-          }),
-        ],
-      );
-      const sealRequestCid =
-        createdIn(requestTx, 'Mithra.Mandate:MandateSealRequest')[0]?.contractId ?? '';
-      await submitAs(
-        ledger,
-        [parties.treasury],
-        [
-          ledger.commands.orgApplySeal(prepared.organization.contractId, {
-            sealRequestCid,
-            currentMandateCid: prepared.currentMandate?.contractId ?? null,
-          }),
-        ],
-      );
-      const sealId = randomUUID();
-      // The same two activity lines, with the same text, as the DecMan sealer writes.
-      await activity
-        ?.record({
-          actorParty: treasurer,
-          kind: 'mandate.seal-requested',
-          subject: sealId,
-          text: sealRequestedText(prepared.description),
-          link: '/app/settings',
-        })
-        .catch(() => undefined);
-      const mandate = await ledger.reader.mandate();
-      if (mandate) {
-        await activity
-          ?.record({
-            actorParty: treasurer,
-            kind: 'mandate.sealed',
-            subject: sealId,
-            text: sealedText(mandate.payload, world.config.asset.symbol),
-            link: '/app/settings',
-          })
-          .catch(() => undefined);
-      }
-      const status: SealStatus = {
-        sealId,
-        state: 'sealed',
-        treasurerSigned: true,
-        nodeConfirmations: null,
-        mandateVersion: prepared.nextVersion,
-        error: null,
-      };
-      seals.set(status.sealId, status);
-      return status;
-    },
+    start: (draftId, treasurer) => lock.run(() => startSeal(draftId, treasurer)),
     status: (sealId) => Promise.resolve(seals.get(sealId) ?? failStatus(sealId)),
     advance: (sealId) => Promise.resolve(seals.get(sealId) ?? failStatus(sealId)),
     pending: () => Promise.resolve([]),
   };
+
+  async function startSeal(draftId: string, treasurer: string): Promise<SealStatus> {
+    const prepared = await prepareSeal(prepareDeps, draftId, treasurer);
+    const requestTx = await submitAs(
+      ledger,
+      [treasurer],
+      [
+        ledger.commands.createMandateSealRequest({
+          treasury: parties.treasury,
+          treasurer,
+          agent: parties.agent,
+          terms: prepared.terms,
+          agentExecutes: true,
+          summary: prepared.summary,
+          summaryFingerprint: prepared.summaryFingerprint,
+          requestedAt: new Date(),
+        }),
+      ],
+    );
+    const sealRequestCid =
+      createdIn(requestTx, 'Mithra.Mandate:MandateSealRequest')[0]?.contractId ?? '';
+    await submitAs(
+      ledger,
+      [parties.treasury],
+      [
+        ledger.commands.orgApplySeal(prepared.organization.contractId, {
+          sealRequestCid,
+          currentMandateCid: prepared.currentMandate?.contractId ?? null,
+        }),
+      ],
+    );
+    const sealId = randomUUID();
+    // The same two activity lines, with the same text, as the DecMan sealer writes.
+    await activity
+      ?.record({
+        actorParty: treasurer,
+        kind: 'mandate.seal-requested',
+        subject: sealId,
+        text: sealRequestedText(prepared.description),
+        link: '/app/settings',
+      })
+      .catch(() => undefined);
+    const mandate = await ledger.reader.mandate();
+    if (mandate) {
+      await activity
+        ?.record({
+          actorParty: treasurer,
+          kind: 'mandate.sealed',
+          subject: sealId,
+          text: sealedText(mandate.payload, world.config.asset.symbol),
+          link: '/app/settings',
+        })
+        .catch(() => undefined);
+    }
+    const status: SealStatus = {
+      sealId,
+      state: 'sealed',
+      treasurerSigned: true,
+      nodeConfirmations: null,
+      mandateVersion: prepared.nextVersion,
+      error: null,
+    };
+    seals.set(status.sealId, status);
+    return status;
+  }
 }
 
 function failStatus(sealId: string): SealStatus {

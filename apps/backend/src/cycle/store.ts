@@ -19,6 +19,7 @@ export type RunPatch = Partial<
     | 'executesAt'
     | 'held'
     | 'fundsShortfall'
+    | 'waitingForWallets'
     | 'startedAt'
   >
 >;
@@ -49,6 +50,7 @@ export function runState(row: CycleRunRow): RunState {
     recordDate: row.recordDate,
     executesAt: row.executesAt,
     held: row.held,
+    waitingForWallets: row.waitingForWallets,
     fundsShortfall:
       raw && typeof raw.balance === 'string' && typeof raw.required === 'string'
         ? { balance: raw.balance, required: raw.required }
@@ -148,7 +150,9 @@ export class CycleStore {
   // Timeline ---------------------------------------------------------------------------------
 
   async addTimeline(cycleId: string, step: TimelineStep): Promise<void> {
-    await this.db.insert(agentEvents).values({ cycleId, kind: 'timeline', payload: step });
+    await this.db
+      .insert(agentEvents)
+      .values({ orgTreasury: this.treasury, cycleId, kind: 'timeline', payload: step });
   }
 
   /** Every timeline event of the cycle, oldest first. */
@@ -156,7 +160,13 @@ export class CycleStore {
     const rows = await this.db
       .select({ payload: agentEvents.payload })
       .from(agentEvents)
-      .where(and(eq(agentEvents.cycleId, cycleId), eq(agentEvents.kind, 'timeline')))
+      .where(
+        and(
+          eq(agentEvents.orgTreasury, this.treasury),
+          eq(agentEvents.cycleId, cycleId),
+          eq(agentEvents.kind, 'timeline'),
+        ),
+      )
       .orderBy(asc(agentEvents.id));
     return rows.flatMap((r) => {
       const parsed = TimelineStepSchema.safeParse(r.payload);

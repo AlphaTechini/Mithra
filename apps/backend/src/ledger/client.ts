@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { TokenProvider } from './auth';
 import { LedgerError, ledgerErrorFromResponse, ledgerUnreachable } from './errors';
+import { isSecureForCredentials, originOf } from './secureUrl';
 import {
   entityOf,
   type ActiveContract,
@@ -20,6 +21,19 @@ export interface RetryPolicy {
   maxDelayMs: number;
 }
 
+/** The part of a WebSocket the client uses; the global `WebSocket` of Node 22 fits. */
+export interface WebSocketLike {
+  onopen: ((event: unknown) => void) | null;
+  onmessage: ((event: { data: unknown }) => void) | null;
+  onerror: ((event: unknown) => void) | null;
+  onclose: ((event: { code: number; reason: string }) => void) | null;
+  send(data: string): void;
+  close(code?: number): void;
+}
+
+/** Opens a WebSocket with the given subprotocols (tests hand in a fake). */
+export type WebSocketFactory = (url: string, protocols: string[]) => WebSocketLike;
+
 export interface LedgerClientOptions {
   baseUrl: string;
   /** The ledger user; sent as `userId` in commands. */
@@ -31,6 +45,8 @@ export interface LedgerClientOptions {
   fetch?: typeof fetch;
   /** Replaces the real delay between retries (tests). */
   sleep?: (ms: number) => Promise<void>;
+  /** Replaces the global `WebSocket` used for the active contracts stream (tests). */
+  webSocket?: WebSocketFactory;
 }
 
 const DEFAULT_RETRY: RetryPolicy = { maxAttempts: 3, baseDelayMs: 250, maxDelayMs: 2000 };
@@ -158,6 +174,7 @@ export class LedgerClient {
   private readonly retry: RetryPolicy;
   private readonly doFetch: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly openSocket: WebSocketFactory;
 
   constructor(options: LedgerClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
@@ -167,6 +184,9 @@ export class LedgerClient {
     this.retry = options.retry ?? DEFAULT_RETRY;
     this.doFetch = options.fetch ?? fetch;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.openSocket =
+      options.webSocket ??
+      ((url, protocols) => new WebSocket(url, protocols) as unknown as WebSocketLike);
   }
 
   /** A client for another node's JSON Ledger API with the same credentials (status checks). */
@@ -182,6 +202,18 @@ export class LedgerClient {
       retry: overrides.retry ?? this.retry,
       fetch: this.doFetch,
       sleep: this.sleep,
+      webSocket: this.openSocket,
+    });
+  }
+
+  /** A token goes only to an https URL, or to the same machine. */
+  assertSecure(): void {
+    if (isSecureForCredentials(this.baseUrl)) return;
+    throw new LedgerError({
+      code: 'LEDGER_INSECURE_URL',
+      message: `The ledger URL ${originOf(this.baseUrl)} is not https, so the ledger token would cross the network in cleartext. Use an https:// URL for LEDGER_JSON_API_URL (a localhost address is the only http exception).`,
+      retryable: false,
+      status: 0,
     });
   }
 
@@ -199,15 +231,21 @@ export class LedgerClient {
       retry?: RetryPolicy;
     } = {},
   ): Promise<unknown> {
-    const policy = options.retry ?? this.retry;
     const url = `${this.baseUrl}${path}`;
-    for (let attempt = 1; ; attempt += 1) {
+    return this.withRetries(options.retry ?? this.retry, () =>
+      this.callOnce(method, url, path, options),
+    );
+  }
+
+  /** Runs `attempt` again, with backoff, while it fails with a retryable `LedgerError`. */
+  private async withRetries<T>(policy: RetryPolicy, attempt: () => Promise<T>): Promise<T> {
+    for (let n = 1; ; n += 1) {
       try {
-        return await this.callOnce(method, url, path, options);
+        return await attempt();
       } catch (error) {
         const ledgerError = error instanceof LedgerError ? error : undefined;
-        if (!ledgerError?.retryable || attempt >= policy.maxAttempts) throw error;
-        await this.sleep(this.backoff(attempt, policy));
+        if (!ledgerError?.retryable || n >= policy.maxAttempts) throw error;
+        await this.sleep(this.backoff(n, policy));
       }
     }
   }
@@ -220,7 +258,10 @@ export class LedgerClient {
   ): Promise<unknown> {
     const headers: Record<string, string> = { accept: 'application/json' };
     const token = await this.tokens.getToken();
-    if (token) headers['authorization'] = `Bearer ${token}`;
+    if (token) {
+      this.assertSecure();
+      headers['authorization'] = `Bearer ${token}`;
+    }
     let body: string | Uint8Array | undefined;
     if (options.bytes) {
       headers['content-type'] = 'application/octet-stream';
@@ -235,11 +276,22 @@ export class LedgerClient {
         method,
         headers,
         ...(body === undefined ? {} : { body: body as RequestInit['body'] }),
+        // A redirect would resend the token to whatever host it names: never follow one.
+        redirect: 'manual',
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (cause) {
       // The path lets a submission that timed out read as "the treasury's nodes did not confirm".
       throw ledgerUnreachable(this.baseUrl, cause, path);
+    }
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      throw new LedgerError({
+        code: 'LEDGER_REDIRECT',
+        message: `The ledger at ${this.baseUrl} answered with a redirect (HTTP ${response.status}${location ? ` to ${originOf(location, url)}` : ''}). Mithra does not follow redirects because that could send the ledger token to another host. Set LEDGER_JSON_API_URL to the address the redirect points to.`,
+        retryable: false,
+        status: response.status,
+      });
     }
     const text = await response.text().catch(() => '');
     let parsed: unknown = undefined;
@@ -312,10 +364,20 @@ export class LedgerClient {
       });
     }
     const activeAtOffset = await this.ledgerEnd();
-    const result = await this.call('POST', '/v2/state/active-contracts', {
-      json: { activeAtOffset, eventFormat: eventFormat([...new Set(query.parties)], filters) },
-    });
-    const items = Array.isArray(result) ? result : [];
+    const request = {
+      activeAtOffset,
+      eventFormat: eventFormat([...new Set(query.parties)], filters),
+    };
+    let items: unknown[];
+    try {
+      const result = await this.call('POST', '/v2/state/active-contracts', { json: request });
+      items = Array.isArray(result) ? result : [];
+    } catch (error) {
+      // The HTTP read refuses a result larger than the participant's
+      // `http-list-max-elements-limit` (HTTP 413). The stream has no such limit.
+      if (!(error instanceof LedgerError) || error.status !== 413) throw error;
+      items = await this.withRetries(this.retry, () => this.streamActiveContracts(request));
+    }
     const out = new Map<string, ActiveContract>();
     for (const item of items) {
       if (!isObject(item)) continue;
@@ -354,6 +416,108 @@ export class LedgerClient {
       });
     }
     return [...out.values()];
+  }
+
+  /**
+   * The same read as `POST /v2/state/active-contracts`, over the WebSocket stream of the JSON API
+   * (`GET /v2/state/active-contracts` upgraded): the request is the first message, every active
+   * contract arrives as one message, and the server closes the stream with code 1000 at the end.
+   * Authentication is by subprotocol: `jwt.token.<token>` next to `daml.ws.auth`. The
+   * `daml.ws.auth` protocol is also sent without a token, because the server always answers with
+   * it and Node's WebSocket fails the handshake when the answer was not asked for.
+   */
+  private async streamActiveContracts(request: unknown): Promise<unknown[]> {
+    const path = '/v2/state/active-contracts';
+    const token = await this.tokens.getToken();
+    if (token) this.assertSecure();
+    const url = `${this.baseUrl.replace(/^http/, 'ws')}${path}`;
+    const protocols = token ? [`jwt.token.${token}`, 'daml.ws.auth'] : ['daml.ws.auth'];
+    return new Promise<unknown[]>((resolve, reject) => {
+      const items: unknown[] = [];
+      let settled = false;
+      let idle: NodeJS.Timeout | undefined;
+      let socket: WebSocketLike | undefined;
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(idle);
+        try {
+          socket?.close();
+        } catch {
+          // Already closed.
+        }
+        if (error) reject(error);
+        else resolve(items);
+      };
+      // The timeout is per message, so a large result that keeps arriving is not cut off.
+      const arm = (): void => {
+        clearTimeout(idle);
+        idle = setTimeout(() => {
+          finish(
+            ledgerUnreachable(
+              this.baseUrl,
+              Object.assign(new Error('idle'), { name: 'TimeoutError' }),
+              path,
+            ),
+          );
+        }, this.timeoutMs);
+      };
+      try {
+        socket = this.openSocket(url, protocols);
+      } catch (cause) {
+        reject(ledgerUnreachable(this.baseUrl, cause, path));
+        return;
+      }
+      arm();
+      socket.onopen = () => {
+        arm();
+        socket?.send(JSON.stringify(request));
+      };
+      socket.onmessage = (event) => {
+        arm();
+        let message: unknown;
+        try {
+          message = JSON.parse(typeof event.data === 'string' ? event.data : String(event.data));
+        } catch {
+          finish(
+            new Error('The ledger sent a message on the active contracts stream that is not JSON'),
+          );
+          return;
+        }
+        // Errors arrive as a message (`{ code, cause, … }`), followed by a normal close.
+        if (
+          isObject(message) &&
+          typeof message['code'] === 'string' &&
+          !('contractEntry' in message)
+        ) {
+          finish(ledgerErrorFromResponse(400, message));
+          return;
+        }
+        items.push(message);
+      };
+      socket.onerror = (cause) => {
+        finish(
+          ledgerUnreachable(
+            this.baseUrl,
+            cause instanceof Error ? cause : new Error('WebSocket error'),
+            path,
+          ),
+        );
+      };
+      socket.onclose = (event) => {
+        if (event.code === 1000) finish();
+        else {
+          finish(
+            new LedgerError({
+              code: 'LEDGER_STREAM_CLOSED',
+              message: `The ledger closed the active contracts stream early (code ${event.code}${event.reason ? `: ${event.reason}` : ''}). Try again.`,
+              retryable: true,
+              status: 0,
+            }),
+          );
+        }
+      };
+    });
   }
 
   /** Offset of the end of the ledger. */

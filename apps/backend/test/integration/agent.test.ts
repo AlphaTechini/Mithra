@@ -398,7 +398,7 @@ describe('agent, grant expiry, scheduler and live events against a Canton sandbo
     const blind = startScheduler({
       services: runs,
       ledger: world.ledger,
-      store: { ...createScheduleStore(database.db), hasRun: () => Promise.resolve(false) },
+      store: { ...createScheduleStore(database.db), hasBlockingRun: () => Promise.resolve(false) },
       bus,
       treasuryParty: treasury,
       agentParty: parties.agent,

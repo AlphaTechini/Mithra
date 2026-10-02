@@ -15,6 +15,7 @@ import type { EventBus } from '../events/bus';
 import { ApiError } from '../http/errors';
 import type { Fingerprint } from '../ledger/mithra/templates';
 import {
+  LlmInvalidOutputError,
   LlmUnavailableError,
   type Llm,
   type LlmMessage,
@@ -284,9 +285,15 @@ export function createAgent(deps: AgentDeps): Agent {
         }
       }
     } catch (error) {
-      if (!(error instanceof LlmUnavailableError)) throw error;
-      degraded = error.reason;
-      await recordEvent('llm_unavailable', { party: partyId, reason: error.reason });
+      if (error instanceof LlmInvalidOutputError) {
+        degraded = 'the model answered in a form I could not use';
+        await recordEvent('llm_invalid_output', { party: partyId, why: error.message });
+      } else if (error instanceof LlmUnavailableError) {
+        degraded = error.reason;
+        await recordEvent('llm_unavailable', { party: partyId, reason: error.reason });
+      } else {
+        throw error;
+      }
     }
 
     let replyText: string;

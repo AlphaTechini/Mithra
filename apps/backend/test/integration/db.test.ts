@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDatabase, runMigrations, type DatabaseHandle } from '../../src/db';
+import { CycleStore } from '../../src/cycle/store';
 import { cycleRuns } from '../../src/db/schema';
 import { DATABASE_URL_TEST, resetDatabase } from './helpers';
 
@@ -55,5 +56,26 @@ describe('database', () => {
       .values({ orgTreasury: 'treasury::2', cycleId: '2026-09', status: 'held' });
     const rows = await handle.db.select().from(cycleRuns);
     expect(rows).toHaveLength(3);
+  });
+
+  it('keeps the timeline of a cycle per treasury', async () => {
+    const step = (detail: string) => ({
+      id: 'woke' as const,
+      label: 'Woke up',
+      status: 'done' as const,
+      detail,
+      at: null,
+    });
+    const first = new CycleStore(handle.db, 'timeline-treasury::1');
+    const second = new CycleStore(handle.db, 'timeline-treasury::2');
+    await first.addTimeline('2026-09', step('first'));
+    await second.addTimeline('2026-09', step('second'));
+    await first.addTimeline('2026-09', step('first again'));
+    expect((await first.timeline('2026-09')).map((s) => s.detail)).toEqual([
+      'first',
+      'first again',
+    ]);
+    expect((await second.timeline('2026-09')).map((s) => s.detail)).toEqual(['second']);
+    expect(await first.timeline('2026-10')).toEqual([]);
   });
 });

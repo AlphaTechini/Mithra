@@ -1,6 +1,6 @@
 import type { PartyRef, PolicyDraft } from '@mithra/shared';
 import { ApiError } from '../http/errors';
-import { LlmUnavailableError, type Llm, type LlmTool } from '../llm/client';
+import { LlmInvalidOutputError, LlmUnavailableError, type Llm, type LlmTool } from '../llm/client';
 import { DraftPolicyArgsSchema, POLICY_DEFAULTS, resolveDraftPolicy } from './policyFields';
 import type { AgentServices } from './services';
 import type { AgentStore } from './store';
@@ -76,6 +76,18 @@ export function createPolicyDrafter(deps: {
             503,
             'llm_unavailable',
             `The agent can't draft right now (${error.reason}). ${FORM_HINT}`,
+          );
+        }
+        if (error instanceof LlmInvalidOutputError) {
+          await recordEvent('llm_invalid_output', {
+            party,
+            purpose: 'policy.draft',
+            why: error.message,
+          });
+          throw new ApiError(
+            422,
+            'llm_invalid_output',
+            `The agent's draft was not usable (the model answered in a form I could not use). ${FORM_HINT}`,
           );
         }
         throw error;

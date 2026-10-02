@@ -63,10 +63,34 @@ interface Setup {
   tapCalls: [string, string][];
   preapprovalCalls: string[];
   accepted: string[];
+  legAmounts: string[];
 }
 
-function setup(options: { output?: unknown; org?: boolean; holdings?: string[] } = {}) {
-  const state: Setup = { submits: [], tapCalls: [], preapprovalCalls: [], accepted: [] };
+interface PendingTransfer {
+  cid: string;
+  amount: string;
+  sender?: string;
+  receiver?: string;
+}
+
+function setup(
+  options: {
+    output?: unknown;
+    org?: boolean;
+    holdings?: string[];
+    /** The operator's balance as the asset adapter reports it. Default 0. */
+    balance?: string;
+    /** Transfers waiting for the treasury on the ledger. */
+    pending?: PendingTransfer[];
+  } = {},
+) {
+  const state: Setup = {
+    submits: [],
+    tapCalls: [],
+    preapprovalCalls: [],
+    accepted: [],
+    legAmounts: [],
+  };
   const sdk: AmuletSdk = {
     amulet: {
       tap(party, amount) {
@@ -90,6 +114,33 @@ function setup(options: { output?: unknown; org?: boolean; holdings?: string[] }
   };
   const results: Transaction[] = [];
   const client = {
+    activeContracts: () =>
+      Promise.resolve(
+        (options.pending ?? []).map((p) => ({
+          contractId: p.cid,
+          templateId: 'pkg:Splice.Instruction:Instruction',
+          entity: 'Splice.Instruction:Instruction',
+          payload: {},
+          signatories: [],
+          observers: [],
+          createdAt: '',
+          offset: 1,
+          synchronizerId: 's',
+          interfaceViews: [
+            {
+              interfaceId: `pkgid:Splice.Api.Token.TransferInstructionV1:TransferInstruction`,
+              viewValue: {
+                transfer: {
+                  sender: p.sender ?? operator,
+                  receiver: p.receiver ?? treasury,
+                  amount: p.amount,
+                  instrumentId: { admin: 'dso::1220aa', id: 'Amulet' },
+                },
+              },
+            },
+          ],
+        })),
+      ),
     submit(input: SubmitInput) {
       state.submits.push(input);
       const next =
@@ -130,9 +181,10 @@ function setup(options: { output?: unknown; org?: boolean; holdings?: string[] }
           locked: false,
         })),
       ),
-    balance: () => Promise.resolve('0'),
+    balance: () => Promise.resolve(options.balance ?? '0'),
     transferLeg: (input) => {
-      expect(input).toEqual({ sender: operator, receiver: treasury, amount: '10000' });
+      expect(input).toMatchObject({ sender: operator, receiver: treasury });
+      state.legAmounts.push(input.amount);
       return Promise.resolve({
         kind: 'offer' as const,
         disclosed: [factoryDisclosed],
@@ -216,6 +268,69 @@ describe('fundTreasury', () => {
       transferUpdateId: 'upd-transfer',
       acceptUpdateId: 'upd-3',
     });
+  });
+
+  it('does not tap again when the operator already holds the funds from an earlier attempt', async () => {
+    const { funding, state } = setup({ balance: '10000' });
+    const result = await funding.fundTreasury('10000');
+    expect(state.tapCalls).toEqual([]);
+    expect(state.submits.map((s) => s.actAs)).toEqual([[operator], [agent]]); // transfer, accept
+    expect(state.legAmounts).toEqual(['10000']);
+    expect(result).toMatchObject({ tapUpdateId: null, acceptedPending: true });
+    // Less than the amount is not enough: the tap runs.
+    const short = setup({ balance: '9999.9999999999' });
+    await short.funding.fundTreasury('10000');
+    expect(short.state.tapCalls).toEqual([[operator, '10000']]);
+  });
+
+  it('accepts a transfer already waiting for the treasury first, and neither taps nor sends again when it covers the amount', async () => {
+    const { funding, state } = setup({ pending: [{ cid: 'ti-earlier', amount: '10000' }] });
+    const result = await funding.fundTreasury('10000');
+    expect(state.accepted).toEqual(['ti-earlier']);
+    expect(state.tapCalls).toEqual([]);
+    expect(state.submits).toHaveLength(1);
+    expect(state.submits[0]).toMatchObject({
+      actAs: [agent],
+      readAs: [treasury],
+      commands: [{ ExerciseCommand: { choice: 'Org_AcceptDeposit' } }],
+    });
+    expect(result).toEqual({
+      amount: '10000',
+      acceptedPending: true,
+      tapUpdateId: null,
+      transferUpdateId: null,
+      acceptUpdateId: 'upd-1',
+    });
+  });
+
+  it('funds only the rest when the waiting transfer is smaller than the amount', async () => {
+    const { funding, state } = setup({ pending: [{ cid: 'ti-earlier', amount: '4000' }] });
+    await funding.fundTreasury('10000');
+    expect(state.accepted).toEqual(['ti-earlier', 'ti-1']);
+    expect(state.tapCalls).toEqual([[operator, '6000.0000000000']]);
+    expect(state.legAmounts).toEqual(['6000.0000000000']);
+  });
+
+  it('ignores transfers that are not from the operator to the treasury', async () => {
+    const { funding, state } = setup({
+      pending: [
+        { cid: 'ti-other-sender', amount: '10000', sender: 'someone::1220aa' },
+        { cid: 'ti-other-receiver', amount: '10000', receiver: 'holder-a::1220aa' },
+      ],
+    });
+    await funding.fundTreasury('10000');
+    expect(state.accepted).toEqual(['ti-1']);
+    expect(state.tapCalls).toEqual([[operator, '10000']]);
+  });
+
+  it('says what happens on a retry when a waiting transfer cannot be accepted without an organization', async () => {
+    const { funding, state } = setup({
+      org: false,
+      pending: [{ cid: 'ti-earlier', amount: '10000' }],
+    });
+    await expect(funding.fundTreasury('10000')).rejects.toThrow(/does not tap again/);
+    expect(state.tapCalls).toEqual([]);
+    expect(state.submits).toEqual([]);
   });
 
   it('adds up several holdings when one is not enough', async () => {

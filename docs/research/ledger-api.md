@@ -69,3 +69,24 @@ OIDC client-credentials or password grant against the operator's identity provid
 - `POST /v2/state/active-contracts` with `{"activeAtOffset": <ledger end>, "eventFormat": {"filtersByParty": {p: {"cumulative": [{"identifierFilter": {"TemplateFilter": {"value": {"templateId": "#mithra-v1:…", "includeCreatedEventBlob": false}}}}]}}, "verbose": false}}` → JSON array of `{"workflowId","contractEntry":{"JsActiveContract":{"createdEvent":{…}}}}`.
 - Encoding confirmed: `Decimal` and `Int` sent as strings (`"5000"`, `"3"`) are accepted; `Optional` `None` as `null`; records as objects; `Time` as ISO string.
 - A failed `ensure` returns HTTP 400-class JSON `{"code":"DAML_FAILURE","cause":"Interpretation error: Error: User failure: UNHANDLED_EXCEPTION/DA.Exception.PreconditionFailed…","context":{"error_id":…},"errorCategory":9,…}`. `assertMsg` failures carry the message text inside `cause`.
+
+## Active contracts over the WebSocket stream (verified 2026-10-02 against the same sandbox)
+
+`POST /v2/state/active-contracts` has a result limit, the participant's `http-list-max-elements-limit`. It is 200 unless the operator changed it (config key `canton.participants.<name>.http-ledger-api.websocket-config.http-list-max-elements-limit`, found in the `WebsocketConfig` class of `canton.jar` 3.4.0-rc2). A read of more contracts fails:
+
+```
+HTTP 413  {"code":"JSON_API_MAXIMUM_LIST_ELEMENTS_NUMBER_REACHED","cause":"The number of matching elements (201) is greater than the node limit (200).","errorCategory":2,"definiteAnswer":false,"retryInfo":"1 second",…}
+```
+
+Note `errorCategory: 2` (transient) on an error that repeats exactly: the client does not retry a 413.
+
+The same read over the WebSocket variant of the endpoint has no such limit (712 active contracts streamed in one read on the sandbox; the HTTP read of the same filter answered 413 at 201):
+
+- URL: the same path with `ws://` or `wss://`: `ws://localhost:7575/v2/state/active-contracts`.
+- Subprotocols: `jwt.token.<token>` and `daml.ws.auth` when the participant needs a token. **`daml.ws.auth` has to be requested even without a token**: the sandbox always answers the handshake with `Sec-WebSocket-Protocol: daml.ws.auth`, and Node 22's global `WebSocket` throws `TypeError: Cannot read properties of null (reading 'includes')` from inside undici when the answer names a protocol that was not requested (it cannot be caught from the `WebSocket` object).
+- Protocol: after the connection opens, the client sends the same JSON as the HTTP body (`{ activeAtOffset, eventFormat }`) as one text message. The server answers one text message per active contract, each the same `JsGetActiveContractsResponse` object that the HTTP array holds (`{ workflowId, contractEntry: { JsActiveContract: { createdEvent, synchronizerId } } }`), then closes the stream with code 1000. No separate "end" message.
+- Errors arrive as a message `{ "code": "…", "cause": "…", … }` (for example `LEDGER_API_INTERNAL_ERROR` for a request that does not decode) followed by a normal close 1000, so a message with a `code` and no `contractEntry` must be treated as the error. A party the participant does not know gives an empty stream, not an error.
+- Not verified: the token subprotocols against a participant that requires authentication (the sandbox has no auth). The format is the one of the Canton documentation and of the asyncapi file; the client sends exactly it and a unit test checks the subprotocols, but nothing has answered it with a real token.
+
+How Mithra uses it: `LedgerClient.activeContracts` reads over HTTP and, only when that answers 413, repeats the same request over the WebSocket stream. It does not use the stream for every read: the HTTP read is the path the rest of the application and the tests exercise, and the stream was only verified on the sandbox. Integration test: `test/integration/ledger.test.ts`, "reads more active contracts than the list limit allows over the WebSocket stream" (creates 205 contracts, shows the HTTP 413, reads them all through the client).
+

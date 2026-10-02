@@ -1,0 +1,1 @@
+ALTER TABLE "cycle_runs" ADD COLUMN "waiting_for_wallets" boolean DEFAULT false NOT NULL;

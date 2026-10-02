@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { jsonBodyOf, urlOf } from '../../testUtils';
 import { none } from '../auth';
 import { LedgerClient } from '../client';
-import { MithraReader } from './queries';
+import { compareInstants, MithraReader, newestFirst } from './queries';
 import { mithraTemplateIds } from './templates';
 
 function entry(
@@ -10,12 +10,13 @@ function entry(
   entity: string,
   payload: unknown,
   createdAt = '2026-10-01T00:00:00Z',
+  offset = 1,
 ) {
   return {
     contractEntry: {
       JsActiveContract: {
         createdEvent: {
-          offset: 1,
+          offset,
           contractId,
           templateId: `pkgid:${entity}`,
           createArgument: payload,
@@ -93,6 +94,7 @@ describe('MithraReader', () => {
         mandateVersion: 1,
       }) as unknown,
       createdAt: '2026-10-01T00:00:00Z',
+      offset: 1,
     });
     // One request, as the agent and the treasury, for the Organization template only.
     expect(bodies).toHaveLength(1);
@@ -143,5 +145,64 @@ describe('MithraReader', () => {
     expect(facts.organization?.contractId).toBe('00a');
     expect(facts.register).toBeNull();
     expect(bodies).toHaveLength(1);
+  });
+});
+
+describe('newest first', () => {
+  const contract = (contractId: string, createdAt: string, offset?: number) => ({
+    contractId,
+    createdAt,
+    payload: null,
+    ...(offset === undefined ? {} : { offset }),
+  });
+
+  it('compares instants with microseconds and with trimmed fractions', () => {
+    // As strings "…24.254Z" sorts after "…24.254844Z" ('Z' > '8'), but it is the earlier instant.
+    expect(compareInstants('2026-10-01T10:00:24.254Z', '2026-10-01T10:00:24.254844Z')).toBe(-1);
+    expect(compareInstants('2026-10-01T10:00:24.254844Z', '2026-10-01T10:00:24.254Z')).toBe(1);
+    expect(compareInstants('2026-10-01T10:00:24Z', '2026-10-01T10:00:24.000000Z')).toBe(0);
+    expect(compareInstants('2026-10-01T10:00:25Z', '2026-10-01T10:00:24.999999Z')).toBe(1);
+  });
+
+  it('sorts by instant when there is no offset, not by string', () => {
+    const older = contract('00a', '2026-10-01T10:00:24.254Z');
+    const newer = contract('00b', '2026-10-01T10:00:24.254844Z');
+    expect([older, newer].sort(newestFirst).map((c) => c.contractId)).toEqual(['00b', '00a']);
+    expect([newer, older].sort(newestFirst).map((c) => c.contractId)).toEqual(['00b', '00a']);
+  });
+
+  it('sorts by ledger offset when both contracts carry different ones', () => {
+    // The clock says the other order; the offset is the ledger's own order.
+    const first = contract('00a', '2026-10-01T10:00:24.900Z', 7);
+    const second = contract('00b', '2026-10-01T10:00:24.100Z', 9);
+    expect([first, second].sort(newestFirst).map((c) => c.contractId)).toEqual(['00b', '00a']);
+  });
+
+  it('uses the contract id as the tiebreak', () => {
+    const a = contract('00a', '2026-10-01T10:00:24Z', 5);
+    const b = contract('00b', '2026-10-01T10:00:24.000000Z', 5);
+    expect([a, b].sort(newestFirst).map((c) => c.contractId)).toEqual(['00b', '00a']);
+    expect([b, a].sort(newestFirst).map((c) => c.contractId)).toEqual(['00b', '00a']);
+  });
+
+  it('the reader returns the newest contract of both timestamp forms and carries the offset', async () => {
+    const { reader } = readerWith([
+      entry(
+        '00a',
+        'Mithra.Org:Organization',
+        org('treasury::1', 'Old'),
+        '2026-10-01T10:00:24.254Z',
+        3,
+      ),
+      entry(
+        '00b',
+        'Mithra.Org:Organization',
+        org('treasury::1', 'New'),
+        '2026-10-01T10:00:24.254844Z',
+        3,
+      ),
+    ]);
+    const result = await reader.organization();
+    expect(result).toMatchObject({ contractId: '00b', offset: 3 });
   });
 });

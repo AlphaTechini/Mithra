@@ -12,6 +12,8 @@ import {
 import { createTokenStandardAdapter } from '../../src/wallet';
 import {
   EMPTY_EXTRA_ARGS,
+  SANDBOX_URL,
+  TEST_HOLDING,
   TRANSFER_INSTRUCTION_INTERFACE,
   createWorld,
   loadVectors,
@@ -786,5 +788,85 @@ describe('ledger module against a Canton sandbox', () => {
       }),
     ).rejects.toBeInstanceOf(LedgerError);
     expect(calls).toBe(1);
+  });
+
+  it('reads more active contracts than the list limit allows over the WebSocket stream', async () => {
+    // The participant's `http-list-max-elements-limit` is 200 by default: a read of more contracts
+    // is refused with HTTP 413 (JSON_API_MAXIMUM_LIST_ELEMENTS_NUMBER_REACHED). Create 205 holdings
+    // for a fresh party, then read them through the client, which falls back to the stream.
+    const owner = await world.ledger.client.allocateParty(`bulk${Date.now().toString(36)}`);
+    const count = 205;
+    await as.as(
+      [owner],
+      Array.from({ length: count }, (_, i) => ({
+        CreateCommand: {
+          templateId: TEST_HOLDING,
+          createArguments: {
+            admin: owner,
+            owner,
+            instrumentId: { admin: owner, id: 'BULK' },
+            amount: `${i + 1}.0`,
+          },
+        },
+      })),
+    );
+    const query = { parties: [owner], templateIds: [TEST_HOLDING] };
+
+    // The plain HTTP read is refused, which is why the fallback exists.
+    const end = (await (await fetch(`${SANDBOX_URL}/v2/state/ledger-end`)).json()) as {
+      offset: number;
+    };
+    const http = await fetch(`${SANDBOX_URL}/v2/state/active-contracts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        activeAtOffset: end.offset,
+        eventFormat: {
+          filtersByParty: {
+            [owner]: {
+              cumulative: [
+                {
+                  identifierFilter: {
+                    TemplateFilter: {
+                      value: { templateId: TEST_HOLDING, includeCreatedEventBlob: false },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+          verbose: false,
+        },
+      }),
+    });
+    expect(http.status).toBe(413);
+    expect(await http.text()).toContain('JSON_API_MAXIMUM_LIST_ELEMENTS_NUMBER_REACHED');
+
+    // Through the client: HTTP 413, then the stream. Every contract arrives once, with the payload.
+    let socketsOpened = 0;
+    const client = createLedger(world.config, {
+      webSocket: (url, protocols) => {
+        socketsOpened += 1;
+        return new WebSocket(url, protocols) as never;
+      },
+    }).client;
+    const contracts = await client.activeContracts(query);
+    expect(socketsOpened).toBe(1);
+    expect(contracts).toHaveLength(count);
+    expect(new Set(contracts.map((c) => c.contractId)).size).toBe(count);
+    const amounts = contracts
+      .map((c) => Number((c.payload as { amount: string }).amount))
+      .sort((a, b) => a - b);
+    expect(amounts[0]).toBe(1);
+    expect(amounts[count - 1]).toBe(count);
+    expect(contracts[0]).toMatchObject({ entity: 'Mithra.Test.Registry:TestHolding' });
+
+    // A read under the limit stays on HTTP and gives the same shape.
+    const few = await client.activeContracts({
+      parties: [world.parties.treasury],
+      templateIds: ['#mithra-v1:Mithra.Org:Organization'],
+    });
+    expect(socketsOpened).toBe(1);
+    expect(few.length).toBeGreaterThan(0);
   });
 });

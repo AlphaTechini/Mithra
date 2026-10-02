@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { urlOf } from '../testUtils';
 import { none, unsafeHmac, type TokenProvider } from './auth';
-import { LedgerClient, createdIn, exerciseResultOf } from './client';
+import { LedgerClient, createdIn, exerciseResultOf, type WebSocketLike } from './client';
 import { LedgerError, NODES_DID_NOT_CONFIRM_MESSAGE, setNodeConfirmationLogger } from './errors';
 
 interface Call {
@@ -21,7 +21,11 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function makeClient(responder: Responder, tokens: TokenProvider = none()) {
+function makeClient(
+  responder: Responder,
+  tokens: TokenProvider = none(),
+  baseUrl = 'http://ledger.test/',
+) {
   const calls: Call[] = [];
   const delays: number[] = [];
   const fetchStub: typeof fetch = async (input, init) => {
@@ -39,7 +43,7 @@ function makeClient(responder: Responder, tokens: TokenProvider = none()) {
     return result;
   };
   const client = new LedgerClient({
-    baseUrl: 'http://ledger.test/',
+    baseUrl,
     userId: 'user-1',
     tokens,
     fetch: fetchStub,
@@ -140,9 +144,107 @@ describe('submit', () => {
     const { client, calls } = makeClient(
       () => json(tx),
       unsafeHmac({ secret: 'unsafe', audience: 'aud', userId: 'user-1' }),
+      'https://ledger.test/',
     );
     await client.submit({ actAs: ['p1'], commands: [] });
     expect(calls[0]?.headers.get('authorization')).toMatch(/^Bearer ey/);
+  });
+
+  describe('credentials over cleartext', () => {
+    const token = unsafeHmac({ secret: 'unsafe', audience: 'aud', userId: 'user-1' });
+
+    it('refuses to send a token to an http URL that is not loopback, before any request', async () => {
+      const { client, calls } = makeClient(() => json(tx), token, 'http://ledger.example:7575');
+      const failure = await client
+        .submit({ actAs: ['p1'], commands: [] })
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(LedgerError);
+      expect(failure).toMatchObject({ code: 'LEDGER_INSECURE_URL', retryable: false });
+      expect((failure as Error).message).toContain('https://');
+      expect((failure as Error).message).toContain('LEDGER_JSON_API_URL');
+      expect(calls).toHaveLength(0);
+    });
+
+    it('also checks the URL of another node (atUrl)', async () => {
+      const { client, calls } = makeClient(
+        () => json({ version: '3.4' }),
+        token,
+        'https://ledger.test/',
+      );
+      const other = client.atUrl('http://node-b.example:2975');
+      await expect(other.version()).rejects.toMatchObject({ code: 'LEDGER_INSECURE_URL' });
+      expect(calls).toHaveLength(0);
+      await expect(client.atUrl('https://node-b.example').version()).resolves.toEqual({
+        version: '3.4',
+      });
+    });
+
+    it.each([
+      'http://localhost:7575',
+      'http://participant.localhost:7575',
+      'http://127.0.0.1:7575',
+      'http://127.8.9.10:7575',
+      'http://[::1]:7575',
+      'https://ledger.example',
+    ])('sends the token to %s', async (baseUrl) => {
+      const { client, calls } = makeClient(() => json({ version: '3.4' }), token, baseUrl);
+      await client.version();
+      expect(calls[0]?.headers.get('authorization')).toMatch(/^Bearer ey/);
+    });
+
+    it.each(['http://ledger.example', 'http://128.0.0.1:7575', 'http://localhost.example.com'])(
+      'refuses the token for %s',
+      async (baseUrl) => {
+        const { client } = makeClient(() => json({ version: '3.4' }), token, baseUrl);
+        await expect(client.version()).rejects.toMatchObject({ code: 'LEDGER_INSECURE_URL' });
+      },
+    );
+
+    it('sends no token and no check when the provider has none (the sandbox)', async () => {
+      const { client, calls } = makeClient(
+        () => json({ version: '3.4' }),
+        none(),
+        'http://ledger.example',
+      );
+      await client.version();
+      expect(calls[0]?.headers.get('authorization')).toBeNull();
+    });
+  });
+
+  describe('redirects', () => {
+    it('does not follow a redirect and does not retry it', async () => {
+      const { client, calls, delays } = makeClient(
+        () =>
+          new Response(null, {
+            status: 307,
+            headers: { location: 'https://evil.example/v2/commands?secret=1' },
+          }),
+        none(),
+      );
+      const failure = await client
+        .submit({ actAs: ['p1'], commands: [] })
+        .catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: 'LEDGER_REDIRECT', retryable: false, status: 307 });
+      expect((failure as Error).message).toContain('https://evil.example');
+      expect((failure as Error).message).not.toContain('secret=1');
+      expect(calls).toHaveLength(1);
+      expect(delays).toEqual([]);
+    });
+
+    it('asks fetch not to follow redirects', async () => {
+      let seen: RequestInit | undefined;
+      const client = new LedgerClient({
+        baseUrl: 'http://localhost:7575',
+        userId: 'u',
+        tokens: none(),
+        fetch: (_input, init) => {
+          seen = init;
+          return Promise.resolve(json({ version: '3.4' }));
+        },
+      });
+      await client.version();
+      expect(seen?.redirect).toBe('manual');
+    });
   });
 
   it('retries a network failure with the same command id', async () => {
@@ -184,6 +286,185 @@ describe('submit', () => {
     expect(error).toBeInstanceOf(LedgerError);
     expect((error as LedgerError).message).toBe('Nope');
     expect(calls).toHaveLength(1);
+  });
+});
+
+/** A WebSocket that plays a script when the request is sent, and records how it was opened. */
+class FakeSocket implements WebSocketLike {
+  onopen: ((event: unknown) => void) | null = null;
+  onmessage: ((event: { data: unknown }) => void) | null = null;
+  onerror: ((event: unknown) => void) | null = null;
+  onclose: ((event: { code: number; reason: string }) => void) | null = null;
+  sent: string[] = [];
+  closed = false;
+  constructor(
+    readonly url: string,
+    readonly protocols: string[],
+    private readonly script: (socket: FakeSocket) => void,
+  ) {
+    queueMicrotask(() => this.onopen?.({}));
+  }
+  send(data: string): void {
+    this.sent.push(data);
+    queueMicrotask(() => this.script(this));
+  }
+  close(): void {
+    this.closed = true;
+  }
+  message(value: unknown): void {
+    this.onmessage?.({ data: typeof value === 'string' ? value : JSON.stringify(value) });
+  }
+  end(code = 1000, reason = ''): void {
+    this.onclose?.({ code, reason });
+  }
+}
+
+const acsEntry = (contractId: string) => ({
+  workflowId: '',
+  contractEntry: {
+    JsActiveContract: {
+      createdEvent: createdEvent(contractId, 'pkg:Mithra.Org:Organization', { name: contractId }),
+      synchronizerId: 'sync::1',
+    },
+  },
+});
+
+describe('activeContracts over the WebSocket stream (HTTP 413)', () => {
+  const tooMany = () =>
+    json(
+      {
+        code: 'JSON_API_MAXIMUM_LIST_ELEMENTS_NUMBER_REACHED',
+        cause: 'The number of matching elements (201) is greater than the node limit (200).',
+        errorCategory: 2,
+        definiteAnswer: false,
+      },
+      413,
+    );
+
+  function setup(
+    script: (socket: FakeSocket) => void,
+    tokens: TokenProvider = none(),
+    baseUrl = 'http://ledger.test/',
+  ) {
+    const sockets: FakeSocket[] = [];
+    const http: Call[] = [];
+    const delays: number[] = [];
+    const client = new LedgerClient({
+      baseUrl,
+      userId: 'user-1',
+      tokens,
+      sleep: (ms) => {
+        delays.push(ms);
+        return Promise.resolve();
+      },
+      fetch: (input, init) => {
+        const call: Call = {
+          method: init?.method ?? 'GET',
+          url: urlOf(input),
+          headers: new Headers(init?.headers),
+          body: typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined,
+          rawBody: init?.body,
+        };
+        http.push(call);
+        return Promise.resolve(
+          call.url.endsWith('/v2/state/ledger-end') ? json({ offset: 77 }) : tooMany(),
+        );
+      },
+      webSocket: (url, protocols) => {
+        const socket = new FakeSocket(url, protocols, script);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    return { client, sockets, http, delays };
+  }
+
+  it('reads the contracts from the stream when the HTTP read returns 413, with the same request', async () => {
+    const { client, sockets, http, delays } = setup((socket) => {
+      socket.message(acsEntry('c1'));
+      socket.message(acsEntry('c2'));
+      socket.message(acsEntry('c1')); // the same contract once more (a second queried party)
+      socket.message({ workflowId: '', contractEntry: { JsEmpty: {} } });
+      socket.end();
+    });
+    const result = await client.activeContracts({ parties: ['a', 'b'], templateIds: ['#m:M:E'] });
+    expect(result.map((c) => c.contractId)).toEqual(['c1', 'c2']);
+    expect(result[0]).toMatchObject({ offset: 5, entity: 'Mithra.Org:Organization' });
+    // The 413 is not retried (the same request would fail the same way), then one stream is opened.
+    expect(http.map((c) => c.url)).toEqual([
+      'http://ledger.test/v2/state/ledger-end',
+      'http://ledger.test/v2/state/active-contracts',
+    ]);
+    expect(delays).toEqual([]);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]?.url).toBe('ws://ledger.test/v2/state/active-contracts');
+    expect(sockets[0]?.protocols).toEqual(['daml.ws.auth']);
+    expect(JSON.parse(sockets[0]?.sent[0] ?? '')).toEqual(http[1]?.body);
+    expect(sockets[0]?.closed).toBe(true);
+  });
+
+  it('authenticates with the jwt.token.<token> and daml.ws.auth subprotocols, over wss for https', async () => {
+    const { client, sockets } = setup(
+      (socket) => socket.end(),
+      { getToken: () => Promise.resolve('abc.def.ghi') },
+      'https://ledger.test',
+    );
+    expect(await client.activeContracts({ parties: ['a'] })).toEqual([]);
+    expect(sockets[0]?.url).toBe('wss://ledger.test/v2/state/active-contracts');
+    expect(sockets[0]?.protocols).toEqual(['jwt.token.abc.def.ghi', 'daml.ws.auth']);
+  });
+
+  it('does not send a token over cleartext to a remote host, also on the stream', async () => {
+    const { client, sockets } = setup(
+      (socket) => socket.end(),
+      { getToken: () => Promise.resolve('abc.def.ghi') },
+      'http://ledger.example',
+    );
+    // The HTTP call is refused first (the token check), so no socket is ever opened.
+    await expect(client.activeContracts({ parties: ['a'] })).rejects.toMatchObject({
+      code: 'LEDGER_INSECURE_URL',
+    });
+    expect(sockets).toEqual([]);
+  });
+
+  it('turns an error message on the stream into a LedgerError', async () => {
+    const { client } = setup((socket) => {
+      socket.message({
+        code: 'NON_POSITIVE_OFFSET',
+        cause: 'The offset is wrong',
+        errorCategory: 9,
+      });
+      socket.end();
+    });
+    await expect(client.activeContracts({ parties: ['a'] })).rejects.toMatchObject({
+      code: 'NON_POSITIVE_OFFSET',
+      message: 'The offset is wrong',
+    });
+  });
+
+  it('retries a stream that closed early and reads the contracts the second time', async () => {
+    let attempts = 0;
+    const { client, sockets, delays } = setup((socket) => {
+      attempts += 1;
+      if (attempts === 1) {
+        socket.message(acsEntry('partial'));
+        socket.end(1011, 'server error');
+      } else {
+        socket.message(acsEntry('c1'));
+        socket.end();
+      }
+    });
+    const result = await client.activeContracts({ parties: ['a'] });
+    expect(result.map((c) => c.contractId)).toEqual(['c1']);
+    expect(sockets).toHaveLength(2);
+    expect(delays).toEqual([250]);
+  });
+
+  it('fails when the connection breaks', async () => {
+    const { client } = setup((socket) => socket.onerror?.(new Error('boom')));
+    await expect(client.activeContracts({ parties: ['a'] })).rejects.toMatchObject({
+      code: 'LEDGER_UNREACHABLE',
+    });
   });
 });
 

@@ -1,6 +1,6 @@
 import type { Config } from '../config/env';
 import { createTokenProvider, type TokenProvider } from './auth';
-import { LedgerClient } from './client';
+import { LedgerClient, type WebSocketFactory } from './client';
 import { createMithraCommands } from './mithra/commands';
 import { MithraReader } from './mithra/queries';
 import { mithraTemplateIds } from './mithra/templates';
@@ -10,6 +10,7 @@ export * from './errors';
 export * from './auth';
 export * from './codec';
 export { LedgerClient, createdIn, exerciseResultOf, parseTransaction } from './client';
+export type { WebSocketFactory, WebSocketLike } from './client';
 export * from './mithra';
 
 /** The ledger module: the only way the application talks to the ledger. */
@@ -20,7 +21,11 @@ export type LedgerConfig = Pick<Config, 'ledger' | 'parties'>;
 
 export function createLedger(
   config: LedgerConfig,
-  options: { tokens?: TokenProvider; fetch?: typeof fetch } = {},
+  options: {
+    tokens?: TokenProvider;
+    fetch?: typeof fetch;
+    webSocket?: WebSocketFactory;
+  } = {},
 ) {
   const tokens = options.tokens ?? createTokenProvider(config.ledger.auth, config.ledger.userId);
   const client = new LedgerClient({
@@ -28,6 +33,7 @@ export function createLedger(
     userId: config.ledger.userId,
     tokens,
     ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(options.webSocket ? { webSocket: options.webSocket } : {}),
   });
   const templates = mithraTemplateIds(config.ledger.mithraPackage);
   const readParties = config.ledger.readAsTreasury

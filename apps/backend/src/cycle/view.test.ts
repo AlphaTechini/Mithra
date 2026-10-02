@@ -183,6 +183,7 @@ function run(overrides: Partial<RunState> = {}): RunState {
     recordDate: '2026-09-30',
     executesAt: new Date('2026-10-01T12:00:30Z'),
     held: false,
+    waitingForWallets: false,
     fundsShortfall: null,
     ...overrides,
   };
@@ -417,6 +418,18 @@ describe('P4: Paid only comes from the ledger', () => {
     expect(payoutRowStatuses(cf)).toEqual(['pending-ledger', 'pending-ledger']);
   });
 
+  it('a paid outcome shows as executing until the engine has recorded the payout and marked the row', () => {
+    const ledger = {
+      records: [contract('r', record())],
+      outcomes: [contract('o', outcome())],
+      payments: [payment(H('a'), 'Paid', 'pay0'), payment(H('b'), 'AwaitingAcceptance', 'pay1')],
+    };
+    expect(status(facts(ledger, run({ status: 'executing' })))).toBe('executing');
+    expect(status(facts(ledger, run({ status: 'executed' })))).toBe('awaiting-acceptance');
+    // Another instance paid it and this one has no row: the ledger alone decides.
+    expect(status(facts(ledger, null))).toBe('awaiting-acceptance');
+  });
+
   it('a row is paid only when its Payment contract has status Paid, with an in-app link', () => {
     const cf = facts(
       {
@@ -594,6 +607,9 @@ describe('MainNet payouts (M10)', () => {
     const due = run({ executesAt: new Date('2026-10-01T11:59:00Z') });
     const cf = facts(base, due);
     cf.missingWallets = [H('b')];
+    // Until the engine has looked at it and recorded the wait, the cycle is still executing.
+    expect(status(cf)).toBe('executing');
+    cf.row = { ...due, waitingForWallets: true };
     expect(status(cf)).toBe('needs-wallets');
     expect(detailOf(cf, mandate, ctx, []).needsWallets).toEqual([
       { partyId: H('b'), displayName: 'b' },
@@ -623,6 +639,8 @@ describe('MainNet payouts (M10)', () => {
       run({ executesAt: null }),
     );
     cf.missingWallets = [H('a')];
+    expect(status(cf)).toBe('executing');
+    cf.row = run({ executesAt: null, waitingForWallets: true });
     expect(status(cf)).toBe('needs-wallets');
   });
 });

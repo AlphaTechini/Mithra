@@ -122,6 +122,7 @@ export function createBackend(
     activity,
     bus,
     memoWriter: new AiMemoWriter({ llm }),
+    log,
     ...(holdCountdownSeconds === undefined ? {} : { holdCountdownSeconds }),
     ...(sealer ? { sealer } : {}),
     ...(wallets ? { wallets } : {}),

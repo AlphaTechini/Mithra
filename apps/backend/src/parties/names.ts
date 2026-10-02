@@ -18,6 +18,8 @@ export function shortPartyId(partyId: string): string {
 export class PartyNames {
   private invited = new Map<string, string>();
   private loadedAt = 0;
+  private inFlight: Promise<void> | null = null;
+  private generation = 0;
 
   constructor(
     private readonly config: Config,
@@ -25,20 +27,36 @@ export class PartyNames {
     private readonly ttlMs = 10_000,
   ) {}
 
-  private async refresh(): Promise<void> {
-    if (Date.now() - this.loadedAt < this.ttlMs) return;
+  /** Reloads the invite names when the cache is stale; concurrent callers share one query. */
+  private refresh(): Promise<void> {
+    if (Date.now() - this.loadedAt < this.ttlMs) return Promise.resolve();
+    if (!this.inFlight) {
+      const pending = this.load().finally(() => {
+        if (this.inFlight === pending) this.inFlight = null;
+      });
+      this.inFlight = pending;
+    }
+    return this.inFlight;
+  }
+
+  private async load(): Promise<void> {
+    const generation = this.generation;
     const rows = await this.db
       .select({ partyId: invites.partyId, displayName: invites.displayName })
       .from(invites)
       .where(isNotNull(invites.partyId));
     const next = new Map<string, string>();
     for (const row of rows) if (row.partyId) next.set(row.partyId, row.displayName);
+    // An invalidate() during the query means these rows may be stale: do not cache them.
+    if (generation !== this.generation) return;
     this.invited = next;
     this.loadedAt = Date.now();
   }
 
   /** Forget cached invite names (call after creating or binding an invite). */
   invalidate(): void {
+    this.generation += 1;
+    this.inFlight = null;
     this.loadedAt = 0;
   }
 

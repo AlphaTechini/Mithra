@@ -2,6 +2,7 @@ import type { SealStatus } from '@mithra/shared';
 import type { ActivityLog } from '../activity/log';
 import type { Config, LocalnetConfig, LocalnetNode } from '../config/env';
 import { TREASURY_TEAM, type EventBus } from '../events/bus';
+import { Mutex } from '../cycle/mutex';
 import { ApiError } from '../http/errors';
 import { createdIn, type Ledger } from '../ledger';
 import type { SealRequestRow } from '../db/schema';
@@ -136,6 +137,8 @@ export function createDecmanSealer(deps: DecmanSealerDeps): MandateSealer {
   const treasury = config.parties.treasury;
   const rulesCid = local.decmanGovernanceRulesCid;
   const confirming = local.nodes.filter((n) => n.autoConfirm);
+  /** One `start` at a time, so two requests cannot both pass the "nothing pending" check. */
+  const startLock = new Mutex();
 
   async function decman(
     node: LocalnetNode,
@@ -235,109 +238,119 @@ export function createDecmanSealer(deps: DecmanSealerDeps): MandateSealer {
     return { parsed: { cids: [], confirmers: [], canExecute: false }, errors };
   }
 
-  const sealer: MandateSealer = {
-    async start(draftId, treasurer) {
-      const prepared = await prepareSeal(deps, draftId, treasurer);
-      const agent = config.parties.agent;
-      // 1. The treasurer signs the request (L6).
-      const requestTx = await ledger.client.submit({
-        actAs: [treasurer],
+  async function startSeal(draftId: string, treasurer: string): Promise<SealStatus> {
+    // Two changes in flight would capture the same base version and could not be told apart
+    // when the version moves.
+    if ((await store.pendingIds()).length > 0) {
+      throw new ApiError(
+        409,
+        'seal_in_progress',
+        'A Mandate change is already waiting for the nodes. Wait for it to finish, then try again.',
+      );
+    }
+    const prepared = await prepareSeal(deps, draftId, treasurer);
+    const agent = config.parties.agent;
+    // 1. The treasurer signs the request (L6).
+    const requestTx = await ledger.client.submit({
+      actAs: [treasurer],
+      commands: [
+        ledger.commands.createMandateSealRequest({
+          treasury,
+          treasurer,
+          agent,
+          terms: prepared.terms,
+          agentExecutes: true,
+          summary: prepared.summary,
+          summaryFingerprint: prepared.summaryFingerprint,
+          requestedAt: now(),
+        }),
+      ],
+      shape: 'LEDGER_EFFECTS',
+    });
+    const sealRequestCid = createdIn(requestTx, 'Mithra.Mandate:MandateSealRequest')[0]?.contractId;
+    if (!sealRequestCid) throw new Error('The ledger did not return the seal request');
+
+    const base = {
+      sealId: newSealId(),
+      draftId,
+      treasurer,
+      sealRequestCid,
+      baseVersion: prepared.organization.payload.mandateVersion,
+      mandateVersion: null,
+    };
+    // 2. The operator files the governed action.
+    let proposalCid: string | undefined;
+    try {
+      const proposalTx = await ledger.client.submit({
+        actAs: [config.parties.operator],
         commands: [
-          ledger.commands.createMandateSealRequest({
-            treasury,
-            treasurer,
-            agent,
-            terms: prepared.terms,
-            agentExecutes: true,
-            summary: prepared.summary,
-            summaryFingerprint: prepared.summaryFingerprint,
-            requestedAt: now(),
+          ledger.commands.createMandateChangeProposal({
+            governanceParty: treasury,
+            proposer: config.parties.operator,
+            orgCid: prepared.organization.contractId,
+            sealRequestCid,
+            currentMandateCid: prepared.currentMandate?.contractId ?? null,
+            description: prepared.description,
           }),
         ],
         shape: 'LEDGER_EFFECTS',
       });
-      const sealRequestCid = createdIn(requestTx, 'Mithra.Mandate:MandateSealRequest')[0]
-        ?.contractId;
-      if (!sealRequestCid) throw new Error('The ledger did not return the seal request');
-
-      const base = {
-        sealId: newSealId(),
-        draftId,
-        treasurer,
-        sealRequestCid,
-        baseVersion: prepared.organization.payload.mandateVersion,
-        mandateVersion: null,
-      };
-      // 2. The operator files the governed action.
-      let proposalCid: string | undefined;
-      try {
-        const proposalTx = await ledger.client.submit({
-          actAs: [config.parties.operator],
-          commands: [
-            ledger.commands.createMandateChangeProposal({
-              governanceParty: treasury,
-              proposer: config.parties.operator,
-              orgCid: prepared.organization.contractId,
-              sealRequestCid,
-              currentMandateCid: prepared.currentMandate?.contractId ?? null,
-              description: prepared.description,
-            }),
-          ],
-          shape: 'LEDGER_EFFECTS',
-        });
-        proposalCid = createdIn(proposalTx, 'Mithra.Governance:MandateChangeProposal')[0]
-          ?.contractId;
-        if (!proposalCid) throw new Error('The ledger did not return the governed action');
-      } catch (error) {
-        // Do not leave a signed request hanging that nothing will ever execute.
-        await ledger.client
-          .submit({
-            actAs: [treasurer],
-            commands: [ledger.commands.sealRequestWithdraw(sealRequestCid)],
-          })
-          .catch(() => undefined);
-        const message = error instanceof Error ? error.message : String(error);
-        const failed = await store.insert({
-          ...base,
-          governanceProposalCid: null,
-          state: 'failed',
-          confirmations: { ...emptyProgress(), lastError: message },
-          error: `The governed action could not be filed: ${message}`,
-        });
-        return publish(failed);
-      }
-
-      // 3. Confirm on the nodes whose operators turned on auto-confirm.
-      const progress: SealProgress = emptyProgress();
-      const errors: string[] = [];
-      for (const node of confirming) {
-        try {
-          await confirmOn(node, proposalCid);
-          progress.confirmedNodes.push(node.id);
-        } catch (error) {
-          errors.push(error instanceof Error ? error.message : String(error));
-        }
-      }
-      progress.count = progress.confirmedNodes.length;
-      progress.lastError = errors[0] ?? null;
-      const row = await store.insert({
-        ...base,
-        governanceProposalCid: proposalCid,
-        state: 'awaiting-nodes',
-        confirmations: progress,
-        error: null,
-      });
-      await deps.activity
-        ?.record({
-          actorParty: treasurer,
-          kind: 'mandate.seal-requested',
-          subject: row.sealId,
-          text: sealRequestedText(prepared.description),
-          link: '/app/settings',
+      proposalCid = createdIn(proposalTx, 'Mithra.Governance:MandateChangeProposal')[0]?.contractId;
+      if (!proposalCid) throw new Error('The ledger did not return the governed action');
+    } catch (error) {
+      // Do not leave a signed request hanging that nothing will ever execute.
+      await ledger.client
+        .submit({
+          actAs: [treasurer],
+          commands: [ledger.commands.sealRequestWithdraw(sealRequestCid)],
         })
         .catch(() => undefined);
-      return publish(row);
-    },
+      const message = error instanceof Error ? error.message : String(error);
+      const failed = await store.insert({
+        ...base,
+        governanceProposalCid: null,
+        state: 'failed',
+        confirmations: { ...emptyProgress(), lastError: message },
+        error: `The governed action could not be filed: ${message}`,
+      });
+      return publish(failed);
+    }
+
+    // 3. Confirm on the nodes whose operators turned on auto-confirm.
+    const progress: SealProgress = emptyProgress();
+    progress.summaryFingerprint = prepared.summaryFingerprint;
+    const errors: string[] = [];
+    for (const node of confirming) {
+      try {
+        await confirmOn(node, proposalCid);
+        progress.confirmedNodes.push(node.id);
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    progress.count = progress.confirmedNodes.length;
+    progress.lastError = errors[0] ?? null;
+    const row = await store.insert({
+      ...base,
+      governanceProposalCid: proposalCid,
+      state: 'awaiting-nodes',
+      confirmations: progress,
+      error: null,
+    });
+    await deps.activity
+      ?.record({
+        actorParty: treasurer,
+        kind: 'mandate.seal-requested',
+        subject: row.sealId,
+        text: sealRequestedText(prepared.description),
+        link: '/app/settings',
+      })
+      .catch(() => undefined);
+    return publish(row);
+  }
+
+  const sealer: MandateSealer = {
+    start: (draftId, treasurer) => startLock.run(() => startSeal(draftId, treasurer)),
 
     async status(sealId) {
       const row = await store.get(sealId);
@@ -355,11 +368,16 @@ export function createDecmanSealer(deps: DecmanSealerDeps): MandateSealer {
       const proposalCid = row.governanceProposalCid;
       const progress = progressOf(row);
 
-      // Sealed? The organization's version moves when Org_ApplySeal has run.
+      // Sealed? The organization's version moves when Org_ApplySeal has run, and the new Mandate
+      // is the one of this request when it carries the request's summary fingerprint.
       const organization = await ledger.reader.organization();
       if (organization && organization.payload.mandateVersion > row.baseVersion) {
-        row = await sealed(row, organization.payload.mandateVersion);
-        return publish(row);
+        const mandate = await ledger.reader.mandate();
+        const wanted = progress.summaryFingerprint;
+        if (wanted === null || mandate?.payload.summaryFingerprint === wanted) {
+          row = await sealed(row, organization.payload.mandateVersion);
+          return publish(row);
+        }
       }
 
       // A node that was offline when we confirmed gets another try.

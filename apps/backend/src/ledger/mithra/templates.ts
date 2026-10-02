@@ -437,9 +437,11 @@ export type MithraPayloads = {
   [K in MithraTemplateName]: z.output<(typeof MITHRA_PAYLOAD_SCHEMAS)[K]>;
 };
 
-/** A decoded contract: id, payload and creation time. */
+/** A decoded contract: id, payload, creation time and, when the ledger gave it, the creation offset. */
 export interface Contract<T> {
   contractId: string;
   payload: T;
   createdAt: string;
+  /** The ledger offset of the transaction that created the contract. */
+  offset?: number;
 }

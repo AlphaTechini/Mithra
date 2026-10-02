@@ -309,6 +309,73 @@ describe('ledger auth modes', () => {
   });
 });
 
+describe('credentials over cleartext', () => {
+  const oidc = {
+    ...localnet,
+    LEDGER_AUTH_MODE: 'oidc-client-credentials',
+    LEDGER_OIDC_TOKEN_URL: 'https://idp.example/oauth/token',
+    LEDGER_OIDC_CLIENT_ID: 'client',
+    LEDGER_OIDC_CLIENT_SECRET: 'secret',
+    LEDGER_OIDC_AUDIENCE: 'https://ledger.example',
+    LEDGER_OIDC_SCOPE: 'daml_ledger_api',
+  };
+
+  it('requires https for LEDGER_OIDC_TOKEN_URL and says what to change', () => {
+    const error = errorOf({
+      ...oidc,
+      LEDGER_OIDC_CLIENT_SECRET: 's3cr3t-value',
+      LEDGER_OIDC_TOKEN_URL: 'http://idp.example/oauth/token',
+    });
+    expect(error.problems).toHaveLength(1);
+    expect(error.problems[0]).toContain('LEDGER_OIDC_TOKEN_URL');
+    expect(error.problems[0]).toContain('http://idp.example');
+    expect(error.problems[0]).toContain('Set LEDGER_OIDC_TOKEN_URL to an https:// URL');
+    // The secret never appears in the message.
+    expect(error.message).not.toContain('s3cr3t-value');
+  });
+
+  it('requires https for LEDGER_JSON_API_URL when a token is sent, but not for loopback hosts', () => {
+    const error = errorOf({ ...localnet, LEDGER_JSON_API_URL: 'http://ledger.example:7575' });
+    expect(error.problems[0]).toContain('LEDGER_JSON_API_URL');
+    expect(error.problems[0]).toContain('Set LEDGER_JSON_API_URL to an https:// URL');
+    for (const url of [
+      'http://localhost:3975',
+      'http://participant.localhost:3975',
+      'http://127.0.0.1:3975',
+      'http://[::1]:3975',
+      'https://ledger.example',
+    ]) {
+      expect(() => loadConfig({ ...localnet, LEDGER_JSON_API_URL: url })).not.toThrow();
+    }
+  });
+
+  it('allows an http ledger URL when no token is sent (LEDGER_AUTH_MODE=none)', () => {
+    const { LEDGER_AUDIENCE: _omitted, ...rest } = localnet;
+    void _omitted;
+    expect(() =>
+      loadConfig({
+        ...rest,
+        LEDGER_AUTH_MODE: 'none',
+        LEDGER_JSON_API_URL: 'http://ledger.example',
+      }),
+    ).not.toThrow();
+  });
+
+  it('checks the node URLs the token is also sent to', () => {
+    const remote = JSON.stringify(
+      (JSON.parse(nodes) as { jsonApiUrl: string }[]).map((n, i) =>
+        i === 1 ? { ...n, jsonApiUrl: 'http://node-b.example:2975' } : n,
+      ),
+    );
+    const error = errorOf({ ...localnet, LOCALNET_NODES: remote });
+    expect(error.problems[0]).toContain('LOCALNET_NODES[1].jsonApiUrl');
+  });
+
+  it('accepts the https OIDC setup', () => {
+    expect(() => loadConfig(oidc)).not.toThrow();
+  });
+});
+
 describe('loadConfig on mainnet', () => {
   it('reads the MainNet settings and the LocalNet records ledger', () => {
     const config = loadConfig(mainnet);

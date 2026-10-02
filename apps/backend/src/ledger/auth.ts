@@ -1,5 +1,6 @@
 import { SignJWT } from 'jose';
 import type { LedgerAuthConfig } from '../config/env';
+import { isSecureForCredentials, originOf } from './secureUrl';
 
 /** Supplies the bearer token for ledger requests; null means "send no Authorization header". */
 export interface TokenProvider {
@@ -62,6 +63,11 @@ export function oidcClientCredentials(options: {
   fetch?: typeof fetch;
   clock?: Clock;
 }): TokenProvider {
+  if (!isSecureForCredentials(options.tokenUrl)) {
+    throw new Error(
+      `LEDGER_OIDC_TOKEN_URL (${originOf(options.tokenUrl)}) is not https, so the client secret would cross the network in cleartext. Set LEDGER_OIDC_TOKEN_URL to an https:// URL (a localhost address is the only http exception).`,
+    );
+  }
   const clock = options.clock ?? systemClock;
   const doFetch = options.fetch ?? fetch;
   let cached: { token: string; expiresAtMs: number } | undefined;
@@ -79,8 +85,16 @@ export function oidcClientCredentials(options: {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
       body,
+      // A redirect could carry the client secret to another host: never follow one.
+      redirect: 'manual',
       signal: AbortSignal.timeout(OIDC_TIMEOUT_MS),
     });
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      throw new Error(
+        `The ledger identity provider answered the token request with a redirect (HTTP ${response.status}${location ? ` to ${originOf(location, options.tokenUrl)}` : ''}). Mithra does not follow redirects because that could send the client secret elsewhere. Set LEDGER_OIDC_TOKEN_URL to the final token endpoint.`,
+      );
+    }
     if (!response.ok) {
       throw new Error(
         `The ledger identity provider refused the token request (HTTP ${response.status}). Check LEDGER_OIDC_* in your .env.`,

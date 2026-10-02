@@ -32,7 +32,7 @@ export interface SchedulerDeps {
 
 export type FireOutcome =
   | 'started'
-  /** `cycle_runs` or the Mandate already has this cycle: nothing was started. */
+  /** An active or executed `cycle_runs` row, or the Mandate, already has this cycle: nothing was started. */
   | 'already-ran'
   /** The policy has no fixed amount; the agent asked the treasurer for one. */
   | 'no-amount'
@@ -91,15 +91,13 @@ export function startScheduler(deps: SchedulerDeps): Scheduler {
   const store = resolveStore(deps);
   const now = deps.now ?? ((): Date => new Date());
   const rereadMs = deps.rereadMs ?? 5 * 60_000;
-  const started = new Set<string>();
   const inFlight = new Map<string, Promise<FireResult>>();
   let job: Cron | null = null;
   let scheduled = '';
   let stopped = false;
 
   async function alreadyRan(cycleId: string): Promise<boolean> {
-    if (started.has(cycleId)) return true;
-    if (await store.hasRun(deps.treasuryParty, cycleId)) return true;
+    if (await store.hasBlockingRun(deps.treasuryParty, cycleId)) return true;
     const mandate = await deps.ledger.reader.mandate();
     return mandate?.payload.executedCycles.includes(cycleId) ?? false;
   }
@@ -145,7 +143,6 @@ export function startScheduler(deps: SchedulerDeps): Scheduler {
     } catch (error) {
       // The unique key of cycle_runs is the final guard: a second run of the same cycle is refused there.
       if (isUniqueViolation(error)) {
-        started.add(cycleId);
         return { cycleId, outcome: 'already-ran' };
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -164,7 +161,6 @@ export function startScheduler(deps: SchedulerDeps): Scheduler {
         .catch(() => undefined);
       return { cycleId, outcome: 'failed', error: message };
     }
-    started.add(cycleId);
     await store
       .recordEvent(cycleId, 'schedule_started', { cron: scheduleCron, total: fixedAmount })
       .catch(() => undefined);
@@ -195,6 +191,8 @@ export function startScheduler(deps: SchedulerDeps): Scheduler {
       );
       return;
     }
+    // stop() may have run while the Mandate was being read: do not start a job after shutdown.
+    if (stopped) return;
     const wanted = mandate ? `${mandate.terms.scheduleCron}|${mandate.terms.scheduleTimezone}` : '';
     if (wanted === scheduled) return;
     job?.stop();

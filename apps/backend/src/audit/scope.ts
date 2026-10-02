@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { LlmUnavailableError, type Llm, type LlmTool } from '../llm/client';
+import { LlmInvalidOutputError, LlmUnavailableError, type Llm, type LlmTool } from '../llm/client';
 import type { ScopeItem } from '../ledger/mithra/templates';
 
 /** One record an audit scope could include, built by the caller from the ledger. */
@@ -248,7 +248,9 @@ export async function draftAuditScope(
       source: 'ai',
     };
   } catch (error) {
-    if (error instanceof LlmUnavailableError) return rulesScope(question, catalog);
+    if (error instanceof LlmUnavailableError || error instanceof LlmInvalidOutputError) {
+      return rulesScope(question, catalog);
+    }
     throw error;
   }
 }

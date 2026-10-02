@@ -48,7 +48,7 @@ function setup(
   const run = services.cycles.run.bind(services.cycles);
   services.cycles.run = async (input) => {
     const result = await run(input);
-    store.runs.add(`${TREASURY}/${result.cycleId}`);
+    store.runs.set(`${TREASURY}/${result.cycleId}`, 'running');
     return result;
   };
   const scheduler = startScheduler({
@@ -185,6 +185,59 @@ describe('scheduler', () => {
     expect(activity[0]?.kind).toBe('schedule.failed');
     services.cycles.run = original;
     expect((await scheduler.fireNow()).outcome).toBe('started');
+  });
+
+  it('tries a cycle again, with the same scheduler, after the run failed, was rejected or cancelled', async () => {
+    const { scheduler, services, store } = setup();
+    const key = `${TREASURY}/2026-09`;
+    expect((await scheduler.fireNow()).outcome).toBe('started');
+    for (const status of ['failed', 'rejected', 'cancelled'] as const) {
+      store.runs.set(key, status);
+      expect((await scheduler.fireNow()).outcome).toBe('started');
+      // The new attempt is a run in progress again, which blocks the next fire.
+      store.runs.set(key, 'running');
+      expect((await scheduler.fireNow()).outcome).toBe('already-ran');
+    }
+    expect(services.runs).toHaveLength(4);
+  });
+
+  it('does not start a cycle whose run is in progress or executed', async () => {
+    const { scheduler, services, store } = setup();
+    const key = `${TREASURY}/2026-09`;
+    for (const status of ['running', 'proposed', 'held', 'executing', 'executed'] as const) {
+      store.runs.set(key, status);
+      expect((await scheduler.fireNow()).outcome, status).toBe('already-ran');
+    }
+    expect(services.runs).toEqual([]);
+  });
+
+  it('retries after the engine refused a duplicate start for a run that has since failed', async () => {
+    const { scheduler, services, store } = setup();
+    const run = services.cycles.run.bind(services.cycles);
+    services.cycles.run = () =>
+      Promise.reject(Object.assign(new Error('duplicate key'), { code: '23505' }));
+    expect((await scheduler.fireNow()).outcome).toBe('already-ran');
+    // Nothing is remembered in memory: once the row says failed, the next fire starts again.
+    services.cycles.run = run;
+    store.runs.set(`${TREASURY}/2026-09`, 'failed');
+    expect((await scheduler.fireNow()).outcome).toBe('started');
+  });
+
+  it('does not create a cron job when stop() runs while the Mandate is being read', async () => {
+    const services = createFakeServices();
+    let release: (mandate: MandateView) => void = () => undefined;
+    services.org.mandate = () =>
+      new Promise<MandateView>((resolve) => {
+        release = resolve;
+      });
+    const { scheduler } = setup({ services });
+    scheduler.stop();
+    release(mandateWith('1200', '* * * * * *'));
+    await scheduler.ready;
+    expect(scheduler.nextRun()).toBeNull();
+    // A refresh that starts after stop() does nothing either.
+    await scheduler.refresh();
+    expect(scheduler.nextRun()).toBeNull();
   });
 
   it('fires from its cron job and still runs the cycle only once', async () => {
