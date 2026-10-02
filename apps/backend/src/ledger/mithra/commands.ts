@@ -6,6 +6,7 @@ import {
   encodeInt,
   encodeOptional,
   encodeTime,
+  encodeTuple2,
   encodeVariant,
   lfTuple2,
 } from '../codec';
@@ -268,6 +269,16 @@ export function createMithraCommands(ids: MithraTemplateIds) {
     mandateTreasuryExecute(mandateCid: string, input: ExecuteInput): ExerciseCommand {
       return exercise('Mandate', mandateCid, 'Mandate_TreasuryExecute', encodeExecute(input));
     },
+    /** MainNet payouts: `receivers` pairs each payee with their MainNet party id, in payout order. */
+    mandateAuthorizeExternalPayout(
+      mandateCid: string,
+      args: { proposalCid: string; receivers: { holder: string; receiver: string }[] },
+    ): ExerciseCommand {
+      return exercise('Mandate', mandateCid, 'Mandate_AuthorizeExternalPayout', {
+        proposalCid: args.proposalCid,
+        receivers: args.receivers.map((r) => encodeTuple2(r.holder, r.receiver)),
+      });
+    },
 
     // Proposal
     proposalApprove(
@@ -292,6 +303,13 @@ export function createMithraCommands(ids: MithraTemplateIds) {
     },
     paymentMarkAccepted(paymentCid: string): ExerciseCommand {
       return exercise('Payment', paymentCid, 'Payment_MarkAccepted');
+    },
+    /** The agent's record of a MainNet transfer: `status` is `Paid` or `AwaitingAcceptance`. */
+    paymentRecordExternal(
+      paymentCid: string,
+      args: { txRef: string; status: 'Paid' | 'AwaitingAcceptance' },
+    ): ExerciseCommand {
+      return exercise('Payment', paymentCid, 'Payment_RecordExternal', { ...args });
     },
 
     // Audit
@@ -402,6 +420,10 @@ export const choiceResults = {
     const { first, second } = pair(tx, 'Mandate_TreasuryExecute');
     return { mandateCid: first, outcomeCid: second };
   },
+  mandateAuthorizeExternalPayout(tx: Transaction): { mandateCid: string; outcomeCid: string } {
+    const { first, second } = pair(tx, 'Mandate_AuthorizeExternalPayout');
+    return { mandateCid: first, outcomeCid: second };
+  },
   proposalApprove(tx: Transaction): { proposalCid: string; approvalCid: string } {
     const { first, second } = pair(tx, 'Proposal_Approve');
     return { proposalCid: first, approvalCid: second };
@@ -417,6 +439,9 @@ export const choiceResults = {
   },
   paymentMarkAccepted(tx: Transaction): { paymentCid: string } {
     return { paymentCid: Cid.parse(exerciseResultOf(tx, 'Payment_MarkAccepted')) };
+  },
+  paymentRecordExternal(tx: Transaction): { paymentCid: string } {
+    return { paymentCid: Cid.parse(exerciseResultOf(tx, 'Payment_RecordExternal')) };
   },
   accessGrantCloseExpired(tx: Transaction): { closedCid: string } {
     return { closedCid: Cid.parse(exerciseResultOf(tx, 'AccessGrant_CloseExpired')) };

@@ -27,7 +27,7 @@ export type TxLink = z.infer<typeof TxLinkSchema>;
 
 /** Where the treasurer is in first-time setup. */
 export const SetupStepSchema = z.enum([
-  /** No TreasuryCharter yet (LocalNet: run scripts/localnet-up.sh; MainNet: create it in Grofty). */
+  /** No TreasuryCharter yet (run scripts/localnet-up.sh; the records live on LocalNet on both networks). */
   'charter',
   'organization',
   'policy',
@@ -137,15 +137,13 @@ export type UpdatePolicyDraftRequest = z.infer<typeof UpdatePolicyDraftRequestSc
 export const SealStatusSchema = z.object({
   sealId: z.string(),
   state: z.enum([
-    /** Waiting for the treasurer's signature (MainNet: in Grofty). */
-    'awaiting-signature',
-    /** LocalNet: the governed action is waiting for treasury node confirmations. */
+    /** The governed action is waiting for treasury node confirmations. */
     'awaiting-nodes',
     'sealed',
     'failed',
   ]),
   treasurerSigned: z.boolean(),
-  /** LocalNet only: node confirmations for the governed action. */
+  /** Node confirmations for the governed action; null before the request is recorded. */
   nodeConfirmations: z
     .object({
       required: z.number().int(),
@@ -180,6 +178,8 @@ export const HolderRowSchema = z.object({
   /** Null when it could not be determined (registry unreachable). */
   autoReceive: z.boolean().nullable(),
   unitsAccepted: z.boolean(),
+  /** MainNet: the holder's connected Grofty party, or null when not connected. Absent on LocalNet. */
+  mainnetWallet: z.object({ partyId: z.string() }).nullable().optional(),
   lastPayment: z.object({ amount: DecimalString, at: IsoTime, cycleLabel: z.string() }).nullable(),
   seeded: z.boolean(),
 });
@@ -241,6 +241,10 @@ export const CycleStatusSchema = z.enum([
   'failed',
   /** Blocked before execution: balance below total plus fee buffer (P5). */
   'needs-funds',
+  /** MainNet: authorized on the ledger; the treasurer signs each payout in Grofty (P4: not paid yet). */
+  'awaiting-signature',
+  /** MainNet: ready to pay, but some holders have not connected Grofty Wallet. */
+  'needs-wallets',
 ]);
 export type CycleStatus = z.infer<typeof CycleStatusSchema>;
 
@@ -357,6 +361,8 @@ export const CycleDetailSchema = z.object({
     .nullable(),
   /** Set when the balance check blocks execution (P5): "Add funds" state. */
   fundsShortfall: z.object({ balance: DecimalString, required: DecimalString }).nullable(),
+  /** MainNet, status `needs-wallets`: the holders who must connect Grofty Wallet. */
+  needsWallets: z.array(PartyRefSchema).optional(),
   error: z.string().nullable(),
 });
 export type CycleDetail = z.infer<typeof CycleDetailSchema>;
@@ -480,6 +486,8 @@ export const HolderPositionSchema = z.object({
   totalReceived: DecimalString,
   nextPaymentDate: IsoDate.nullable(),
   autoReceive: z.boolean().nullable(),
+  /** MainNet: the Grofty party payouts go to, or null before the holder connects. Absent on LocalNet. */
+  mainnetWallet: z.object({ partyId: z.string() }).nullable().optional(),
   /** Unit tranches waiting for "Accept units". */
   pendingUnits: z.array(
     z.object({ unitId: z.string(), units: z.number().int(), effectiveDate: IsoDate }),
@@ -489,7 +497,8 @@ export const HolderPositionSchema = z.object({
       paymentId: z.string(),
       cycleLabel: z.string(),
       amount: DecimalString,
-      status: z.enum(['paid', 'awaiting-acceptance']),
+      /** `pending`: authorized, the transfer has not been confirmed yet (P4). */
+      status: z.enum(['paid', 'awaiting-acceptance', 'pending']),
       at: IsoTime,
       link: TxLinkSchema.nullable(),
       seeded: z.boolean(),

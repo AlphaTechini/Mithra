@@ -109,6 +109,8 @@ describe('settings page', () => {
     render(Page);
     await screen.findByText('Acme Fund');
     expect(screen.queryByRole('heading', { name: 'Infrastructure' })).toBeNull();
-    expect(screen.getByText(/MainNet\. Payments move real CC/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/MainNet payouts\. Payments move real CC from your Grofty Wallet/),
+    ).toBeInTheDocument();
   });
 });

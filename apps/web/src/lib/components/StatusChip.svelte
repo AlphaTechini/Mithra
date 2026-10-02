@@ -47,6 +47,8 @@
     confirmed: { icon: 'check-circle', tone: 'success' },
     waiting: { icon: 'clock', tone: 'neutral' },
     approved: { icon: 'check-circle', tone: 'success' },
+    'awaiting-signature': { icon: 'key', tone: 'info' },
+    'needs-wallets': { icon: 'wallet', tone: 'danger' },
     'waiting-treasurer': { icon: 'clock', tone: 'neutral' },
     withdrawn: { icon: 'ban', tone: 'neutral' },
   };
@@ -110,6 +112,10 @@
         return 'Waiting';
       case 'approved':
         return 'Approved';
+      case 'awaiting-signature':
+        return 'Awaiting your signature in Grofty';
+      case 'needs-wallets':
+        return 'Waiting for holders to connect Grofty';
       case 'waiting-treasurer':
         return 'Waiting for the treasurer';
       case 'withdrawn':

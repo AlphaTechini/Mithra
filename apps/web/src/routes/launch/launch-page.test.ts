@@ -20,7 +20,6 @@ vi.mock('$app/state', () => ({
   },
 }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(() => Promise.resolve()) }));
-vi.mock('@groftylabs/dapp-sdk', () => ({ createGroftyClient: vi.fn(() => Promise.resolve(null)) }));
 
 function launchAt(query: string): void {
   current.url = new URL(`http://localhost/launch${query}`);
@@ -98,21 +97,41 @@ describe('launch page: ?next=', () => {
     },
   );
 
-  it('on MainNet a signed-in visitor goes straight to next', async () => {
+  it('on MainNet the same sign-in and role switcher work, with a note that payouts are signed in Grofty', async () => {
     launchAt('?next=/invite/ABC');
     signedIn('mainnet');
     render(Page);
-    await vi.waitFor(() =>
-      expect(goto).toHaveBeenCalledWith('/invite/ABC', { replaceState: true }),
+    expect(await screen.findByRole('link', { name: /Continue as Holder A/ })).toHaveAttribute(
+      'href',
+      '/invite/ABC',
     );
+    expect(
+      screen.getByText(/Payouts are signed in Grofty Wallet on Canton MainNet/),
+    ).toBeInTheDocument();
+    // No wallet connection here: records are signed on LocalNet, and Grofty only signs payouts.
+    expect(screen.queryByRole('button', { name: /Connect Grofty Wallet/ })).toBeNull();
+    expect(goto).not.toHaveBeenCalled();
   });
 
-  it('on MainNet an off-site next is ignored and the visitor goes home', async () => {
+  it('on MainNet an off-site next is ignored', async () => {
     launchAt('?next=//evil.example');
     signedIn('mainnet');
     render(Page);
-    await vi.waitFor(() => expect(goto).toHaveBeenCalledWith('/holder', { replaceState: true }));
-    expect(goto).not.toHaveBeenCalledWith('//evil.example', expect.anything());
+    expect(await screen.findByRole('link', { name: /Continue as Holder A/ })).toHaveAttribute(
+      'href',
+      '/holder',
+    );
+  });
+
+  it('on MainNet signed out: the password form with the Grofty note', async () => {
+    stubApi({
+      'GET /api/session': signedOutSession('mainnet'),
+      'GET /api/config/public': configFor('mainnet'),
+    });
+    render(Page);
+    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Password')).toBeInTheDocument();
+    expect(screen.getByText(/Payouts are signed in Grofty Wallet/)).toBeInTheDocument();
   });
 
   it('signed out: shows the sign-in form regardless of next', async () => {

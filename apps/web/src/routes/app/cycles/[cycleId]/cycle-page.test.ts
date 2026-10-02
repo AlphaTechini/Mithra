@@ -18,6 +18,7 @@ import {
   installFakeEventSource,
   stubApi,
 } from '../../../../test/treasury/stub';
+import { useProvider } from '$lib/wallet/grofty';
 import Page from './+page.svelte';
 
 vi.mock('$app/state', () => ({
@@ -68,6 +69,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  useProvider(undefined);
   live.reset();
   vi.unstubAllGlobals();
 });
@@ -343,26 +345,148 @@ describe('cycle page', () => {
     expect(screen.queryByText(memoSource)).toBeNull();
   });
 
-  it('tells an approver what to do when the wallet must sign (MainNet)', async () => {
+  it("shows the ledger's refusal in place when approving fails", async () => {
     const api = await signIn('approver', {
       [CYCLE]: cycleDetail(),
       'POST /api/proposals/prop-1/approve': () =>
         new Response(
           JSON.stringify({
             error: {
-              code: 'sign_in_wallet',
-              message:
-                'On MainNet this is signed in Grofty Wallet. Open the wallet and approve there.',
+              code: 'ledger_rejected',
+              message: 'The ledger refused the approval. Reload the cycle and try again.',
             },
           }),
-          { status: 409, headers: { 'content-type': 'application/json' } },
+          { status: 422, headers: { 'content-type': 'application/json' } },
         ),
     });
     render(Page);
     await fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
-    expect(await screen.findByText(/signed in Grofty Wallet/)).toBeInTheDocument();
+    expect(await screen.findByText(/The ledger refused the approval/)).toBeInTheDocument();
     expect(api.callsTo('POST /api/proposals/prop-1/approve')).toHaveLength(1);
     expect(screen.getByRole('img', { name: /^0 of 2 signatures/ })).toBeInTheDocument();
     void APPROVER_2;
+  });
+
+  describe('MainNet payouts', () => {
+    const LIST = 'GET /api/cycles/2026-09/mainnet-payouts';
+    const holderA = { partyId: 'holderA::1220c1', displayName: 'Holder A' };
+    const mainnetCycle = (
+      status: CycleDetail['summary']['status'],
+      over: Partial<CycleDetail> = {},
+    ) =>
+      within_mandate({
+        summary: summary({ status, approvals: null, flagCount: 0 }),
+        ...over,
+      });
+
+    async function signInMainnet(routes: Record<string, unknown>) {
+      const api = stubApi({ ...sessionRoutes('treasurer', 'mainnet'), ...routes });
+      await sessionStore.load();
+      return api;
+    }
+
+    it('awaiting-signature shows "Sign payouts in Grofty"; rows stay pending and nothing says Paid (P4)', async () => {
+      useProvider(null);
+      await signInMainnet({
+        [CYCLE]: mainnetCycle('awaiting-signature'),
+        [LIST]: {
+          assetSymbol: 'CC',
+          total: '1200.0000000000',
+          feeBuffer: '1.0000000000',
+          payouts: [
+            {
+              paymentId: 'pay-A',
+              holder: holderA,
+              receiver: 'holder-a-main::1220aabbccdd',
+              amount: '1200.0000000000',
+              memo: 'Mithra Northwind September 2026',
+              status: 'to-sign',
+              link: null,
+            },
+          ],
+        },
+      });
+      render(Page);
+      expect(
+        await screen.findByRole('heading', { name: 'Sign payouts in Grofty' }),
+      ).toBeInTheDocument();
+      // Chromium, and any browser without the extension, gets the install message.
+      expect(
+        await screen.findByText(/Install Grofty Wallet to pay on MainNet\./),
+      ).toBeInTheDocument();
+      expect(screen.getAllByText('Awaiting your signature in Grofty').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('Pending ledger confirmation').length).toBeGreaterThan(0);
+      expect(screen.queryByText('Paid', { exact: true })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Pay Holder A in Grofty' })).toBeDisabled();
+    });
+
+    it('needs-wallets lists the holders who must connect Grofty, and offers no signing', async () => {
+      const api = await signInMainnet({
+        [CYCLE]: mainnetCycle('needs-wallets', {
+          needsWallets: [holderA, { partyId: 'holderB::1220c2', displayName: 'Holder B' }],
+        }),
+      });
+      render(Page);
+      const group = await screen.findByRole('group', {
+        name: 'Holders who must connect Grofty Wallet',
+      });
+      expect(within(group).getByText('Holder A')).toBeInTheDocument();
+      expect(within(group).getByText('Holder B')).toBeInTheDocument();
+      expect(screen.getByText('Waiting for holders to connect Grofty')).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Sign payouts in Grofty' })).toBeNull();
+      expect(api.callsTo(LIST)).toHaveLength(0);
+    });
+
+    it("an approver sees that the treasurer signs; the signing section is the treasurer's", async () => {
+      const api = stubApi({
+        ...sessionRoutes('approver', 'mainnet'),
+        [CYCLE]: mainnetCycle('awaiting-signature'),
+      });
+      await sessionStore.load();
+      render(Page);
+      expect(
+        await screen.findByText(/The treasurer signs the payouts in Grofty Wallet/),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Sign payouts in Grofty' })).toBeNull();
+      expect(api.callsTo(LIST)).toHaveLength(0);
+    });
+
+    it('LocalNet never shows the Grofty section', async () => {
+      await signIn('treasurer', { [CYCLE]: mainnetCycle('awaiting-signature') });
+      render(Page);
+      await screen.findByText('Holder A');
+      expect(screen.queryByRole('heading', { name: 'Sign payouts in Grofty' })).toBeNull();
+    });
+
+    it('a recorded payment links to the MainNet explorer in a new tab (P3)', async () => {
+      await signInMainnet({
+        [CYCLE]: mainnetCycle('paid-automatically', {
+          proposal: {
+            ...within_mandate().proposal!,
+            payouts: [
+              {
+                holder: holderA,
+                units: 600,
+                sharePct: '100.00',
+                amount: '1200.0000000000',
+                payment: {
+                  status: 'paid',
+                  link: {
+                    updateId: '1220abc',
+                    href: 'https://explorer.example/tx/1220abc',
+                    external: true,
+                  },
+                },
+              },
+            ],
+          },
+        }),
+      });
+      render(Page);
+      const link = await screen.findByRole('link', { name: 'View transaction' });
+      expect(link).toHaveAttribute('href', 'https://explorer.example/tx/1220abc');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link.getAttribute('rel')).toBe('external noopener noreferrer');
+    });
   });
 });

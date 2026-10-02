@@ -1,4 +1,3 @@
-import { ApiError } from '../http/errors';
 import type { Ledger } from '../ledger';
 import type { DisclosedContract, Transaction, TransferLeg } from '../ledger';
 
@@ -14,22 +13,12 @@ export interface ExecuteRequest {
   executeBefore: Date;
 }
 
-/** Who signs the payout. LocalNet: the agent, server-side. MainNet: the treasurer in Grofty (M10). */
+/** Submits the ledger payout (`Mandate_AgentExecute`); the ledger rail's only collaborator that writes. */
 export interface PayoutExecutor {
   execute(request: ExecuteRequest): Promise<Transaction>;
 }
 
-export const MAINNET_SIGNING_MESSAGE = 'Signing in Grofty arrives with the MainNet build';
-
-/** The payout cannot be signed by this build; the cycle waits for the treasurer's signature. */
-export class AwaitingSignatureError extends ApiError {
-  constructor() {
-    super(409, 'awaiting_signature', MAINNET_SIGNING_MESSAGE);
-    this.name = 'AwaitingSignatureError';
-  }
-}
-
-/** `Mandate_AgentExecute` as the agent (LocalNet, and any Mandate that lets the agent execute). */
+/** `Mandate_AgentExecute` as the agent, server-side. */
 export class AgentPayoutExecutor implements PayoutExecutor {
   constructor(
     private readonly ledger: Pick<Ledger, 'client' | 'commands'>,
@@ -53,15 +42,5 @@ export class AgentPayoutExecutor implements PayoutExecutor {
       commandId: request.commandId,
       shape: 'LEDGER_EFFECTS',
     });
-  }
-}
-
-/**
- * MainNet: the treasurer is the treasury and signs `Mandate_TreasuryExecute` in Grofty. M10 fills
- * this in; until then the cycle reports that it is waiting for a signature.
- */
-export class TreasurerPayoutExecutor implements PayoutExecutor {
-  execute(): Promise<Transaction> {
-    return Promise.reject(new AwaitingSignatureError());
   }
 }

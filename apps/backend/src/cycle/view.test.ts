@@ -141,6 +141,8 @@ function payment(holder: string, status: Payment['status'], cid: string): Contra
     transferInstructionCid: status === 'AwaitingAcceptance' ? 'ti' : null,
     executedAt: '2026-10-01T11:30:00Z',
     seeded: false,
+    externalReceiver: status === 'PendingExternal' ? `${holder}-mainnet::1220ab` : null,
+    externalTxRef: null,
   });
 }
 
@@ -516,5 +518,110 @@ describe('response shapes', () => {
     ]);
     expect(inboxOf([cf], mandate, H('p2')).pending[0]?.youApproved).toBe(false);
     expect(inboxOf([cf], mandate, H('outsider')).pending).toEqual([]);
+  });
+});
+
+describe('MainNet payouts (M10)', () => {
+  const executedFacts = (
+    statuses: [Payment['status'], Payment['status']],
+    txRefs = [null, null] as (string | null)[],
+  ) => {
+    const [a, b] = statuses;
+    const pa = payment(H('a'), a, 'mx0');
+    const pb = payment(H('b'), b, 'mx1');
+    pa.payload.externalTxRef = txRefs[0] ?? null;
+    pb.payload.externalTxRef = txRefs[1] ?? null;
+    return facts(
+      {
+        records: [contract('r', record())],
+        outcomes: [
+          contract(
+            'o',
+            outcome({
+              payments: payouts.map((p, i) => ({
+                holder: p.holder,
+                amount: p.amount,
+                paymentCid: `mx${i}`,
+                status: 'PendingExternal' as const,
+                transferInstructionCid: null,
+              })),
+            }),
+          ),
+        ],
+        payments: [pa, pb],
+      },
+      run({ status: 'executed' }),
+    );
+  };
+  const rows = (cf: CycleFacts) =>
+    detailOf(cf, mandate, ctx, []).proposal?.payouts.map((p) => p.payment) ?? [];
+
+  it('awaiting-signature while a payment is PendingExternal; rows stay pending-ledger (P4)', () => {
+    const cf = executedFacts(['PendingExternal', 'PendingExternal']);
+    expect(status(cf)).toBe('awaiting-signature');
+    expect(rows(cf)).toEqual([
+      { status: 'pending-ledger', link: null },
+      { status: 'pending-ledger', link: null },
+    ]);
+    expect(JSON.stringify(detailOf(cf, mandate, ctx, []))).not.toContain('"paid"');
+  });
+
+  it('a recorded payment is paid with its explorer link; the others still wait', () => {
+    const cf = executedFacts(['Paid', 'PendingExternal'], ['upd-a', null]);
+    expect(status(cf)).toBe('awaiting-signature');
+    expect(rows(cf)).toEqual([
+      { status: 'paid', link: { updateId: 'upd-a', href: '/app/tx/upd-a', external: false } },
+      { status: 'pending-ledger', link: null },
+    ]);
+  });
+
+  it('awaiting-acceptance when every transfer is recorded and one still needs the holder', () => {
+    const cf = executedFacts(['Paid', 'AwaitingAcceptance'], ['upd-a', 'upd-b']);
+    expect(status(cf)).toBe('awaiting-acceptance');
+    expect(rows(cf)[1]).toMatchObject({ status: 'awaiting-acceptance' });
+  });
+
+  it('paid-automatically once every payment is recorded as paid', () => {
+    expect(status(executedFacts(['Paid', 'Paid'], ['upd-a', 'upd-b']))).toBe('paid-automatically');
+  });
+
+  it('needs-wallets when the proposal may run but payees have no Grofty wallet', () => {
+    const base = {
+      proposals: [contract('p', proposal())],
+      records: [contract('r', record())],
+    };
+    const due = run({ executesAt: new Date('2026-10-01T11:59:00Z') });
+    const cf = facts(base, due);
+    cf.missingWallets = [H('b')];
+    expect(status(cf)).toBe('needs-wallets');
+    expect(detailOf(cf, mandate, ctx, []).needsWallets).toEqual([
+      { partyId: H('b'), displayName: 'b' },
+    ]);
+    // Still a countdown while the countdown runs, and not needing wallets once everyone connected.
+    const early = facts(base, run());
+    early.missingWallets = [H('b')];
+    expect(status(early)).toBe('countdown');
+    cf.missingWallets = [];
+    expect(status(cf)).toBe('executing');
+    expect(detailOf(cf, mandate, ctx, []).needsWallets).toBeUndefined();
+  });
+
+  it('needs-wallets for a flagged proposal once the approval threshold is met', () => {
+    const approved = proposal({
+      verdict: 'NeedsApproval',
+      approvals: [
+        { approver: H('p1'), at: '2026-10-01T11:10:00Z', note: '' },
+        { approver: H('p2'), at: '2026-10-01T11:11:00Z', note: '' },
+      ],
+    });
+    const cf = facts(
+      {
+        proposals: [contract('p', approved)],
+        records: [contract('r', record({ verdict: 'NeedsApproval' }))],
+      },
+      run({ executesAt: null }),
+    );
+    cf.missingWallets = [H('a')];
+    expect(status(cf)).toBe('needs-wallets');
   });
 });

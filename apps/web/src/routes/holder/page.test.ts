@@ -153,15 +153,80 @@ describe('holder home', () => {
     expect(link.getAttribute('rel')).toContain('noreferrer');
   });
 
+  describe('MainNet payouts', () => {
+    const wallet = { partyId: 'holder-wallet::1220aabbccddeeff0011' };
+    const pending = {
+      paymentId: 'pay-3',
+      cycleLabel: 'October 2026',
+      amount: '99.0000000000',
+      status: 'pending' as const,
+      at: '2026-10-02T09:00:00Z',
+      link: null,
+      seeded: false,
+    };
+
+    it('asks to connect Grofty first, and holds back the auto-receive steps until it is connected', async () => {
+      await signIn('mainnet');
+      stubApi({ 'GET /api/me/position': position({ mainnetWallet: null, autoReceive: null }) });
+      render(Page);
+      expect(
+        await screen.findByRole('button', { name: 'Connect Grofty Wallet' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/Connect Grofty Wallet so your payouts know where to go/),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('Open Grofty Wallet.')).toBeNull();
+    });
+
+    it('shows the connected MainNet party (short, with copy) and the numbered auto-receive steps with Check again', async () => {
+      await signIn('mainnet');
+      stubApi({
+        'GET /api/me/position': position({ mainnetWallet: wallet, autoReceive: false }),
+        'POST /api/me/auto-receive': position({ mainnetWallet: wallet, autoReceive: true }),
+      });
+      render(Page);
+      expect(
+        await screen.findByRole('heading', { name: 'Your Grofty Wallet' }),
+      ).toBeInTheDocument();
+      expect(screen.getByTitle(wallet.partyId)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Copy party ID' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Connect Grofty Wallet' })).toBeNull();
+      expect(
+        screen.getByRole('list', { name: 'Turn on auto-receive in Grofty Wallet' }).tagName,
+      ).toBe('OL');
+      await fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull());
+    });
+
+    it('a payment waiting for the treasurer is pending (P4), and an offer is accepted in Grofty, not in Mithra', async () => {
+      await signIn('mainnet');
+      stubApi({
+        'GET /api/me/position': position({
+          mainnetWallet: wallet,
+          autoReceive: true,
+          payments: [pending, { ...awaiting, link: null }],
+        }),
+      });
+      render(Page);
+      await screen.findByText('October 2026');
+      expect(screen.getByText('Pending ledger confirmation')).toBeInTheDocument();
+      expect(screen.getByText('Accept it in Grofty Wallet.')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Accept payment/ })).toBeNull();
+    });
+  });
+
   it('shows the server message when accepting fails, and nothing else about anyone', async () => {
     stubApi({
       'GET /api/me/position': position({ payments: [awaiting] }),
       'POST /api/me/payments/pay-2/accept': () =>
-        json({ error: { code: 'sign_in_wallet', message: 'Approve this in Grofty Wallet.' } }, 409),
+        json(
+          { error: { code: 'ledger_rejected', message: 'The ledger refused the payment.' } },
+          422,
+        ),
     });
     render(Page);
     await fireEvent.click(await screen.findByRole('button', { name: /Accept payment/ }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Approve this in Grofty Wallet.');
+    expect(await screen.findByRole('alert')).toHaveTextContent('The ledger refused the payment.');
   });
 
   it('shows what failed with a retry when the position cannot load', async () => {

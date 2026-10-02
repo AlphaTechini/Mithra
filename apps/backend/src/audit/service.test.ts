@@ -1,10 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { ApiError } from '../http/errors';
 import {
   GRANT_DURATIONS_MS,
   REQUEST_ID_PATTERN,
-  SIGN_IN_WALLET_MESSAGE,
-  createAuditModule,
   deriveStatus,
   expiresAtFor,
   grantIdOf,
@@ -79,43 +76,5 @@ describe('dates', () => {
   it('are written as day, month name and year in UTC', () => {
     expect(longDate('2026-10-08T23:30:00Z')).toBe('8 October 2026');
     expect(longDate('not a date')).toBe('not a date');
-  });
-});
-
-describe('MainNet', () => {
-  it('refuses server-side signing with sign_in_wallet', () => {
-    const module = createAuditModule({
-      config: { network: 'mainnet', asset: { symbol: 'CC' }, parties: {} } as never,
-      db: {} as never,
-      ledger: {} as never,
-      names: {} as never,
-      activity: {} as never,
-      bus: {} as never,
-    });
-    expect(() => module.service.assertServerSigns()).toThrow(ApiError);
-    try {
-      module.service.assertServerSigns();
-    } catch (error) {
-      expect(error).toMatchObject({
-        status: 409,
-        code: 'sign_in_wallet',
-        message: SIGN_IN_WALLET_MESSAGE,
-      });
-    }
-    expect(SIGN_IN_WALLET_MESSAGE).toBe(
-      'On MainNet this is signed in Grofty Wallet. Open it from the button on this page.',
-    );
-  });
-
-  it('allows it on LocalNet', () => {
-    const module = createAuditModule({
-      config: { network: 'localnet', asset: { symbol: 'CC' }, parties: {} } as never,
-      db: {} as never,
-      ledger: {} as never,
-      names: {} as never,
-      activity: {} as never,
-      bus: {} as never,
-    });
-    expect(() => module.service.assertServerSigns()).not.toThrow();
   });
 });

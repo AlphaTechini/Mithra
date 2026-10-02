@@ -58,6 +58,7 @@ describe('GET /api/config/public', () => {
     expect(PublicConfigSchema.parse(res.json())).toEqual({
       network: 'localnet',
       testMode: true,
+      payoutRail: 'ledger',
       assetSymbol: 'CC',
       explorerTxUrlTemplate: null,
       groftyMinVersion: '2.0.4',
@@ -69,7 +70,9 @@ describe('GET /api/config/public', () => {
     const res = await app.inject({ method: 'GET', url: '/api/config/public' });
     expect(PublicConfigSchema.parse(res.json())).toEqual({
       network: 'mainnet',
-      testMode: false,
+      // The records live on LocalNet on both networks; only the payouts move on MainNet.
+      testMode: true,
+      payoutRail: 'grofty-mainnet',
       assetSymbol: 'CC',
       explorerTxUrlTemplate: 'https://explorer.example/tx/{updateId}',
       groftyMinVersion: '2.0.4',

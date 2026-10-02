@@ -200,7 +200,7 @@ export async function runSeed(ctx: SeedContext): Promise<StepResult[]> {
       let status = await backend.cycle.sealer.start(draft.draftId, treasurer);
       let shown = '';
       const deadline = Date.now() + (ctx.sealTimeoutMs ?? 5 * 60_000);
-      while (status.state === 'awaiting-nodes' || status.state === 'awaiting-signature') {
+      while (status.state === 'awaiting-nodes') {
         shown = printConfirmations(ctx, status, shown);
         if (Date.now() > deadline) {
           throw new SeedError(

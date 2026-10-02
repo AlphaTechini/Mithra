@@ -4,19 +4,21 @@ The Daml model that makes the product's guarantees ledger rules (specs.md Sectio
 
 ## Parties
 
-| Party | LocalNet | MainNet |
-|---|---|---|
-| `treasury` | BitSafe Decentralized Party hosted on 3 nodes, threshold 2. Cannot submit; its authority comes from governed actions and delegation | the treasurer's own Grofty party (`treasury == treasurer`) |
-| `treasurer` | local party on node A, signed server-side | Grofty party |
-| `agent` | local party on node A, used only by the backend | operator-hosted party from env |
-| `operator` | local party on node A (DecMan additional proposer) | operator-hosted party from env |
-| approvers | local parties on node A | Grofty parties |
-| holders | local parties on node A | Grofty parties |
-| auditor | local party on node A | Grofty party |
+| Party | Where it lives |
+|---|---|
+| `treasury` | BitSafe Decentralized Party hosted on 3 nodes, threshold 2. Cannot submit; its authority comes from governed actions and delegation |
+| `treasurer` | local party on node A, signed server-side |
+| `agent` | local party on node A, used only by the backend |
+| `operator` | local party on node A (DecMan additional proposer) |
+| approvers | local parties on node A |
+| holders | local parties on node A |
+| auditor | local party on node A |
+
+Every party above is a **LocalNet** party, on both networks: with `NETWORK=mainnet` (MainNet payouts, decision 11 in [decisions.md](decisions.md)) the records still live on the LocalNet ledger, because there is no MainNet node to host this package. The MainNet side is only the money: each holder's MainNet party id (a Grofty wallet, registered by the holder) is stored in the `Payment` as text, `externalReceiver`, and is not a party of this ledger.
 
 All LocalNet demo parties live on node A (app-provider) so that taking node B offline in the BitSafe demo leaves every payee reachable. Node C (sv) hosts the DSO party and the synchronizer and is never taken offline. Nodes B and C host the treasury together with A.
 
-Every user action is a **single-party** submission (Grofty refuses multi-party `actAs`).
+Every user action is a **single-party** submission.
 
 ## Authority flow
 
@@ -37,7 +39,14 @@ Proposal_Approve (ctl: approver)    ──> Proposal.approvals += approver, Appr
 Mandate_AgentExecute (ctl: agent)   ──> TransferFactory_Transfer (sender: treasury) per payee,
                                          Payment per payee, DistributionOutcome
 ```
-On MainNet, `treasury == treasurer`, so the treasurer creates the `TreasuryCharter` and exercises `Org_ApplySeal` directly, and payouts are executed by the treasurer with `Mandate_TreasuryExecute` (signed in Grofty). Same templates, same choices.
+On MainNet payouts the authority flow is the same, up to the payout itself:
+```
+Mandate_AuthorizeExternalPayout (ctl: agent) ──> same checks as Mandate_AgentExecute, no transfer on this ledger;
+                                                  Payment per payee (PendingExternal, externalReceiver), DistributionOutcome
+treasurer signs one CC transfer per payee in Grofty Wallet (MainNet)
+Payment_RecordExternal (ctl: agent)  ──> Payment recreated with the MainNet update id, status Paid | AwaitingAcceptance
+```
+`Mandate_TreasuryExecute` (the treasurer signs a ledger transfer) is kept and tested, but the backend no longer uses it.
 
 ## Data types (`Mithra.Types`)
 
@@ -74,7 +83,9 @@ data MandateTerms = MandateTerms with
     feeBuffer : Decimal
   deriving (Eq, Show)
 data ApprovalEntry = ApprovalEntry with approver : Party; at : Time; note : Text deriving (Eq, Show)
-data PaymentStatus = Paid | AwaitingAcceptance deriving (Eq, Show)
+data PaymentStatus = Paid | AwaitingAcceptance | PendingExternal deriving (Eq, Show)
+-- PendingExternal: authorized here, the money moves outside this ledger (MainNet, signed in Grofty);
+-- the agent records the result with Payment_RecordExternal.
 -- Mithra.Payment (it refers to the Payment template, so it cannot live in Types):
 data PaymentRef = PaymentRef with
     holder : Party; amount : Decimal; paymentCid : ContractId Payment; status : PaymentStatus
@@ -82,6 +93,7 @@ data PaymentRef = PaymentRef with
   deriving (Eq, Show)
 data Settlement = Settlement with    -- how one payee's transfer ended; input to Proposal_MarkExecuted
     holder : Party; status : PaymentStatus; transferInstructionCid : Optional (ContractId TransferInstruction)
+    externalReceiver : Optional Text   -- the payee's MainNet party id, for external payouts
   deriving (Eq, Show)
 data TransferLeg = TransferLeg with
     holder : Party; factoryCid : ContractId TransferFactory; extraArgs : ExtraArgs
@@ -141,14 +153,16 @@ Daml implementation of `floor10 n d` (n, d Decimal, d > 0): `q = n / d`; if `q *
   - verdict is computed **here**: `NeedsApproval` if `total > terms.cap` or any check has `blocking && not passed`, else `AutoExecute` (A5, A6: the agent cannot pick the verdict, and an AI flag can add a failed check but the deterministic ones are supplied and kept as given),
   - creates `DecisionRecord` and `Proposal`. Returns `(ContractId Proposal, ContractId DecisionRecord)`.
 - `Mandate_AgentExecute` (consuming, recreated with `cycleId` added to `executedCycles`) `controller agent` with `proposalCid, legs : [TransferLeg], inputHoldingCids : [ContractId Holding], executeBefore : Time`; requires `agentExecutes`. Returns `(ContractId Mandate, ContractId DistributionOutcome)`.
-- `Mandate_TreasuryExecute` — same arguments and body, `controller treasury`, for MainNet where the treasurer signs the payout.
-- Shared execution body:
-  - proposal belongs to this treasury; `cycleId notElem executedCycles` (L3),
+- `Mandate_TreasuryExecute` — same arguments and body, `controller treasury`. Kept, tested, and not used by the backend since decision 11.
+- `Mandate_AuthorizeExternalPayout` (consuming, recreated with `cycleId` added to `executedCycles`) `controller agent` with `proposalCid, receivers : [(Party, Text)]` (each payee's MainNet party id, in payout order). MainNet payouts: runs **the same checks** as the shared execution body below (the function `checkExecutable`), requires `receivers` to line up with the proposal payouts (same holders, same order) and every receiver to be a non-empty string, makes **no token-standard transfer**, and through `Proposal_MarkExecuted` creates one `Payment` per payee with status `PendingExternal` and `externalReceiver`, and the `Executed` outcome (actor: the agent). Returns `(ContractId Mandate, ContractId DistributionOutcome)`. It does not look at `agentExecutes`: nothing moves until the treasurer signs the transfers in Grofty.
+- Shared checks (`checkExecutable`, used by both payout paths):
+  - proposal belongs to this treasury and this agent; `cycleId notElem executedCycles` (L3),
   - `AutoExecute` proposals: `total <= terms.cap` against the **current** terms (L1),
-  - `NeedsApproval` proposals: distinct approvers in `proposal.approvals` that are in current `terms.approvers` must number `>= terms.approvalThreshold` (L4),
+  - `NeedsApproval` proposals: distinct approvers in `proposal.approvals` that are in current `terms.approvers` must number `>= terms.approvalThreshold` (L4).
+- Ledger execution body (`executeDistribution`, after the shared checks):
   - `legs` line up one-to-one with `proposal.payouts` (same holder, same order),
   - for each payout: `exercise leg.factoryCid TransferFactory_Transfer with expectedAdmin = terms.asset.admin, transfer = Transfer { sender = treasury, receiver = holder, amount, instrumentId = terms.asset, requestedAt = now, executeBefore, inputHoldingCids = current, meta }, extraArgs = leg.extraArgs`; the next transfer's inputs are this result's `senderChangeCids`; `Completed` → `Paid`, `Pending` → `AwaitingAcceptance` with the instruction cid, `Failed` → abort,
-  - then exercises `Proposal_MarkExecuted` with the `Settlement`s, which creates one `Payment` per payee and a `DistributionOutcome` (kind `Executed`) and archives the proposal. That choice carries both the treasury's and the agent's authority, so the same body works for `Mandate_AgentExecute` and for `Mandate_TreasuryExecute` (where the agent does not submit).
+  - then exercises `Proposal_MarkExecuted` with the `Settlement`s, which creates one `Payment` per payee and a `DistributionOutcome` (kind `Executed`) and archives the proposal. That choice carries both the treasury's and the agent's authority, so the same body works for `Mandate_AgentExecute`, `Mandate_TreasuryExecute` and `Mandate_AuthorizeExternalPayout` (where the agent submits and no transfer is made).
 - `Mandate_Supersede` `controller treasury` → returns `executedCycles`.
 - No choice lets the agent change terms (L6).
 
@@ -169,13 +183,14 @@ Daml implementation of `floor10 n d` (n, d Decimal, d > 0): `q = n / d`; if `q *
 `signatory treasury, agent; observer treasurer, approvers`. Fields: `recordId` (`"outcome/<cycleId>/<n>"`), `treasury, treasurer, agent, approvers, decisionRecordId, cycleId, cycleLabel, kind : OutcomeKind, approvals, payments : [PaymentRef], actor : Party, reason : Optional Text, at : Time, seeded`. `OutcomeKind = Executed | Rejected | Cancelled`. Together with the `DecisionRecord` this gives L10's "approvals and payment references".
 
 ### `Payment` (`Mithra.Payment`)
-`signatory treasury, agent; observer holder`. Fields: `treasury, agent, holder, cycleId, cycleLabel, units, amount, status, transferInstructionCid, executedAt, seeded`. A holder sees only their own (L7).
+`signatory treasury, agent; observer holder`. Fields: `treasury, agent, holder, cycleId, cycleLabel, units, amount, status, transferInstructionCid, executedAt, seeded, externalReceiver : Optional Text` (the payee's MainNet party id, MainNet payouts only), `externalTxRef : Optional Text` (the MainNet update id, once recorded). A holder sees only their own (L7).
 - `Payment_MarkAccepted` `controller agent` → recreated `Paid` (after the holder accepted a pending transfer).
+- `Payment_RecordExternal` `controller agent` with `txRef : Text, status : PaymentStatus` → recreated with `externalTxRef = Some txRef` and the new status. Allowed only from `PendingExternal` or `AwaitingAcceptance` (a payment that is `Paid` cannot be recorded again), only for a payment that has an `externalReceiver`, and the new status must be `Paid` or `AwaitingAcceptance`. **The ledger cannot verify a MainNet transfer: this is the agent's attestation of what Grofty reported to the treasurer's browser** (the update id is the way anyone checks it on the explorer). `AwaitingAcceptance` is for a transfer that was made but needs the holder to accept it; recording `Paid` later is the same choice.
 
 ### Audit (`Mithra.Audit`)
 - `AuditRequest`: `signatory auditor; observer treasurer, agent`. Fields: `auditor, treasury, treasurer, agent, requestId, question, scope : [ScopeItem], excluded : Text, requestedAt`. `AuditRequest_Withdraw` (`controller auditor`), `AuditRequest_Resolve` (`controller treasurer`, returns `this`).
 - `EvidenceRef = RefDecision (ContractId DecisionRecord) | RefOutcome (ContractId DistributionOutcome)`; `Evidence = EvDecision DecisionRecord | EvOutcome DistributionOutcome`.
-- `SharedRecord`: `signatory treasury; observer auditor, treasurer, agent` (treasurer and agent can close a grant from their own participant, also on MainNet where they do not host the treasury). Fields: `treasury, treasurer, agent, auditor, grantId, recordId, evidence : Evidence, sharedAt, expiresAt`. `SharedRecord_Revoke` `controller treasury`.
+- `SharedRecord`: `signatory treasury; observer auditor, treasurer, agent` (treasurer and agent can close a grant from their own participant). Fields: `treasury, treasurer, agent, auditor, grantId, recordId, evidence : Evidence, sharedAt, expiresAt`. `SharedRecord_Revoke` `controller treasury`.
 - `AccessGrant`: `signatory treasury, treasurer; observer auditor, agent`. Fields: `treasury, treasurer, agent, auditor, grantId, requestId, question, recordIds, sharedCids, grantedAt, expiresAt`.
   - `AccessGrant_CloseExpired` `controller closer` with `closer`: closer is the agent, treasurer or auditor; `now >= expiresAt` (L9); revokes every shared record; creates `AccessClosed`.
   - `AccessGrant_Revoke` `controller treasurer` any time; same effect with reason `"revoked"`.
@@ -193,10 +208,10 @@ Both implement `Governance.Action.GovernableAction` (BitSafe `governance-action-
 
 | Rule | Ledger (this model) | Backend |
 |---|---|---|
-| L1 cap | `Mandate_AgentExecute` checks current cap for auto proposals | shows countdown, Hold |
+| L1 cap | `Mandate_AgentExecute` and `Mandate_AuthorizeExternalPayout` check the current cap for auto proposals | shows countdown, Hold |
 | L2 payees and amounts | `Mandate_Propose` recomputes pro-rata from the register | computes the same with decimal.js |
-| L3 one per cycle | `executedCycles` on the single active Mandate | scheduler records runs |
-| L4 threshold | execution counts proposal approvals against current terms | — |
+| L3 one per cycle | `executedCycles` on the single active Mandate (both payout paths) | scheduler records runs |
+| L4 threshold | execution and external authorization count proposal approvals against current terms | — |
 | L5 one approval each, members only | `Proposal_Approve` | — |
 | L6 treasurer signs changes | `Mandate` signed by treasurer; only `Org_ApplySeal` creates it, from a treasurer-signed request | — |
 | L7 holder isolation | per-holder `FundUnit` and `Payment`; register and records not visible to holders | API scoping |

@@ -15,7 +15,6 @@ import { createDatabase, runMigrations, type DatabaseHandle } from '../../src/db
 import { txRefs } from '../../src/db/schema';
 import { choiceResults } from '../../src/ledger';
 import { opaqueId } from '../../src/holders/position';
-import { SIGN_IN_WALLET_MESSAGE } from '../../src/routes/treasury';
 import {
   daysAgo,
   defaultTerms,
@@ -115,7 +114,6 @@ describe('treasury, holder and overview routes against a Canton sandbox and Post
         explorerTxUrl: 'https://explorer.example/tx/{updateId}',
         groftyMinVersion: '2.0.4',
       },
-      localnet: undefined,
     } as Config;
     mainnet = await buildTreasuryApp(world, database, {
       config: mainnetConfig,
@@ -876,17 +874,15 @@ describe('treasury, holder and overview routes against a Canton sandbox and Post
   });
 
   // -----------------------------------------------------------------------------------------
-  it('on MainNet, user-signed writes say to sign in Grofty and payment links go to the explorer', async () => {
+  it('on MainNet, records are still signed server-side and payment links go to the explorer', async () => {
     const { parties } = world;
     const treasurerCookie = await mainnet.cookieFor(parties.treasurer);
     const holderACookie = await mainnet.cookieFor(parties.holderA);
     const asTreasurer = { headers: treasurerCookie };
     const asHolderA = { headers: holderACookie };
 
-    const expected = { error: { code: 'sign_in_wallet', message: SIGN_IN_WALLET_MESSAGE } };
-    expect(SIGN_IN_WALLET_MESSAGE).toBe(
-      'On MainNet this is signed in Grofty Wallet. Open it from the button on this page.',
-    );
+    // Mithra's records are on LocalNet on both networks, so these are signed server-side as on
+    // LocalNet (there is no 409 sign_in_wallet any more).
     const org = await mainnet.app.inject({
       method: 'POST',
       url: '/api/org',
@@ -894,20 +890,22 @@ describe('treasury, holder and overview routes against a Canton sandbox and Post
       payload: { name: 'Acme', approvers: [parties.approver1], approvalThreshold: 1 },
     });
     expect(org.statusCode).toBe(409);
-    expect(org.json()).toEqual(expected);
+    expect(org.json<ErrorJson>().error.code).toBe('organization_exists');
     const issue = await mainnet.app.inject({
       method: 'POST',
       url: '/api/holders/issue',
       ...asTreasurer,
       payload: { holder: parties.holderA, units: 5 },
     });
-    expect(issue.json()).toEqual(expected);
+    expect(issue.statusCode, issue.body).toBe(200);
+    HoldersResponseSchema.parse(issue.json());
     const units = await mainnet.app.inject({
       method: 'POST',
       url: '/api/me/units/any/accept',
       ...asHolderA,
     });
-    expect(units.json()).toEqual(expected);
+    expect(units.statusCode).toBe(404);
+    expect(units.json<ErrorJson>().error.code).toBe('not_found');
     const fund = await mainnet.app.inject({
       method: 'POST',
       url: '/api/treasury/fund',

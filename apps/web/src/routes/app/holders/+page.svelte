@@ -32,14 +32,17 @@
   const isTreasurer = $derived(sessionStore.party?.roles.includes('treasurer') ?? false);
   const data = $derived(holders.data);
 
-  const columns: TableColumn[] = [
+  /** MainNet payouts: each holder also connects Grofty Wallet to say where their payment goes. */
+  const groftyRail = $derived(sessionStore.config?.payoutRail === 'grofty-mainnet');
+  const columns = $derived<TableColumn[]>([
     { key: 'holder', label: 'Holder' },
     { key: 'partyId', label: 'Party ID' },
     { key: 'units', label: 'Units', numeric: true },
     { key: 'share', label: 'Share', numeric: true },
+    ...(groftyRail ? [{ key: 'wallet', label: 'MainNet wallet' }] : []),
     { key: 'autoReceive', label: 'Auto-receive' },
     { key: 'lastPayment', label: 'Last payment' },
-  ];
+  ]);
 
   onMount(() => {
     void holders.load();
@@ -96,6 +99,14 @@
         {#if !row.unitsAccepted}<span class="note">Waiting to accept</span>{/if}
       {:else if column.key === 'share'}
         {row.sharePct}%
+      {:else if column.key === 'wallet'}
+        {#if row.mainnetWallet}
+          <StatusChip kind="confirmed" />
+          <PartyId partyId={row.mainnetWallet.partyId} />
+        {:else}
+          <StatusChip kind="waiting" />
+          <span class="note">Not connected to Grofty yet</span>
+        {/if}
       {:else if column.key === 'autoReceive'}
         {#if row.autoReceive === true}
           <StatusChip kind="auto-on" />

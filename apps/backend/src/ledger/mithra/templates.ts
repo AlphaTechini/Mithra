@@ -50,7 +50,8 @@ export type Verdict = z.infer<typeof VerdictSchema>;
 export const TriggerSchema = z.enum(['TriggerSchedule', 'TriggerPrompt', 'TriggerManual']);
 export type Trigger = z.infer<typeof TriggerSchema>;
 
-export const PaymentStatusSchema = z.enum(['Paid', 'AwaitingAcceptance']);
+/** `PendingExternal`: authorized on this ledger, the money moves on MainNet in Grofty (M10). */
+export const PaymentStatusSchema = z.enum(['Paid', 'AwaitingAcceptance', 'PendingExternal']);
 export type PaymentStatus = z.infer<typeof PaymentStatusSchema>;
 
 export const OutcomeKindSchema = z.enum(['Executed', 'Rejected', 'Cancelled']);
@@ -300,6 +301,9 @@ export const PaymentSchema = z.object({
   transferInstructionCid: lfOptional(ContractId),
   executedAt: LfTime,
   seeded: z.boolean(),
+  /** MainNet payouts: the payee's MainNet party id, and the MainNet update id once recorded. */
+  externalReceiver: lfOptional(z.string()),
+  externalTxRef: lfOptional(z.string()),
 });
 export type Payment = z.infer<typeof PaymentSchema>;
 

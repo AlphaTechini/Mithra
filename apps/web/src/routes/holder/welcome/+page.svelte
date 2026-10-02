@@ -10,13 +10,16 @@
   import Button from '$lib/components/Button.svelte';
   import ErrorState from '$lib/components/ErrorState.svelte';
   import AutoReceiveControl from '$lib/components/holder/AutoReceiveControl.svelte';
+  import ConnectWallet from '$lib/components/holder/ConnectWallet.svelte';
   import PrivacyNote from '$lib/components/holder/PrivacyNote.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
+  import PartyId from '$lib/components/PartyId.svelte';
   import PendingNotice from '$lib/components/PendingNotice.svelte';
   import Skeleton from '$lib/components/Skeleton.svelte';
   import { describeError } from '$lib/errors';
   import { formatShortDate } from '$lib/format';
+  import { sessionStore } from '$lib/stores/session.svelte';
   import { toasts } from '$lib/stores/toasts.svelte';
 
   let position = $state<HolderPosition | null>(null);
@@ -62,6 +65,9 @@
       acceptingId = null;
     }
   }
+
+  /** MainNet payouts: the holder connects Grofty Wallet before turning on auto-receive in it. */
+  const groftyRail = $derived(sessionStore.config?.payoutRail === 'grofty-mainnet');
 
   const failure = $derived(
     loadError ? describeError(loadError, "Couldn't load your invitation.") : null,
@@ -121,7 +127,26 @@
     {/if}
   </section>
 
-  {#if unitsDone && current.units > 0}
+  {#if unitsDone && current.units > 0 && groftyRail}
+    <section aria-labelledby="wallet-heading">
+      <h2 id="wallet-heading">Grofty Wallet</h2>
+      {#if current.mainnetWallet}
+        <p class="done" role="status">
+          <Icon name="check-circle" size={18} />
+          <span>Grofty Wallet connected</span>
+        </p>
+        <p class="party">Payouts are sent to <PartyId partyId={current.mainnetWallet.partyId} /></p>
+      {:else}
+        <p>
+          Connect Grofty Wallet so Mithra knows where to send your yield. You sign one message to
+          prove the wallet is yours.
+        </p>
+        <ConnectWallet onchange={setPosition} />
+      {/if}
+    </section>
+  {/if}
+
+  {#if unitsDone && current.units > 0 && (!groftyRail || current.mainnetWallet)}
     <section aria-labelledby="auto-heading">
       <h2 id="auto-heading">Auto-receive</h2>
       {#if current.autoReceive === true}
@@ -187,6 +212,12 @@
     gap: var(--space-2);
     margin: 0 0 var(--space-3);
     color: var(--color-danger-text);
+  }
+  .party {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
   }
   .next {
     margin: 0;

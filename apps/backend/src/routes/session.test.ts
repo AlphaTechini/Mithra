@@ -36,29 +36,30 @@ describe('session routes without a session', () => {
     });
   });
 
-  it('reports MainNet without test mode', async () => {
+  it('reports MainNet with the role switcher too (records live on LocalNet)', async () => {
     const config = mainnetTestConfig();
     app = buildApp(config, deps(config));
     const res = await app.inject({ method: 'GET', url: '/api/session' });
     expect(SessionResponseSchema.parse(res.json())).toMatchObject({
       network: 'mainnet',
-      testMode: false,
+      testMode: true,
       signedIn: false,
     });
   });
 
-  it('answers 404 not_available for the LocalNet-only routes on MainNet', async () => {
+  it('keeps the LocalNet sign-in and role switcher on MainNet', async () => {
     const config = mainnetTestConfig();
     app = buildApp(config, deps(config));
-    for (const [method, url, payload] of [
-      ['GET', '/api/session/demo-parties', undefined],
-      ['POST', '/api/session/localnet/sign-in', { password: 'x' }],
-      ['POST', '/api/session/switch', { partyId: 'p' }],
-    ] as const) {
-      const res = await app.inject({ method, url, ...(payload ? { payload } : {}) });
-      expect(res.statusCode, url).toBe(404);
-      expect(res.json()).toMatchObject({ error: { code: 'not_available' } });
-    }
+    // Not 404: the routes exist on both networks; without a session or a password they refuse.
+    const switcher = await app.inject({ method: 'GET', url: '/api/session/demo-parties' });
+    expect(switcher.statusCode).toBe(401);
+    const wrong = await app.inject({
+      method: 'POST',
+      url: '/api/session/localnet/sign-in',
+      payload: { password: 'x' },
+    });
+    expect(wrong.statusCode).toBe(401);
+    expect(wrong.json()).toMatchObject({ error: { code: 'invalid_password' } });
   });
 
   it('answers 401 for a wrong password, without a cookie, and 400 for a malformed body', async () => {

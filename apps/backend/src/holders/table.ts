@@ -48,6 +48,8 @@ export interface HoldersTableInput {
   names: ReadonlyMap<string, string>;
   /** Auto-receive status by party id; missing or null when it could not be determined. */
   autoReceive: ReadonlyMap<string, boolean | null>;
+  /** MainNet: connected Grofty party by holder. Absent on LocalNet, where there is no such wallet. */
+  mainnetWallets?: ReadonlyMap<string, string>;
 }
 
 /** The holders table (userflow 5): units, share, auto-receive, acceptance, last payment. */
@@ -72,6 +74,13 @@ export function buildHoldersResponse(input: HoldersTableInput): HoldersResponse 
       sharePct: sharePct(held, total),
       autoReceive: input.autoReceive.get(holder) ?? null,
       unitsAccepted: input.fundUnitsReadable && hasFundUnit && !unaccepted,
+      ...(input.mainnetWallets
+        ? {
+            mainnetWallet: input.mainnetWallets.has(holder)
+              ? { partyId: input.mainnetWallets.get(holder) ?? '' }
+              : null,
+          }
+        : {}),
       lastPayment: lastPayment
         ? {
             amount: lastPayment.amount,

@@ -180,6 +180,44 @@ Expect step 3 to take the longest: the backend's ledger client waits and retries
 Item 20 of the table above is what this section answers: taking node B offline leaves the treasury working on A and C.
 
 
-## MainNet
+## MainNet payouts with Grofty (owner's machine)
 
-To be written: Grofty wallet parties, OIDC auth, the MainNet registry and CC.
+`NETWORK=mainnet` means **MainNet payouts**. There is no MainNet node, so Mithra cannot host its Daml package or read the MainNet ledger: every Mithra record (organization, Mandate, proposals, approvals, decision records, payments, audit grants) stays on the **LocalNet** ledger, signed on the server through the role switcher exactly as on LocalNet (decision 11 in [decisions.md](decisions.md)). What changes is the money: a cycle the Mandate clears is paid as real CC transfers from the treasurer's Grofty Wallet, signed in the browser, one per holder. The server never moves MainNet funds, and the browser submits nothing to Canton except those transfers. Everything below needs a real Grofty Wallet and real (small) amounts of CC, so it was written and tested without them (fake provider in the unit tests, a fake Grofty in `apps/backend/test/integration/mainnet.test.ts`); this is what you run.
+
+### Environment
+
+A MainNet `.env` is the LocalNet `.env` (LocalNet up, `scripts/localnet-env.sh`, demo password, parties, DecMan variables: the records live there) plus:
+
+| Variable | Value |
+|---|---|
+| `NETWORK` | `mainnet` |
+| `MAINNET_EXPLORER_TX_URL` | the MainNet explorer's link for one transaction, with `{updateId}` in it (see below) |
+| `GROFTY_MIN_VERSION` | `2.0.4` (the default) |
+| `MAINNET_SCAN_URL` | optional: a public Scan base URL; with it the holders table and the holder home can say whether a holder's auto-receive is on |
+
+`LEDGER_AUTH_MODE` now defaults to `unsafe-hmac` on both networks (the ledger that holds the records is the LocalNet one). The top badge reads "MainNet payouts · records on LocalNet". Use a browser with the Grofty Wallet extension (version 2.0.4 or newer) for the treasurer and each holder.
+
+### Steps, with small amounts
+
+1. Start LocalNet, the backend (`NETWORK=mainnet`) and the web app as for LocalNet, seed or set up the fund as usual (organization, policy, seal, issue units). Sign in with the demo password and the role switcher as on LocalNet; the launch page says payouts are signed in Grofty.
+2. **Holders connect Grofty.** As each holder, open the welcome page (or Holder home): **Connect Grofty Wallet**. Grofty asks to connect, then to sign a message ("Connect your Grofty Wallet to Mithra ... Nonce ..."). The server checks that the wallet's party id belongs to the key that signed and stores the pairing. The holders table shows each holder's wallet as connected.
+3. **Holders turn on auto-receive** (N5, for the Grofty video): the welcome page lists the steps; do them in Grofty, then press **Check again**. With `MAINNET_SCAN_URL` set the page says "Auto-receive is on"; without it the page says Mithra cannot check this from here.
+4. **Treasurer runs a cycle** with a small total (for example 3 CC split over the holders; keep the Mandate's fee buffer in mind) with "Run cycle now". Inside the cap the countdown runs, then the ledger checks the Mandate rules; a flagged cycle first needs its approvals. If a holder has not connected Grofty the cycle shows "Waiting for holders to connect Grofty" and lists them; it goes ahead by itself when they have.
+5. **Treasurer signs the payouts.** The cycle page shows **Sign payouts in Grofty**: connect, the balance check (the wallet must hold the amount still to send plus the fee buffer; otherwise "Add funds" with both numbers), then **Pay in Grofty** on each row, one at a time. Approve in Grofty within 3 minutes. A row stays "Pending ledger confirmation" until the server has recorded the transfer; then it says "Paid" (or "Awaiting acceptance" when the holder must accept an offer) with a link to the explorer. Each holder's home shows the payment and its link.
+6. Check each link opens the transfer on the explorer, in a new tab.
+
+### Owner-verification items (each is a guess that could not be checked here)
+
+| # | Item | What to check | If it differs |
+|---|---|---|---|
+| M1 | `signMessage` encoding | The registration succeeds. Grofty's signature is read as base64 or hex of an Ed25519 signature over the UTF-8 bytes of the challenge message, and the public key as base64 or hex, raw (32 bytes) or DER (44 bytes). Failure shows "Grofty's signature did not match this wallet. Try connecting again." | Look at what `signMessage` returns in the browser console (`apps/web/src/lib/wallet/grofty.ts`) and adjust `decodeBytes` / `verifyMessageSignature` in `apps/backend/src/mainnet/fingerprint.ts`. If the wallet signs a hash or a prefixed message, change what is verified there. |
+| M2 | Party namespace rule | The holder's party id ends in the fingerprint of the key Grofty reports: `1220` + SHA-256(uint32_be(12) \|\| key bytes). The check also accepts the fingerprint of the key in its DER form. | If neither matches, a real Grofty party is derived another way; fix `partyMatchesKey` in `fingerprint.ts` (one function, unit-tested with an independent implementation). |
+| M3 | Scan preapproval endpoint | With `MAINNET_SCAN_URL` set, a holder with auto-receive on shows "Auto-receive is on". The code calls `GET {scan}/v0/transfer-preapprovals/by-party/{party}`: 200 on, 404 off, anything else unknown. The endpoint is unverified. | Correct the one function `lookupPreapproval` in `apps/backend/src/mainnet/scan.ts`. |
+| M4 | `getBalance()` shape | The Add funds check shows your real balance. The reader accepts a number, `{ CC: "..." }`, `{ amount }` or a list with a CC entry. If it cannot read the answer the page warns and lets you sign (Grofty refuses a transfer it cannot cover). | Adjust `readBalance` in `apps/web/src/lib/wallet/grofty.ts`. |
+| M5 | `getUpdateById` outcome heuristic | After a transfer the browser reads the transaction: a holding (`Amulet` or `Holding`) created for the receiver means completed, a transfer offer or instruction means pending, anything else unknown (recorded as paid with a note that acceptance could not be read). The treasurer's view may not include the receiver's new holding, in which case you will see "unknown" for transfers to receivers with auto-receive. | Look at the response for a transfer to a holder with auto-receive on and one without, and adjust `transferOutcome`. |
+| M6 | Explorer URL | Each link opens the transfer. Set `MAINNET_EXPLORER_TX_URL` to the explorer's real format, with `{updateId}` where the update id goes (it must be the update id Grofty returns, not a contract id). | Change the variable. |
+| M7 | Grofty menu wording | The auto-receive steps on the welcome page use approximate wording ("settings", "turn on receiving CC automatically"). | Fix the list in `apps/web/src/lib/components/holder/AutoReceiveControl.svelte` (the comment above it marks it). |
+| M8 | Memo | Grofty shows the transfer memo `Mithra <fund name> <cycle label>` before you approve. | If the wallet ignores `memo` the payout still works. |
+| M9 | Old wallet and timeout copy | A wallet older than 2.0.4 shows "Update Grofty Wallet to 2.0.4 or newer"; letting an approval sit for 3 minutes shows "Your wallet approval expired after 3 minutes. Approve again."; declining shows "You declined in Grofty. Nothing was sent." | The codes are 4001, 4100 and -32603; copy is in `grofty.ts`. |
+
+What the ledger can and cannot say: `Payment_RecordExternal` records what the treasurer's browser reported Grofty did; the ledger cannot see MainNet, so it is the agent's attestation (stated in [ledger-model.md](ledger-model.md)). The explorer link is how anyone checks it.

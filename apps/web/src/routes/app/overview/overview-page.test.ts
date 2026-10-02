@@ -4,7 +4,6 @@ import { live } from '$lib/stores/live.svelte';
 import { sessionStore } from '$lib/stores/session.svelte';
 import { toasts } from '$lib/stores/toasts.svelte';
 import {
-  TREASURER,
   activity,
   mandate,
   overview,
@@ -64,34 +63,25 @@ describe('overview page', () => {
     expect(screen.queryByRole('button', { name: 'Add funds' })).toBeNull();
   });
 
-  it('explains how to send CC on MainNet, with the treasury party', async () => {
+  it('explains how to add funds on MainNet: send CC to the Grofty Wallet, no faucet', async () => {
     stubApi({
       ...sessionRoutes('treasurer', 'mainnet'),
       'GET /api/overview': overview({
-        fundsWarning: { balance: '1.0000000000', required: '1205.0000000000' },
+        balance: null,
+        fundsWarning: null,
       }),
-      'GET /api/org': {
-        setupStep: 'done',
-        organization: {
-          name: 'Acme Fund',
-          treasury: { partyId: 'acme-treasury::1220ffee00', displayName: 'Treasury' },
-          treasurer: TREASURER,
-          approvers: [],
-          approvalThreshold: 1,
-          assetSymbol: 'CC',
-        },
-        mandate: null,
-      },
     });
     await sessionStore.load();
     render(Page);
+    // The server cannot read the balance: it is in the treasurer's Grofty Wallet.
+    expect(await screen.findByText(/your CC is in your Grofty Wallet/)).toBeInTheDocument();
     await fireEvent.click(await screen.findByRole('button', { name: 'Add funds' }));
     const dialog = await screen.findByRole('dialog', { name: 'Add funds' });
     expect(
-      within(dialog).getByText(/send CC from your own wallet to the treasury party/),
+      within(dialog).getByText('Send CC to your Grofty Wallet; payouts are signed from it.'),
     ).toBeInTheDocument();
-    expect(await within(dialog).findByTitle('acme-treasury::1220ffee00')).toBeInTheDocument();
     expect(within(dialog).queryByRole('button', { name: 'Add funds' })).toBeNull();
+    expect(within(dialog).queryByLabelText(/Amount/)).toBeNull();
   });
 
   it('shows balance, mandate, recent cycles with chips and the Seeded tag', async () => {

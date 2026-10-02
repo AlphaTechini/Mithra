@@ -35,9 +35,7 @@
   let failure = $state<ErrorCopy | null>(null);
   let celebrated = false;
 
-  const sealing = $derived(
-    seal !== null && (seal.state === 'awaiting-signature' || seal.state === 'awaiting-nodes'),
-  );
+  const sealing = $derived(seal !== null && seal.state === 'awaiting-nodes');
   const sealed = $derived(seal?.state === 'sealed');
   const failed = $derived(seal?.state === 'failed');
 
@@ -168,8 +166,6 @@
         <p class="done"><Icon name="check-circle" size={18} /> <strong>Mandate sealed</strong></p>
         <p>Taking you to the overview.</p>
         <Button href="/app/overview">Go to overview</Button>
-      {:else if seal?.state === 'awaiting-signature'}
-        <PendingNotice message="Waiting for your signature…" />
       {:else if seal?.state === 'awaiting-nodes'}
         {@const nodes = seal.nodeConfirmations}
         <PendingNotice

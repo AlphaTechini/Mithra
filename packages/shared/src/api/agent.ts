@@ -63,7 +63,10 @@ export const LiveEventSchema = z.discriminatedUnion('type', [
     messageId: z.string(),
     action: z.lazy(() => ActionCardViewSchema),
   }),
-  z.object({ type: z.literal('holder'), change: z.enum(['units', 'payments', 'auto-receive']) }),
+  z.object({
+    type: z.literal('holder'),
+    change: z.enum(['units', 'payments', 'auto-receive', 'wallet']),
+  }),
   z.object({ type: z.literal('audit'), requestId: z.string() }),
 ]);
 export type LiveEvent = z.infer<typeof LiveEventSchema>;

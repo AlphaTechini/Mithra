@@ -41,6 +41,8 @@ function payment(holder: string, amount: string, executedAt: string, cycleLabel 
     transferInstructionCid: null,
     executedAt,
     seeded: false,
+    externalReceiver: null,
+    externalTxRef: null,
   };
   return { contractId: `p-${holder}-${executedAt}`, payload, createdAt: executedAt };
 }
@@ -177,5 +179,49 @@ describe('buildHoldersResponse', () => {
         autoReceive: new Map(),
       }),
     ).toEqual({ totalUnits: 0, holders: [] });
+  });
+});
+
+describe('MainNet wallets in the holders table', () => {
+  const input = {
+    changes: [
+      {
+        holder: 'alice',
+        delta: 100,
+        effectiveDate: '2026-01-01',
+        recordedAt: '2026-01-01T00:00:00Z',
+        seeded: false,
+      },
+      {
+        holder: 'bob',
+        delta: 300,
+        effectiveDate: '2026-01-01',
+        recordedAt: '2026-01-01T00:00:00Z',
+        seeded: false,
+      },
+    ],
+    fundUnits: [],
+    fundUnitsReadable: true,
+    payments: [],
+    names: new Map([
+      ['alice', 'Alice'],
+      ['bob', 'Bob'],
+    ]),
+    autoReceive: new Map<string, boolean | null>(),
+  };
+
+  it("shows each holder's connected party, or null before they connect", () => {
+    const table = buildHoldersResponse({
+      ...input,
+      mainnetWallets: new Map([['alice', 'alice-main::1220aa']]),
+    });
+    const byName = new Map(table.holders.map((h) => [h.holder.displayName, h.mainnetWallet]));
+    expect(byName.get('Alice')).toEqual({ partyId: 'alice-main::1220aa' });
+    expect(byName.get('Bob')).toBeNull();
+  });
+
+  it('leaves the field out on LocalNet', () => {
+    const table = buildHoldersResponse(input);
+    expect(table.holders.every((h) => !('mainnetWallet' in h))).toBe(true);
   });
 });

@@ -206,6 +206,16 @@ describe('exercise builders', () => {
       [commands.fundUnitAccept('00u'), 'Mithra.Units:FundUnit', 'FundUnit_Accept'],
       [commands.paymentMarkAccepted('00y'), 'Mithra.Payment:Payment', 'Payment_MarkAccepted'],
       [
+        commands.paymentRecordExternal('00y', { txRef: '1220ab', status: 'Paid' }),
+        'Mithra.Payment:Payment',
+        'Payment_RecordExternal',
+      ],
+      [
+        commands.mandateAuthorizeExternalPayout('00m', { proposalCid: '00p', receivers: [] }),
+        'Mithra.Mandate:Mandate',
+        'Mandate_AuthorizeExternalPayout',
+      ],
+      [
         commands.accessGrantCloseExpired('00g', { closer: 'c' }),
         'Mithra.Audit:AccessGrant',
         'AccessGrant_CloseExpired',

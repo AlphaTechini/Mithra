@@ -17,6 +17,7 @@
   import Skeleton from '$lib/components/Skeleton.svelte';
   import ActivityList from '$lib/components/treasury/ActivityList.svelte';
   import CycleTable from '$lib/components/treasury/CycleTable.svelte';
+  import AddFundsDialog from '$lib/components/treasury/AddFundsDialog.svelte';
   import FundsWarning from '$lib/components/treasury/FundsWarning.svelte';
   import RunCycleDialog from '$lib/components/treasury/RunCycleDialog.svelte';
   import { describeError } from '$lib/errors';
@@ -28,6 +29,7 @@
 
   const overview = createResource(getOverview);
   let runOpen = $state(false);
+  let addingFunds = $state(false);
   let now = $state(Date.now());
 
   const isTreasurer = $derived(sessionStore.party?.roles.includes('treasurer') ?? false);
@@ -96,6 +98,14 @@
       <h2>Treasury balance</h2>
       {#if data.balance !== null}
         <p class="big"><Amount value={data.balance} symbol={data.assetSymbol} size="large" /></p>
+      {:else if sessionStore.config?.payoutRail === 'grofty-mainnet'}
+        <p class="muted">
+          On MainNet your CC is in your Grofty Wallet. Mithra checks the balance there before you
+          sign each payout.
+        </p>
+        <Button variant="secondary" onclick={() => (addingFunds = true)} aria-haspopup="dialog"
+          >Add funds</Button
+        >
       {:else}
         <p class="muted">
           The balance isn't available right now. It shows again once the ledger answers.
@@ -188,6 +198,14 @@
 
 {#if runOpen}
   <RunCycleDialog mandate={data?.mandate ?? null} onclose={() => (runOpen = false)} />
+{/if}
+
+{#if addingFunds}
+  <AddFundsDialog
+    required={data?.expectedNextTotal ?? '0'}
+    onclose={() => (addingFunds = false)}
+    ondone={() => void overview.load()}
+  />
 {/if}
 
 <style>

@@ -62,7 +62,9 @@ data ApprovalEntry = ApprovalEntry with
     note : Text
   deriving (Eq, Show)
 
-data PaymentStatus = Paid | AwaitingAcceptance deriving (Eq, Show)
+-- | `PendingExternal`: the payout was authorized on this ledger but the money moves outside it
+-- (MainNet, signed in Grofty Wallet); the agent records the result with `Payment_RecordExternal`.
+data PaymentStatus = Paid | AwaitingAcceptance | PendingExternal deriving (Eq, Show)
 
 data TransferLeg = TransferLeg with
     holder : Party

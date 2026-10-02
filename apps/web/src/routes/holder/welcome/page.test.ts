@@ -10,6 +10,8 @@ import {
   stubApi,
 } from '$lib/components/holder/fixtures';
 import { sessionStore } from '$lib/stores/session.svelte';
+import { MAINNET_ACCOUNT, healthyGrofty, rpcError } from '../../../test/grofty';
+import { useProvider } from '$lib/wallet/grofty';
 import { toasts } from '$lib/stores/toasts.svelte';
 import Page from './+page.svelte';
 
@@ -78,45 +80,149 @@ describe('holder welcome', () => {
     expect(screen.getByRole('link', { name: 'Go to my home' })).toHaveAttribute('href', '/holder');
   });
 
-  it('MainNet: shows the Grofty steps and Check again calls the same endpoint', async () => {
-    await signIn('mainnet');
-    const fetchMock = stubApi({
-      'GET /api/session': holderSession('mainnet'),
-      'GET /api/config/public': configFor('mainnet'),
-      'GET /api/me/position': position({ autoReceive: false }),
-      'POST /api/me/auto-receive': position({ autoReceive: false }),
+  describe('MainNet payouts', () => {
+    const wallet = { partyId: 'holder-wallet::1220aabbccdd' };
+    const grofty = () =>
+      healthyGrofty({ handlers: { signMessage: () => ({ signature: 'c2ln' }) } });
+
+    afterEach(() => useProvider(undefined));
+
+    it('connects Grofty (challenge, signMessage, register), then shows the auto-receive steps and Check again', async () => {
+      await signIn('mainnet');
+      let current = position({ pendingUnits: [], autoReceive: null, mainnetWallet: null });
+      const provider = grofty();
+      useProvider(provider);
+      const fetchMock = stubApi({
+        'GET /api/session': holderSession('mainnet'),
+        'GET /api/config/public': configFor('mainnet'),
+        'GET /api/me/position': () => json(current),
+        'POST /api/me/mainnet-wallet/challenge': () =>
+          json({ nonce: 'abc123', message: 'Connect your Grofty Wallet to Mithra\nNonce: abc123' }),
+        'POST /api/me/mainnet-wallet': () => {
+          current = position({ autoReceive: false, mainnetWallet: wallet });
+          return json(current);
+        },
+        'POST /api/me/auto-receive': () =>
+          json(position({ autoReceive: false, mainnetWallet: wallet })),
+      });
+      render(Page);
+
+      // Auto-receive waits until the wallet is connected.
+      expect(await screen.findByRole('heading', { name: 'Grofty Wallet' })).toBeInTheDocument();
+      expect(screen.queryByText('Open Grofty Wallet.')).toBeNull();
+      await fireEvent.click(screen.getByRole('button', { name: 'Connect Grofty Wallet' }));
+
+      await waitFor(() => expect(callsTo(fetchMock, 'POST /api/me/mainnet-wallet')).toBe(1));
+      // The wallet signed the server's challenge, and its account went back with the signature.
+      expect(provider.callsTo('signMessage')[0]?.params).toEqual({
+        message: 'Connect your Grofty Wallet to Mithra\nNonce: abc123',
+      });
+      const sent = fetchMock.mock.calls.find(([u]) => u === '/api/me/mainnet-wallet')?.[1]?.body;
+      const registered = JSON.parse(typeof sent === 'string' ? sent : '{}') as Record<
+        string,
+        string
+      >;
+      expect(registered).toEqual({
+        partyId: MAINNET_ACCOUNT.partyId,
+        publicKey: MAINNET_ACCOUNT.publicKey,
+        signature: 'c2ln',
+        nonce: 'abc123',
+      });
+      expect(await screen.findByText('Grofty Wallet connected')).toBeInTheDocument();
+
+      // N5: numbered steps to turn on auto-receive in Grofty, and Check again.
+      expect(await screen.findByText('Open Grofty Wallet.')).toBeInTheDocument();
+      expect(
+        screen.getByRole('list', { name: 'Turn on auto-receive in Grofty Wallet' }).tagName,
+      ).toBe('OL');
+      expect(screen.queryByRole('button', { name: 'Turn on auto-receive' })).toBeNull();
+      await fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+      await waitFor(() => expect(callsTo(fetchMock, 'POST /api/me/auto-receive')).toBe(1));
+      expect(await screen.findByText(/Auto-receive is not on yet\./)).toBeInTheDocument();
     });
-    render(Page);
-    expect(await screen.findByText('Open Grofty Wallet.')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Turn on auto-receive' })).toBeNull();
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
-    await waitFor(() => expect(callsTo(fetchMock, 'POST /api/me/auto-receive')).toBe(1));
-    expect(await screen.findByText(/Auto-receive is not on yet\./)).toBeInTheDocument();
-  });
+    it('Check again says it cannot tell when the server has no Scan to ask', async () => {
+      await signIn('mainnet');
+      stubApi({
+        'GET /api/session': holderSession('mainnet'),
+        'GET /api/config/public': configFor('mainnet'),
+        'GET /api/me/position': position({ autoReceive: null, mainnetWallet: wallet }),
+        'POST /api/me/auto-receive': position({ autoReceive: null, mainnetWallet: wallet }),
+      });
+      render(Page);
+      await fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+      expect(await screen.findByText(/Mithra can't check this from here/)).toBeInTheDocument();
+    });
 
-  it('shows the server message in place when a MainNet write needs the wallet', async () => {
-    await signIn('mainnet');
-    stubApi({
-      'GET /api/session': holderSession('mainnet'),
-      'GET /api/config/public': configFor('mainnet'),
-      'GET /api/me/position': position({ units: 0, pendingUnits: [tranche], autoReceive: false }),
-      'POST /api/me/units/unit-1/accept': () =>
-        json(
-          {
-            error: {
-              code: 'sign_in_wallet',
-              message: 'Approve this in Grofty Wallet, then retry.',
+    it('says to install Grofty when it is not installed', async () => {
+      await signIn('mainnet');
+      useProvider(null);
+      stubApi({
+        'GET /api/session': holderSession('mainnet'),
+        'GET /api/config/public': configFor('mainnet'),
+        'GET /api/me/position': position({ mainnetWallet: null }),
+      });
+      render(Page);
+      await fireEvent.click(await screen.findByRole('button', { name: 'Connect Grofty Wallet' }));
+      expect(
+        await screen.findByText(/Install Grofty Wallet to pay on MainNet\./),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Get Grofty Wallet' })).toHaveAttribute(
+        'href',
+        'https://grofty.cc',
+      );
+    });
+
+    it("shows the server's message when the signature is refused", async () => {
+      await signIn('mainnet');
+      useProvider(grofty());
+      stubApi({
+        'GET /api/session': holderSession('mainnet'),
+        'GET /api/config/public': configFor('mainnet'),
+        'GET /api/me/position': position({ mainnetWallet: null }),
+        'POST /api/me/mainnet-wallet/challenge': { nonce: 'n1', message: 'm' },
+        'POST /api/me/mainnet-wallet': () =>
+          json(
+            {
+              error: {
+                code: 'invalid_signature',
+                message: "Grofty's signature did not match this wallet. Try connecting again.",
+              },
+            },
+            401,
+          ),
+      });
+      render(Page);
+      await fireEvent.click(await screen.findByRole('button', { name: 'Connect Grofty Wallet' }));
+      expect(
+        await screen.findByText(
+          /Grofty's signature did not match this wallet\. Try connecting again\./,
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('a declined connection says nothing was changed', async () => {
+      await signIn('mainnet');
+      useProvider(
+        healthyGrofty({
+          handlers: {
+            connect: () => {
+              throw rpcError(4001);
             },
           },
-          409,
-        ),
+        }),
+      );
+      stubApi({
+        'GET /api/session': holderSession('mainnet'),
+        'GET /api/config/public': configFor('mainnet'),
+        'GET /api/me/position': position({ mainnetWallet: null }),
+      });
+      render(Page);
+      await fireEvent.click(await screen.findByRole('button', { name: 'Connect Grofty Wallet' }));
+      expect(
+        await screen.findByText('You declined in Grofty. Nothing was sent.'),
+      ).toBeInTheDocument();
     });
-    render(Page);
-    await fireEvent.click(await screen.findByRole('button', { name: /Accept units/ }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Approve this in Grofty Wallet, then retry.',
-    );
   });
 
   it('shows what failed with a retry when the position cannot load', async () => {

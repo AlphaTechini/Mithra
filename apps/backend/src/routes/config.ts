@@ -7,7 +7,9 @@ const DEFAULT_GROFTY_MIN_VERSION = '2.0.4';
 export function publicConfig(config: Config): PublicConfig {
   return PublicConfigSchema.parse({
     network: config.network,
-    testMode: config.network === 'localnet',
+    // Records live on LocalNet on both networks; the role switcher is how people act on them.
+    testMode: true,
+    payoutRail: config.network === 'mainnet' ? 'grofty-mainnet' : 'ledger',
     assetSymbol: config.asset.symbol,
     explorerTxUrlTemplate: config.network === 'mainnet' ? config.mainnet.explorerTxUrl : null,
     groftyMinVersion:

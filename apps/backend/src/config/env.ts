@@ -36,7 +36,7 @@ export const ENV_DESCRIPTIONS = {
   LEDGER_USER_ID:
     'Ledger user the backend acts as; it needs act-as rights for the agent and operator.',
   LEDGER_AUTH_MODE:
-    'How the backend authenticates to the ledger: unsafe-hmac, oidc-client-credentials or none (default unsafe-hmac on localnet, required on mainnet).',
+    'How the backend authenticates to the ledger: unsafe-hmac, oidc-client-credentials or none (default unsafe-hmac, for the LocalNet ledger that holds the records on both networks).',
   LEDGER_HMAC_SECRET:
     'HMAC secret that signs ledger tokens in unsafe-hmac mode (LocalNet default: unsafe).',
   LEDGER_AUDIENCE: 'Audience claim of ledger tokens in unsafe-hmac mode.',
@@ -46,30 +46,33 @@ export const ENV_DESCRIPTIONS = {
   LEDGER_OIDC_AUDIENCE: 'OIDC audience for the ledger token in oidc-client-credentials mode.',
   LEDGER_OIDC_SCOPE: 'OIDC scope for the ledger token in oidc-client-credentials mode.',
   TREASURY_PARTY:
-    'Party id of the treasury (on LocalNet the Decentralized Party, on MainNet the treasurer).',
+    'Party id of the treasury on the LocalNet ledger that holds the records (the Decentralized Party).',
   AGENT_PARTY: 'Party id of the Mithra agent, hosted on the node at LEDGER_JSON_API_URL.',
   OPERATOR_PARTY: 'Party id of the Mithra operator, hosted on the node at LEDGER_JSON_API_URL.',
   ASSET_ADMIN_PARTY: 'Party id of the distributed instrument admin (the DSO party for CC).',
   ASSET_ID: 'Instrument id of the distributed asset (Amulet for CC).',
   ASSET_SYMBOL: 'Symbol shown to people for the distributed asset.',
   REGISTRY_URL: 'Base URL of the token standard registry API for the distributed asset.',
-  LOCALNET_DEMO_PASSWORD: 'LocalNet only: the password people type to enter the demo.',
+  LOCALNET_DEMO_PASSWORD:
+    'LocalNet records ledger (also required on MainNet): the password people type to enter the demo.',
   LOCALNET_DEMO_PARTIES:
-    'LocalNet only: JSON list of demo parties for the role switcher, [{"partyId":"...","displayName":"Treasurer"}].',
+    'LocalNet records ledger (also required on MainNet): JSON list of demo parties for the role switcher, [{"partyId":"...","displayName":"Treasurer"}].',
   LOCALNET_READ_AS_TREASURY:
-    'LocalNet only: true if the ledger user may read as the treasury party (default true).',
+    'LocalNet records ledger (also required on MainNet): true if the ledger user may read as the treasury party (default true).',
   LOCALNET_NODES:
-    'LocalNet only: JSON list of exactly three nodes [{"id","name","operator","jsonApiUrl","decmanUrl","autoConfirm"}].',
+    'LocalNet records ledger (also required on MainNet): JSON list of exactly three nodes [{"id","name","operator","jsonApiUrl","decmanUrl","autoConfirm"}].',
   DECMAN_GOVERNANCE_THRESHOLD:
-    'LocalNet only: number of node confirmations the Decentralization Manager needs for a governed action (default 2).',
+    'LocalNet records ledger (also required on MainNet): number of node confirmations the Decentralization Manager needs for a governed action (default 2).',
   DECMAN_GOVERNANCE_RULES_CID:
-    'LocalNet only: contract id of the treasury GovernanceRules, used to confirm and execute governed actions such as sealing a Mandate (scripts/localnet-up.sh writes it).',
+    'LocalNet records ledger (also required on MainNet): contract id of the treasury GovernanceRules, used to confirm and execute governed actions such as sealing a Mandate (scripts/localnet-up.sh writes it).',
   DECMAN_MEMBER_PARTIES:
-    'LocalNet only: JSON object mapping a node id to the party that represents that node in governance, {"a":"member-a::1220..."}.',
+    'LocalNet records ledger (also required on MainNet): JSON object mapping a node id to the party that represents that node in governance, {"a":"member-a::1220..."}.',
   MAINNET_EXPLORER_TX_URL:
     'MainNet only: block explorer link for a transaction, containing {updateId}.',
   GROFTY_MIN_VERSION:
     'MainNet only: minimum Grofty Wallet version the signing flow needs (default 2.0.4).',
+  MAINNET_SCAN_URL:
+    'MainNet only, optional: public Scan base URL used to check whether a holder turned on auto-receive; leave empty to skip the check.',
 } as const;
 
 type EnvName = keyof typeof ENV_DESCRIPTIONS;
@@ -167,12 +170,20 @@ const networkShapes = {
       .min(1)
       .refine((v) => v.includes('{updateId}'), 'must contain the placeholder {updateId}'),
     GROFTY_MIN_VERSION: z.string().min(1).default('2.0.4'),
+    MAINNET_SCAN_URL: z.url().optional(),
   },
 } satisfies Record<Network, z.ZodRawShape>;
 
 const commonSchema = z.object({ ...commonShape, ...ledgerAuthShape });
 const localnetSchema = z.object({ ...commonShape, ...ledgerAuthShape, ...networkShapes.localnet });
-const mainnetSchema = z.object({ ...commonShape, ...ledgerAuthShape, ...networkShapes.mainnet });
+// MainNet means "MainNet payouts": the records stay on the LocalNet ledger, so MainNet needs
+// everything LocalNet needs, plus the explorer and Grofty settings.
+const mainnetSchema = z.object({
+  ...commonShape,
+  ...ledgerAuthShape,
+  ...networkShapes.localnet,
+  ...networkShapes.mainnet,
+});
 
 export type LedgerAuthConfig =
   | { mode: 'unsafe-hmac'; secret: string; audience: string }
@@ -209,6 +220,8 @@ export interface LocalnetConfig {
 export interface MainnetConfig {
   explorerTxUrl: string;
   groftyMinVersion: string;
+  /** Public Scan base URL for checking holders' preapprovals; absent means unknown. */
+  scanUrl?: string;
 }
 
 export interface BaseConfig {
@@ -250,7 +263,8 @@ export interface BaseConfig {
 export type Config = BaseConfig &
   (
     | { network: 'localnet'; localnet: LocalnetConfig; mainnet?: undefined }
-    | { network: 'mainnet'; mainnet: MainnetConfig; localnet?: undefined }
+    // MainNet payouts: records stay on LocalNet, so `localnet` is present here too.
+    | { network: 'mainnet'; localnet: LocalnetConfig; mainnet: MainnetConfig }
   );
 
 /** Thrown by `loadConfig`; the message lists every problem, one per line. */
@@ -347,12 +361,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
   }
   const network = networkResult.success ? networkResult.data : undefined;
 
-  // The ledger auth mode defaults to unsafe-hmac on LocalNet and must be given on MainNet.
+  // The ledger auth mode defaults to unsafe-hmac: the records are on a LocalNet ledger on both networks.
   let authMode: LedgerAuthMode | undefined;
   const rawMode = input['LEDGER_AUTH_MODE'];
   if (rawMode === undefined) {
-    if (network === 'localnet') authMode = 'unsafe-hmac';
-    else if (network === 'mainnet') problems.push(missing('LEDGER_AUTH_MODE'));
+    if (network !== undefined) authMode = 'unsafe-hmac';
   } else {
     const parsedMode = LedgerAuthModeSchema.safeParse(rawMode);
     if (parsedMode.success) authMode = parsedMode.data;
@@ -389,7 +402,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     const authProblems: string[] = [];
     // LocalNet's ledger accepts tokens signed with the well-known demo secret "unsafe".
     const authInput = { ...input };
-    if (network === 'localnet') authInput['LEDGER_HMAC_SECRET'] ??= 'unsafe';
+    if (network !== undefined) authInput['LEDGER_HMAC_SECRET'] ??= 'unsafe';
     auth = readLedgerAuth(authMode, authInput, authProblems);
     problems.push(...authProblems);
   }
@@ -436,30 +449,32 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     registryUrl: values.REGISTRY_URL,
   };
 
-  if (localnetParsed?.success) {
-    const local = localnetParsed.data;
+  const local = (localnetParsed ?? mainnetParsed)?.data;
+  if (!local) throw new ConfigError(problems);
+  const localnetConfig: LocalnetConfig = {
+    demoPassword: local.LOCALNET_DEMO_PASSWORD,
+    demoParties: local.LOCALNET_DEMO_PARTIES,
+    nodes: local.LOCALNET_NODES,
+    decmanGovernanceThreshold: local.DECMAN_GOVERNANCE_THRESHOLD,
+    decmanGovernanceRulesCid: local.DECMAN_GOVERNANCE_RULES_CID,
+    decmanMemberParties: local.DECMAN_MEMBER_PARTIES,
+  };
+  const withLedger = {
+    ...base,
+    ledger: { ...base.ledger, readAsTreasury: local.LOCALNET_READ_AS_TREASURY },
+  };
+  if (mainnetParsed?.success) {
+    const main = mainnetParsed.data;
     return {
-      ...base,
-      ledger: { ...base.ledger, readAsTreasury: local.LOCALNET_READ_AS_TREASURY },
-      network: 'localnet',
-      localnet: {
-        demoPassword: local.LOCALNET_DEMO_PASSWORD,
-        demoParties: local.LOCALNET_DEMO_PARTIES,
-        nodes: local.LOCALNET_NODES,
-        decmanGovernanceThreshold: local.DECMAN_GOVERNANCE_THRESHOLD,
-        decmanGovernanceRulesCid: local.DECMAN_GOVERNANCE_RULES_CID,
-        decmanMemberParties: local.DECMAN_MEMBER_PARTIES,
+      ...withLedger,
+      network: 'mainnet',
+      localnet: localnetConfig,
+      mainnet: {
+        explorerTxUrl: main.MAINNET_EXPLORER_TX_URL,
+        groftyMinVersion: main.GROFTY_MIN_VERSION,
+        ...(main.MAINNET_SCAN_URL ? { scanUrl: main.MAINNET_SCAN_URL.replace(/\/+$/, '') } : {}),
       },
     };
   }
-  if (!mainnetParsed?.success) throw new ConfigError(problems);
-  const main = mainnetParsed.data;
-  return {
-    ...base,
-    network: 'mainnet',
-    mainnet: {
-      explorerTxUrl: main.MAINNET_EXPLORER_TX_URL,
-      groftyMinVersion: main.GROFTY_MIN_VERSION,
-    },
-  };
+  return { ...withLedger, network: 'localnet', localnet: localnetConfig };
 }

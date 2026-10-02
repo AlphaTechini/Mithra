@@ -28,6 +28,7 @@
     "jose": "^6.2.12",
     "openai": "^7.25.0",
     "pg": "^8.23.1",
+    "tweetnacl": "^1.0.3",
     "zod": "^4.6.5"
   },
   "devDependencies": {

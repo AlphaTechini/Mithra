@@ -1,11 +1,10 @@
 <script lang="ts">
   /**
-   * Launch and connect (userflow section 3). LocalNet: password sign-in, then the role switcher.
-   * MainNet: a "Connect Grofty Wallet" panel; the real connection is a later step, here we only
-   * detect whether the Grofty SDK can find the extension.
+   * Launch and connect (userflow section 3). Mithra's records live on the LocalNet ledger on both
+   * networks, so both start the same way: password sign-in, then the role switcher. On MainNet the
+   * payouts are signed in Grofty Wallet, and holders connect it on their welcome page.
    */
   import { resolve } from '$app/paths';
-  import { createGroftyClient } from '@groftylabs/dapp-sdk';
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import type { Pathname } from '$app/types';
@@ -16,15 +15,13 @@
   import RoleSwitcher from '$lib/components/RoleSwitcher.svelte';
   import Skeleton from '$lib/components/Skeleton.svelte';
   import { describeError } from '$lib/errors';
-  import { navigate } from '$lib/nav';
-  import { homeFor, localnetHomeFor } from '$lib/routing';
+  import { localnetHomeFor } from '$lib/routing';
   import { sessionStore } from '$lib/stores/session.svelte';
 
   let password = $state('');
   let signingIn = $state(false);
   let signInError = $state<string | null>(null);
   let retrying = $state(false);
-  let groftyState = $state<'looking' | 'found' | 'missing'>('looking');
 
   const signedIn = $derived(sessionStore.session?.signedIn === true);
   const party = $derived(sessionStore.party);
@@ -47,38 +44,10 @@
     }
     return value as Pathname; // Not a typed route (it carries a code), so the cast is deliberate.
   });
-  const destination = $derived(
-    next ??
-      (sessionStore.network === 'localnet'
-        ? localnetHomeFor(party)
-        : homeFor(party?.primaryRole ?? null)),
-  );
+  const destination = $derived(next ?? localnetHomeFor(party));
 
   onMount(() => {
     void sessionStore.load();
-  });
-
-  // On MainNet a visitor who already has a session goes straight to their home.
-  $effect(() => {
-    if (sessionStore.network === 'mainnet' && signedIn) {
-      void navigate(destination, { replaceState: true });
-    }
-  });
-
-  // Only MainNet needs the wallet, so look for it once the network is known.
-  $effect(() => {
-    if (sessionStore.network !== 'mainnet') return;
-    let cancelled = false;
-    void createGroftyClient({ discoveryTimeoutMs: 1500 })
-      .then((client) => {
-        if (!cancelled) groftyState = client ? 'found' : 'missing';
-      })
-      .catch(() => {
-        if (!cancelled) groftyState = 'missing';
-      });
-    return () => {
-      cancelled = true;
-    };
   });
 
   async function retry(): Promise<void> {
@@ -120,14 +89,22 @@
     <ErrorState title={copy.title} message={copy.message} onretry={retry} {retrying} />
   {:else if sessionStore.status !== 'ready'}
     <Skeleton shape="block" height="10rem" label="Loading" />
-  {:else if sessionStore.network === 'localnet'}
+  {:else}
     <section class="panel" aria-labelledby="signin-heading">
       {#if !signedIn}
-        <h2 id="signin-heading">Sign in to LocalNet</h2>
+        <h2 id="signin-heading">
+          {sessionStore.network === 'mainnet' ? 'Sign in' : 'Sign in to LocalNet'}
+        </h2>
         <p>
-          LocalNet has no wallet, so Mithra signs for you on the server. Enter the LocalNet password
-          to continue.
+          Mithra's records live on a LocalNet ledger that has no wallet, so Mithra signs for you on
+          the server. Enter the LocalNet password to continue.
         </p>
+        {#if sessionStore.network === 'mainnet'}
+          <p class="note" role="note">
+            Payouts are signed in Grofty Wallet: the treasurer approves each CC transfer on Canton
+            MainNet in the wallet, and holders connect Grofty to say where their payment goes.
+          </p>
+        {/if}
         <form onsubmit={submit}>
           <label for="password">Password</label>
           <input
@@ -150,6 +127,12 @@
           Pick a demo party. Mithra opens the screens for that party's role, and you can switch
           again at any time from the header.
         </p>
+        {#if sessionStore.network === 'mainnet'}
+          <p class="note" role="note">
+            Payouts are signed in Grofty Wallet on Canton MainNet. Everything else here is recorded
+            on the LocalNet ledger.
+          </p>
+        {/if}
         <RoleSwitcher {next} />
         {#if party}
           <p class="current">
@@ -158,30 +141,6 @@
           </p>
           <Button href={destination}>Continue as {party.displayName}</Button>
         {/if}
-      {/if}
-    </section>
-  {:else}
-    <section class="panel" aria-labelledby="grofty-heading">
-      <h2 id="grofty-heading">Connect Grofty Wallet</h2>
-      <p>
-        On MainNet you sign with Grofty Wallet, a browser extension for Canton. Install it, unlock
-        it, then come back to this page and connect.
-      </p>
-      <p>
-        <a href="https://grofty.cc" target="_blank" rel="noreferrer noopener"
-          >How to install Grofty Wallet</a
-        >
-      </p>
-      {#if groftyState === 'looking'}
-        <Button disabled>Looking for Grofty Wallet…</Button>
-      {:else if groftyState === 'missing'}
-        <Button disabled>Connect Grofty Wallet</Button>
-        <p class="note" role="status">Grofty connection is set up in the MainNet build</p>
-      {:else}
-        <Button disabled>Connect Grofty Wallet</Button>
-        <p class="note" role="status">
-          Grofty Wallet is installed. Connecting with it is not switched on in this build yet.
-        </p>
       {/if}
     </section>
   {/if}

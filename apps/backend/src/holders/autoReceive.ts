@@ -9,15 +9,26 @@ export const AUTO_RECEIVE_ERROR_TTL_MS = 5_000;
 /** A positive amount for the registry lookup; the lookup only asks how a transfer would settle. */
 const PROBE_AMOUNT = '1';
 
-export interface AutoReceiveOptions {
-  asset: AssetAdapter;
-  /** The sender the registry is asked about: the treasury. */
-  treasury: string;
+interface AutoReceiveCommon {
   ttlMs?: number;
   now?: () => number;
   /** Called with the failure when the registry cannot be asked (the status is then null). */
   onError?: (holder: string, error: unknown) => void;
 }
+
+/**
+ * Where the answer comes from: the token standard registry (LocalNet: ask how a transfer from the
+ * treasury would settle), or a `lookup` function (MainNet: a public Scan, see `mainnet/scan.ts`).
+ */
+export type AutoReceiveOptions = AutoReceiveCommon &
+  (
+    | {
+        asset: AssetAdapter;
+        /** The sender the registry is asked about: the treasury. */
+        treasury: string;
+      }
+    | { lookup: (holder: string) => Promise<boolean | null> }
+  );
 
 /**
  * Whether a holder has auto-receive (a transfer preapproval) on. The registry reports it: a
@@ -59,12 +70,16 @@ export class AutoReceiveStatus {
   private async lookup(holder: string): Promise<boolean | null> {
     let value: boolean | null;
     try {
-      const result = await this.options.asset.transferLeg({
-        sender: this.options.treasury,
-        receiver: holder,
-        amount: PROBE_AMOUNT,
-      });
-      value = result.kind === 'direct';
+      if ('lookup' in this.options) {
+        value = await this.options.lookup(holder);
+      } else {
+        const result = await this.options.asset.transferLeg({
+          sender: this.options.treasury,
+          receiver: holder,
+          amount: PROBE_AMOUNT,
+        });
+        value = result.kind === 'direct';
+      }
     } catch (error) {
       this.options.onError?.(holder, error);
       value = null;

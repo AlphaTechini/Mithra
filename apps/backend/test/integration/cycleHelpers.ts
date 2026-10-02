@@ -213,13 +213,13 @@ export async function createCycleWorld(
     ...base,
     databaseUrl: DATABASE_URL_M4,
     localnet: {
-      ...base.localnet!,
+      ...base.localnet,
       demoParties: Object.entries(displayNames).map(([partyId, displayName]) => ({
         partyId,
         displayName,
       })),
     },
-  } as Config;
+  };
   const ledger = createLedger(config);
   const submits: CycleWorld['submits'] = [];
   const original = ledger.client.submit.bind(ledger.client);

@@ -17,6 +17,10 @@ template Payment
     transferInstructionCid : Optional (ContractId TransferInstruction)
     executedAt : Time
     seeded : Bool
+    -- | MainNet payouts: the payee's MainNet party id (not a party of this ledger) ...
+    externalReceiver : Optional Text
+    -- | ... and the MainNet update id of the transfer, once recorded.
+    externalTxRef : Optional Text
   where
     signatory treasury, agent
     observer holder
@@ -28,6 +32,26 @@ template Payment
       do
         assertMsg "Payment is not awaiting acceptance" (status == AwaitingAcceptance)
         create this with status = Paid
+
+    -- | MainNet payouts. The money moved outside this ledger, in a transfer the treasurer signed
+    -- in Grofty Wallet. The ledger cannot verify that transfer: this is the agent's attestation of
+    -- what the wallet reported (`txRef` is the MainNet update id). `Paid` only once the wallet said
+    -- the transfer was executed and the payee holds the funds; `AwaitingAcceptance` when the
+    -- transfer was made but the payee has to accept it. Allowed from `PendingExternal` (first
+    -- record) and from `AwaitingAcceptance` (the payee accepted later); never from `Paid`.
+    choice Payment_RecordExternal : ContractId Payment
+      with
+        txRef : Text
+        status : PaymentStatus   -- the new status; `this.status` is the current one
+      controller agent
+      do
+        assertMsg "Only a payment that is pending or awaiting acceptance can be recorded"
+          (this.status == PendingExternal || this.status == AwaitingAcceptance)
+        assertMsg "An external payment is recorded as Paid or AwaitingAcceptance"
+          (status == Paid || status == AwaitingAcceptance)
+        assertMsg "A payment that is not on this ledger needs an external receiver" (externalReceiver /= None)
+        assertMsg "The transaction reference must not be empty" (txRef /= "")
+        create this with externalTxRef = Some txRef; status
 
 -- | Reference to a payment inside a distribution outcome.
 data PaymentRef = PaymentRef with
@@ -43,4 +67,5 @@ data Settlement = Settlement with
     holder : Party
     status : PaymentStatus
     transferInstructionCid : Optional (ContractId TransferInstruction)
+    externalReceiver : Optional Text
   deriving (Eq, Show)

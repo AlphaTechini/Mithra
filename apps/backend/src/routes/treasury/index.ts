@@ -3,6 +3,7 @@ import {
   CreateOrgRequestSchema,
   DecimalString,
   IssueUnitsRequestSchema,
+  RegisterMainnetWalletRequestSchema,
   formatDecimal,
   toDecimal,
   type ActivityResponse,
@@ -33,6 +34,8 @@ import { createHoldersReader } from '../../holders/response';
 import { ApiError, parse } from '../../http/errors';
 import { RateLimiter } from '../../http/rateLimit';
 import type { Ledger, MithraReader } from '../../ledger';
+import { createMainnetAutoReceive } from '../../mainnet/autoReceive';
+import type { MainnetWallets } from '../../mainnet/wallets';
 import type { PartyNames } from '../../parties/names';
 import type { AssetAdapter } from '../../wallet';
 import { formatAmount } from './format';
@@ -59,12 +62,16 @@ export interface TreasuryRoutesDeps {
   db: Database;
   cycles: CycleQueries;
   funding: Funding;
+  /** MainNet payouts: the holders' Grofty wallets. Present on MainNet only. */
+  mainnetWallets?: MainnetWallets;
   /**
    * Marks accepted payments Paid right away (the cycle module's `reconciler.reconcilePayments`).
    * Called after a holder accepts a payment, so the Payment does not wait for the next pass. When
    * absent the background reconciler does it.
    */
   reconcilePayments?: () => Promise<unknown>;
+  /** Called after a holder connected a wallet, to let cycles that waited for it go ahead. */
+  walletConnected?: () => Promise<unknown>;
   /** Overrides for tests; the defaults are what production uses. */
   options?: {
     now?: () => Date;
@@ -84,10 +91,6 @@ export interface FundTreasuryResponse {
   /** True when the transfer was pending and the agent accepted it for the treasury. */
   acceptedPending: boolean;
 }
-
-/** Message of the 409 a user-signed write returns on MainNet, until Grofty signing (M10) replaces it. */
-export const SIGN_IN_WALLET_MESSAGE =
-  'On MainNet this is signed in Grofty Wallet. Open it from the button on this page.';
 
 const RECENT_CYCLES = 5;
 const RECENT_ACTIVITY = 10;
@@ -122,34 +125,33 @@ function plural(n: number, one: string, many: string): string {
 
 /** Registers the treasury, holder and overview routes (the cycle routes are M4's). */
 export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): void {
-  const { config, ledger, asset, names, activity, bus, db, cycles, funding } = deps;
+  const { config, ledger, asset, names, activity, bus, db, cycles, funding, mainnetWallets } = deps;
   const { reader, client, commands } = ledger;
   const now = deps.options?.now ?? (() => new Date());
-  const localnet = config.network === 'localnet';
+  /** MainNet payouts: Mithra's records are on LocalNet either way, but the money moves in Grofty. */
+  const mainnet = config.network === 'mainnet';
   /** The agent can read FundUnits (and so see acceptance) only when it may read as the treasury. */
   const fundUnitsReadable = config.ledger.readAsTreasury;
   const treasury = config.parties.treasury;
   const poll = deps.options?.autoReceivePoll ?? { attempts: 12, delayMs: 1500 };
 
+  const onAutoReceiveError = (holder: string, error: unknown): void =>
+    app.log.warn({ err: error, holder }, 'could not read auto-receive status');
   const autoReceive =
     deps.options?.autoReceive ??
-    new AutoReceiveStatus({
-      asset,
-      treasury,
-      onError: (holder, error) =>
-        app.log.warn({ err: error, holder }, 'could not read auto-receive status'),
-    });
+    (config.network === 'mainnet' && mainnetWallets
+      ? createMainnetAutoReceive({
+          scanUrl: config.mainnet.scanUrl,
+          wallets: mainnetWallets,
+          onError: onAutoReceiveError,
+        })
+      : new AutoReceiveStatus({ asset, treasury, onError: onAutoReceiveError }));
   const infrastructure =
     deps.options?.infrastructure ?? createInfrastructureChecker({ config, client });
   const inviteLimiter = new RateLimiter({
     limit: deps.options?.inviteLookupLimit ?? 60,
     windowMs: 60_000,
   });
-
-  /** On MainNet users sign in Grofty (M10 replaces this). */
-  function requireServerSigning(): void {
-    if (!localnet) throw new ApiError(409, 'sign_in_wallet', SIGN_IN_WALLET_MESSAGE);
-  }
 
   const treasuryTeam = requireRole('treasurer', 'approver');
   const holderAdmin = createHolderAdmin({
@@ -202,7 +204,6 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
   app.post('/api/org', async (request, reply): Promise<OrgResponse> => {
     const party = partyOf(request);
     const body = parse(CreateOrgRequestSchema, request.body);
-    requireServerSigning();
 
     const { charter, organization } = await readOrgState();
     if (organization) {
@@ -280,7 +281,13 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
   // -------------------------------------------------------------------------------------------
   // Holders (userflow 5) and invites
 
-  const holdersResponse = createHoldersReader({ config, ledger, names, autoReceive });
+  const holdersResponse = createHoldersReader({
+    config,
+    ledger,
+    names,
+    autoReceive,
+    ...(mainnetWallets ? { wallets: mainnetWallets } : {}),
+  });
 
   app.get('/api/holders', { preHandler: treasuryTeam }, () => holdersResponse());
 
@@ -290,7 +297,6 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
     async (request): Promise<HoldersResponse> => {
       const party = partyOf(request);
       const body = parse(IssueUnitsRequestSchema, request.body);
-      requireServerSigning();
       await holderAdmin.issueUnits({
         actor: party,
         holder: body.holder,
@@ -361,13 +367,16 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
   app.get('/api/overview', { preHandler: treasuryTeam }, async (): Promise<OverviewResponse> => {
     const [mandate, balance, nextCycle, allCycles, recentActivity] = await Promise.all([
       reader.mandate(),
-      asset.balance(treasury).then(
-        (b) => b,
-        (error: unknown) => {
-          app.log.warn({ err: error }, 'could not read the treasury balance');
-          return null;
-        },
-      ),
+      // MainNet: the balance is in the treasurer's Grofty wallet, which the server cannot read.
+      mainnet
+        ? Promise.resolve(null)
+        : asset.balance(treasury).then(
+            (b) => b,
+            (error: unknown) => {
+              app.log.warn({ err: error }, 'could not read the treasury balance');
+              return null;
+            },
+          ),
       cycles.nextCycle().then(
         (c) => c,
         (error: unknown) => {
@@ -431,11 +440,11 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
     { preHandler: requireRole('treasurer') },
     async (request): Promise<FundTreasuryResponse> => {
       const party = partyOf(request);
-      if (!localnet) {
+      if (mainnet) {
         throw new ApiError(
           404,
           'not_available',
-          'Test funds are only available on LocalNet. On MainNet, send CC to the treasury from your wallet.',
+          'Test funds are only available on LocalNet. Send CC to your Grofty Wallet; payouts are signed from it.',
         );
       }
       const body = parse(FundBody, request.body);
@@ -467,20 +476,14 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
   // Holder routes (userflow 6). The data is always the session party's own (L7, U7).
 
   /**
-   * Payments and FundUnits as the holder. On LocalNet the ledger itself restricts the read to
-   * what the holder may see (`reader.as([holder])`), so another holder's data never reaches this
-   * process. On MainNet the backend cannot read as a holder: it reads Payments as the agent
-   * and keeps only this holder's (the one place data is filtered in code), and FundUnits stay
-   * with the holder's own wallet.
+   * Payments and FundUnits as the holder. The records are on LocalNet on both networks, and the
+   * ledger itself restricts the read to what the holder may see (`reader.as([holder])`), so
+   * another holder's data never reaches this process.
    */
   async function readHolderContracts(holder: string) {
-    if (localnet) {
-      const own: MithraReader = reader.as([holder]);
-      const [payments, fundUnits] = await Promise.all([own.payments(), own.fundUnits()]);
-      return { payments, fundUnits };
-    }
-    const payments = (await reader.payments()).filter((p) => p.payload.holder === holder);
-    return { payments, fundUnits: [] };
+    const own: MithraReader = reader.as([holder]);
+    const [payments, fundUnits] = await Promise.all([own.payments(), own.fundUnits()]);
+    return { payments, fundUnits };
   }
 
   async function positionOf(
@@ -522,7 +525,7 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
         updateIds.set(ref.contractId, ref.updateId);
       }
     }
-    return buildPosition({
+    const position = buildPosition({
       config,
       orgName: organization.payload.name,
       holder,
@@ -533,6 +536,8 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
       nextPayment: next?.at ?? null,
       autoReceive: receive,
     });
+    if (!mainnetWallets) return position;
+    return { ...position, mainnetWallet: await mainnetWallets.get(holder) };
   }
 
   /** Runs a holder route body; any ledger or registry failure becomes a generic message. */
@@ -563,11 +568,54 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
     asHolder(request, 'Loading your position', () => positionOf(partyOf(request))),
   );
 
+  // -------------------------------------------------------------------------------------------
+  // MainNet wallet (M10): the holder connects Grofty Wallet so payouts can be sent to it.
+
+  function requireWallets(): MainnetWallets {
+    if (!mainnetWallets) {
+      throw new ApiError(
+        404,
+        'not_available',
+        'Connecting Grofty Wallet is only used on MainNet. Payouts on LocalNet stay on the ledger.',
+      );
+    }
+    return mainnetWallets;
+  }
+
+  app.post('/api/me/mainnet-wallet/challenge', { preHandler: holderOnly }, async (request) => {
+    const wallets = requireWallets();
+    const holder = partyOf(request);
+    return wallets.challenge(holder, await names.name(holder));
+  });
+
+  app.post('/api/me/mainnet-wallet', { preHandler: holderOnly }, (request) =>
+    asHolder(request, 'Connecting your Grofty Wallet', async () => {
+      const wallets = requireWallets();
+      const holder = partyOf(request);
+      const body = parse(RegisterMainnetWalletRequestSchema, request.body);
+      await wallets.register(holder, body);
+      autoReceive.invalidate(holder);
+      bus.publish({ type: 'holder', change: 'wallet' }, { parties: [holder] });
+      await activity.record({
+        actorParty: holder,
+        kind: 'holder.wallet-connected',
+        subject: holder,
+        text: `${await names.name(holder)} connected a Grofty Wallet for MainNet payouts`,
+      });
+      // A cycle that was waiting for this wallet can go ahead now.
+      if (deps.walletConnected) {
+        await deps.walletConnected().catch((error: unknown) => {
+          request.log.warn({ err: error }, 'could not advance the cycles waiting for wallets');
+        });
+      }
+      return positionOf(holder);
+    }),
+  );
+
   app.post('/api/me/units/:unitId/accept', { preHandler: holderOnly }, (request) =>
     asHolder(request, 'Accepting these units', async () => {
       const holder = partyOf(request);
       const params = parse(UnitParams, request.params);
-      requireServerSigning();
       const { fundUnits } = await readHolderContracts(holder);
       const unit = fundUnits.find(
         (u) => opaqueId(u.contractId) === params.unitId && !u.payload.accepted,
@@ -599,7 +647,7 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
       const holder = partyOf(request);
       autoReceive.invalidate(holder);
       let status = await autoReceive.get(holder);
-      if (status !== true && localnet) {
+      if (status !== true && !mainnet) {
         await funding.createPreapproval(holder);
         // The registry reports the preapproval a little after the ledger has it.
         for (let attempt = 0; attempt < poll.attempts && status !== true; attempt += 1) {
@@ -633,7 +681,6 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
     asHolder(request, 'Accepting this payment', async () => {
       const holder = partyOf(request);
       const params = parse(PaymentParams, request.params);
-      requireServerSigning();
       // Read as the holder: another holder's payment is simply not there (404, no detail).
       const { payments } = await readHolderContracts(holder);
       const payment = payments.find(

@@ -64,6 +64,10 @@ export type ChipKind =
   | 'confirmed'
   | 'waiting'
   | 'approved'
+  /** MainNet: authorized on the ledger, the treasurer signs the payouts in Grofty. */
+  | 'awaiting-signature'
+  /** MainNet: ready to pay, but some holders have not connected Grofty Wallet. */
+  | 'needs-wallets'
   /** An audit request the treasurer has not answered yet. */
   | 'waiting-treasurer'
   /** An audit request the auditor took back. */

@@ -31,6 +31,8 @@ const WORDS: Record<ChipKind, string> = {
   confirmed: 'Confirmed',
   waiting: 'Waiting',
   approved: 'Approved',
+  'awaiting-signature': 'Awaiting your signature in Grofty',
+  'needs-wallets': 'Waiting for holders to connect Grofty',
   'waiting-treasurer': 'Waiting for the treasurer',
   withdrawn: 'Request withdrawn',
 };

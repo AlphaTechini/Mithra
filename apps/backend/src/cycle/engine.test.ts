@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LedgerError } from '../ledger';
 import { RegistryError } from '../wallet';
-import {
-  AwaitingSignatureError,
-  MAINNET_SIGNING_MESSAGE,
-  TreasurerPayoutExecutor,
-} from './executor';
 import { isTransient } from './engine';
 import { Mutex } from './mutex';
 
@@ -30,22 +25,6 @@ describe('which payout failures are tried again', () => {
 
   it('does not retry an unknown error', () => {
     expect(isTransient(new Error('bug'))).toBe(false);
-  });
-});
-
-describe('MainNet payout signing (M10)', () => {
-  it('reports awaiting-signature with the clear message', async () => {
-    const error = await new TreasurerPayoutExecutor().execute().then(
-      () => undefined,
-      (e: unknown) => e,
-    );
-    expect(error).toBeInstanceOf(AwaitingSignatureError);
-    expect(error).toMatchObject({
-      status: 409,
-      code: 'awaiting_signature',
-      message: 'Signing in Grofty arrives with the MainNet build',
-    });
-    expect(MAINNET_SIGNING_MESSAGE).toBe('Signing in Grofty arrives with the MainNet build');
   });
 });
 

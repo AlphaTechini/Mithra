@@ -82,7 +82,6 @@ export function auditRoutes(app: FastifyInstance, deps: AuditRouteDeps): void {
     { preHandler: auditorOrProspect },
     async (request): Promise<AuditRequestDetail> => {
       const body = parse(CreateAuditRequestSchema, request.body);
-      service.assertServerSigns();
       return service.createRequest(partyOf(request), body);
     },
   );
@@ -112,7 +111,6 @@ export function auditRoutes(app: FastifyInstance, deps: AuditRouteDeps): void {
     async (request): Promise<AuditRequestDetail> => {
       const { requestId } = parse(RequestParams, request.params);
       const body = parse(GrantAccessRequestSchema, request.body);
-      service.assertServerSigns();
       return service.grant(requestId, partyOf(request), body);
     },
   );
@@ -123,7 +121,6 @@ export function auditRoutes(app: FastifyInstance, deps: AuditRouteDeps): void {
     async (request): Promise<AuditRequestDetail> => {
       const { requestId } = parse(RequestParams, request.params);
       const body = parse(DenyAccessRequestSchema, request.body);
-      service.assertServerSigns();
       return service.deny(requestId, partyOf(request), body);
     },
   );
@@ -133,7 +130,6 @@ export function auditRoutes(app: FastifyInstance, deps: AuditRouteDeps): void {
     { preHandler: auditorOnly },
     async (request): Promise<AuditRequestDetail> => {
       const { requestId } = parse(RequestParams, request.params);
-      service.assertServerSigns();
       return service.withdraw(requestId, partyOf(request));
     },
   );
@@ -143,7 +139,6 @@ export function auditRoutes(app: FastifyInstance, deps: AuditRouteDeps): void {
     { preHandler: treasurerOnly },
     async (request): Promise<AuditRequestDetail> => {
       const { grantId } = parse(GrantParams, request.params);
-      service.assertServerSigns();
       return service.revoke(grantId, partyOf(request));
     },
   );

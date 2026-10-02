@@ -1,12 +1,13 @@
 <script lang="ts">
   /**
-   * "Add funds". LocalNet (test mode): a small form that mints CC into the treasury through the
-   * backend. MainNet: nothing to submit; it says how to send CC to the treasury party. The
-   * suggested amount is the server's required figure, not a browser calculation.
+   * "Add funds". LocalNet: a small form that mints CC into the treasury through the backend.
+   * MainNet payouts: nothing to submit (no faucet); the treasurer's CC is in their Grofty Wallet,
+   * which pays the holders. The suggested amount is the server's required figure, not a browser
+   * calculation.
    */
-  import { onMount, untrack } from 'svelte';
+  import { untrack } from 'svelte';
   import { DecimalString } from '@mithra/shared';
-  import { fundTreasury, getOrg } from '$lib/api/treasury';
+  import { fundTreasury } from '$lib/api/treasury';
   import { describeError } from '$lib/errors';
   import { sessionStore } from '$lib/stores/session.svelte';
   import { toasts } from '$lib/stores/toasts.svelte';
@@ -14,7 +15,6 @@
   import Dialog from '../Dialog.svelte';
   import ErrorState from '../ErrorState.svelte';
   import Field from '../Field.svelte';
-  import PartyId from '../PartyId.svelte';
 
   interface Props {
     /** The server's required amount for the next distribution, used as the suggestion. */
@@ -27,30 +27,21 @@
   let { required, onclose, ondone }: Props = $props();
 
   const symbol = $derived(sessionStore.config?.assetSymbol ?? 'CC');
-  const testMode = $derived(sessionStore.testMode === true);
+  /** The faucet exists on the LocalNet payout rail only; MainNet payouts come from Grofty Wallet. */
+  const testMode = $derived(
+    sessionStore.testMode === true && sessionStore.config?.payoutRail !== 'grofty-mainnet',
+  );
 
   // The suggestion is captured once; the dialog is short-lived and the field is editable.
   let amount = $state(untrack(() => required));
   let busy = $state(false);
   let failure = $state<{ title: string; message: string } | null>(null);
-  let treasuryParty = $state<string | null>(null);
 
   const amountError = $derived(
     DecimalString.safeParse(amount.trim()).success && /[1-9]/.test(amount)
       ? null
       : 'Enter an amount above zero, like 500 or 1200.50.',
   );
-
-  onMount(() => {
-    if (testMode) return;
-    void getOrg()
-      .then((org) => {
-        treasuryParty = org.organization?.treasury.partyId ?? null;
-      })
-      .catch(() => {
-        treasuryParty = null;
-      });
-  });
 
   async function submit(event?: Event): Promise<void> {
     event?.preventDefault();
@@ -84,13 +75,11 @@
       {#if failure}<ErrorState title={failure.title} message={failure.message} />{/if}
     </form>
   {:else}
-    <p>
-      To add funds on MainNet, send {symbol} from your own wallet to the treasury party. The balance updates
-      once the ledger confirms the transfer.
+    <p>Send {symbol} to your Grofty Wallet; payouts are signed from it.</p>
+    <p class="muted">
+      Mithra checks the balance in Grofty Wallet before you sign each payout, so there is nothing to
+      add here.
     </p>
-    {#if treasuryParty}
-      <p class="party"><span>Treasury party</span> <PartyId partyId={treasuryParty} /></p>
-    {/if}
   {/if}
   {#snippet footer()}
     <Button variant="secondary" onclick={onclose}>{testMode ? 'Cancel' : 'Close'}</Button>
@@ -101,10 +90,7 @@
 </Dialog>
 
 <style>
-  .party {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-2);
+  .muted {
+    color: var(--color-text-muted);
   }
 </style>

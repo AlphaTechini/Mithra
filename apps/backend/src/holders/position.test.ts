@@ -32,6 +32,8 @@ function payment(
     transferInstructionCid: status === 'Paid' ? null : `ti-${cid}`,
     executedAt,
     seeded: false,
+    externalReceiver: null,
+    externalTxRef: null,
   };
   return { contractId: cid, payload, createdAt: executedAt };
 }
@@ -116,6 +118,26 @@ describe('buildPosition', () => {
       link: { updateId: 'upd-accept', href: '/holder/tx/upd-accept', external: false },
     });
     expect(position.totalReceived).toBe('30.0000000000');
+  });
+
+  it('MainNet: a payment waiting for the treasurer shows as pending, and a recorded one links to the explorer', () => {
+    const pending = payment('alice', '30.0000000000', 'Paid', '2026-09-01T09:00:00Z', 'p-1');
+    pending.payload.status = 'PendingExternal';
+    pending.payload.externalReceiver = 'alice-main::1220aa';
+    const recorded = payment('alice', '70.0000000000', 'Paid', '2026-08-01T09:00:00Z', 'p-2');
+    recorded.payload.externalReceiver = 'alice-main::1220aa';
+    recorded.payload.externalTxRef = '1220mainnet';
+    const position = buildPosition({
+      ...base,
+      config: mainnetTestConfig(),
+      payments: [pending, recorded],
+    });
+    expect(position.payments.map((p) => [p.status, p.link?.href ?? null])).toEqual([
+      ['pending', null],
+      ['paid', 'https://explorer.example/tx/1220mainnet'],
+    ]);
+    // Only what was recorded as paid counts as received (P4).
+    expect(position.totalReceived).toBe('70.0000000000');
   });
 
   it('gives units, share, totals, links and pending units for the holder', () => {

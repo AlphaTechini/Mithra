@@ -40,6 +40,10 @@ export function cycleChip(cycle: Pick<CycleSummary, 'status' | 'approvals'>): Cy
       return { kind: 'failed' };
     case 'needs-funds':
       return { kind: 'needs-funds' };
+    case 'awaiting-signature':
+      return { kind: 'awaiting-signature' };
+    case 'needs-wallets':
+      return { kind: 'needs-wallets' };
   }
 }
 

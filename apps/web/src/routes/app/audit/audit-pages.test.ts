@@ -155,16 +155,16 @@ describe('treasurer review page', () => {
     expect(screen.getByRole('button', { name: 'Grant access' })).toBeDisabled();
   });
 
-  it('shows a wallet message from the server in place when granting fails', async () => {
+  it('shows the ledger message in place when granting fails', async () => {
     await stub({
       'GET /api/audit/requests/req-1': detail(requestView()),
       'POST /api/audit/requests/req-1/grant': () =>
-        errorResponse(409, 'sign_in_wallet', 'Sign in with your wallet to grant access.'),
+        errorResponse(422, 'ledger_rejected', 'The ledger refused the grant. Try again.'),
     });
     render(ReviewPage);
     await screen.findByRole('region', { name: "Auditor's question" });
     await fireEvent.click(screen.getByRole('button', { name: 'Grant access' }));
-    expect(await screen.findByText('Sign in with your wallet to grant access.')).toBeVisible();
+    expect(await screen.findByText('The ledger refused the grant. Try again.')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Grant access' })).toBeEnabled();
   });
 

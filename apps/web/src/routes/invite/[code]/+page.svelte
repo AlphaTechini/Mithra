@@ -1,9 +1,9 @@
 <script lang="ts">
   /**
    * Invitation (userflow 6 steps 1 and 2). Public: shows the fund and what is offered. Signed out
-   * on LocalNet it points to the demo sign-in and the role switcher; on MainNet it offers
-   * "Connect Grofty Wallet" (the connection itself is M10, so the button is disabled with the
-   * same message as /launch). Signed in as a holder it continues to /holder/welcome.
+   * it points to the demo sign-in and the role switcher (Mithra's records live on LocalNet on both
+   * networks; on MainNet the holder connects Grofty Wallet afterwards, on the welcome page).
+   * Signed in as a holder it continues to /holder/welcome.
    */
   import type { Invite } from '@mithra/shared';
   import { resolve } from '$app/paths';
@@ -99,19 +99,12 @@
         <Button href="/auditor">Go to the audit workspace</Button>
         {#if !signedIn || !isAuditor}
           <p class="hint">
-            {#if sessionStore.network === 'mainnet'}
-              Connect Grofty Wallet first.
-            {:else}
-              Sign in to the demo, then pick {invite.displayName} in the role switcher.
-            {/if}
+            Sign in to the demo, then pick {invite.displayName} in the role switcher.
           </p>
         {/if}
       {:else if signedIn && isHolder}
         <p class="who">Signed in as <strong>{party?.displayName}</strong>.</p>
         <Button href="/holder/welcome">Continue</Button>
-      {:else if sessionStore.network === 'mainnet'}
-        <Button disabled>Connect Grofty Wallet</Button>
-        <p class="hint" role="status">Grofty connection is set up in the MainNet build</p>
       {:else if signedIn}
         <p>
           You're signed in as <strong>{party?.displayName}</strong>. Pick

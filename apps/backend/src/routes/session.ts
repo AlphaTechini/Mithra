@@ -29,10 +29,8 @@ export function shortParty(partyId: string): string {
 }
 
 function displayNameFor(config: Config, partyId: string, resolution: RoleResolution): string {
-  if (config.network === 'localnet') {
-    const demo = config.localnet.demoParties.find((p) => p.partyId === partyId);
-    if (demo) return demo.displayName;
-  }
+  const demo = config.localnet.demoParties.find((p) => p.partyId === partyId);
+  if (demo) return demo.displayName;
   const label = resolution.primaryRole ? ROLE_LABELS[resolution.primaryRole] : 'Party';
   return `${label} ${shortParty(partyId)}`;
 }
@@ -54,7 +52,8 @@ export function sessionRoutes(
   config: Config,
   options: SessionRouteOptions = {},
 ): void {
-  const testMode = config.network === 'localnet';
+  // Mithra's records live on LocalNet on both networks, so people always act through the role switcher.
+  const testMode = true;
   const limiter = new RateLimiter(options.signInLimit ?? { limit: 10, windowMs: 60_000 });
 
   async function sessionResponse(request: FastifyRequest): Promise<SessionResponse> {
@@ -75,16 +74,6 @@ export function sessionRoutes(
     };
   }
 
-  function requireLocalnet(): void {
-    if (config.network !== 'localnet') {
-      throw new ApiError(
-        404,
-        'not_available',
-        'This is only available on LocalNet. On MainNet, connect Grofty Wallet.',
-      );
-    }
-  }
-
   function requireSession(request: FastifyRequest): string {
     if (!request.session) {
       throw new ApiError(401, 'not_signed_in', 'Sign in first.');
@@ -95,9 +84,8 @@ export function sessionRoutes(
   app.get('/api/session', (request) => sessionResponse(request));
 
   app.get('/api/session/demo-parties', async (request, reply): Promise<DemoPartiesResponse> => {
-    requireLocalnet();
     requireSession(request);
-    const demo = config.localnet?.demoParties ?? [];
+    const demo = config.localnet.demoParties;
     let resolved = new Map<string, RoleResolution>();
     try {
       resolved = await app.roleResolver.resolveMany(demo.map((p) => p.partyId));
@@ -117,7 +105,6 @@ export function sessionRoutes(
   });
 
   app.post('/api/session/localnet/sign-in', async (request, reply): Promise<SessionResponse> => {
-    requireLocalnet();
     if (!limiter.allow(request.ip)) {
       throw new ApiError(
         429,
@@ -126,7 +113,7 @@ export function sessionRoutes(
       );
     }
     const body = parse(LocalnetSignInRequestSchema, request.body);
-    if (config.network !== 'localnet' || !safeEqual(body.password, config.localnet.demoPassword)) {
+    if (!safeEqual(body.password, config.localnet.demoPassword)) {
       throw new ApiError(
         401,
         'invalid_password',
@@ -141,10 +128,9 @@ export function sessionRoutes(
   });
 
   app.post('/api/session/switch', async (request): Promise<SessionResponse> => {
-    requireLocalnet();
     const sessionId = requireSession(request);
     const body = parse(SwitchPartyRequestSchema, request.body);
-    const known = config.localnet?.demoParties.some((p) => p.partyId === body.partyId) ?? false;
+    const known = config.localnet.demoParties.some((p) => p.partyId === body.partyId);
     if (!known) {
       throw new ApiError(
         400,

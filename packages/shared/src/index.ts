@@ -28,3 +28,4 @@ export {
 export * from './api/treasury';
 export * from './api/agent';
 export * from './api/audit';
+export * from './api/mainnet';

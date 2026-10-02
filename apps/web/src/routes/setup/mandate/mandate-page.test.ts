@@ -165,7 +165,7 @@ describe('setup mandate page', () => {
     expect(api.callsTo('POST /api/mandate/seal')).toHaveLength(2);
   });
 
-  it('shows the wallet message in place when MainNet needs the wallet', async () => {
+  it("shows the ledger's refusal in place when sealing fails", async () => {
     stubApi({
       ...sessionRoutes('treasurer', 'mainnet'),
       'GET /api/policy/draft': draft(),
@@ -173,18 +173,17 @@ describe('setup mandate page', () => {
         new Response(
           JSON.stringify({
             error: {
-              code: 'sign_in_wallet',
-              message:
-                'On MainNet this is signed in Grofty Wallet. Open the wallet and sign there.',
+              code: 'ledger_rejected',
+              message: 'The ledger refused the seal request. Check the Mandate and try again.',
             },
           }),
-          { status: 409, headers: { 'content-type': 'application/json' } },
+          { status: 422, headers: { 'content-type': 'application/json' } },
         ),
     });
     await sessionStore.load();
     render(Page);
     await fireEvent.click(await screen.findByRole('button', { name: 'Seal mandate' }));
-    expect(await screen.findByText(/signed in Grofty Wallet/)).toBeInTheDocument();
+    expect(await screen.findByText(/The ledger refused the seal request/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Seal mandate' })).toBeEnabled();
   });
 });

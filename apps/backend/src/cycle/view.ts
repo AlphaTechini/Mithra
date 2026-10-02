@@ -66,6 +66,11 @@ export interface CycleFacts {
   payments: Contract<Payment>[];
   /** Number of proposals made for the cycle so far (outcomes of earlier attempts plus this one). */
   attempts: number;
+  /**
+   * MainNet: payees of the active proposal that have not connected a Grofty wallet yet. The engine
+   * fills it in; absent or empty on LocalNet.
+   */
+  missingWallets?: readonly string[];
 }
 
 export interface LedgerFacts {
@@ -164,11 +169,14 @@ export function groupCycles(
 }
 
 function executedStatus(cf: CycleFacts): CycleStatus {
-  const awaiting =
+  const statuses =
     cf.payments.length > 0
-      ? cf.payments.some((p) => p.payload.status === 'AwaitingAcceptance')
-      : (cf.outcome?.payload.payments.some((p) => p.status === 'AwaitingAcceptance') ?? false);
-  if (awaiting) return 'awaiting-acceptance';
+      ? cf.payments.map((p) => p.payload.status)
+      : (cf.outcome?.payload.payments.map((p) => p.status) ?? []);
+  // MainNet: the ledger authorized the payout, but a payment is only Paid once its transfer was
+  // recorded after Grofty reported it executed (P4).
+  if (statuses.includes('PendingExternal')) return 'awaiting-signature';
+  if (statuses.includes('AwaitingAcceptance')) return 'awaiting-acceptance';
   const approved =
     cf.record?.payload.verdict === 'NeedsApproval' ||
     (cf.outcome?.payload.approvals.length ?? 0) > 0;
@@ -210,6 +218,7 @@ export function deriveStatus(
       if (shortfall) return 'needs-funds';
       if (row?.held) return 'held';
       const due = row?.executesAt != null && row.executesAt.getTime() <= now.getTime();
+      if (due && (cf.missingWallets?.length ?? 0) > 0) return 'needs-wallets';
       return due ? 'executing' : 'countdown';
     }
     const approvers = mandate?.payload.terms.approvers ?? proposal.payload.approvers;
@@ -218,6 +227,7 @@ export function deriveStatus(
       return 'awaiting-approval';
     if (row?.status === 'failed') return 'failed';
     if (shortfall) return 'needs-funds';
+    if ((cf.missingWallets?.length ?? 0) > 0) return 'needs-wallets';
     return 'executing';
   }
 
@@ -365,9 +375,19 @@ function paymentViews(
     const ref = refs.get(payout.holder);
     const state = payment?.payload.status ?? ref?.status;
     if (!state) continue;
+    // MainNet payments name their transaction themselves (`externalTxRef`, the Grofty update id).
+    const external = payment?.payload.externalTxRef;
     views.set(payout.holder, {
-      status: state === 'Paid' ? 'paid' : 'awaiting-acceptance',
-      link: linkOf(payment?.contractId) ?? linkOf(ref?.paymentCid),
+      status:
+        state === 'Paid'
+          ? 'paid'
+          : state === 'PendingExternal'
+            ? 'pending-ledger'
+            : 'awaiting-acceptance',
+      link:
+        linkOf(payment?.contractId) ??
+        linkOf(ref?.paymentCid) ??
+        (external ? ctx.linkFor(external) : null),
     });
   }
   return views;
@@ -441,6 +461,9 @@ export function detailOf(
         }
       : null,
     fundsShortfall: shortfall,
+    ...(summary.status === 'needs-wallets'
+      ? { needsWallets: (cf.missingWallets ?? []).map((p) => ctx.refOf(p)) }
+      : {}),
     error: cf.row?.error ?? null,
   };
 }

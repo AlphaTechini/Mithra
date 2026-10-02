@@ -181,10 +181,6 @@ type GrantSnapshot = z.infer<typeof GrantSnapshotSchema>;
 /** Only the treasurer reads the audit entries of the activity log. */
 const TREASURER_ONLY: Audience = { roles: ['treasurer'] };
 
-/** Message of the 409 a user-signed write returns on MainNet, until Grofty signing (M10) replaces it. */
-export const SIGN_IN_WALLET_MESSAGE =
-  'On MainNet this is signed in Grofty Wallet. Open it from the button on this page.';
-
 /** Time window in which several views of one grant by one auditor count as one view session. */
 export const VIEW_SESSION_MS = 10 * 60 * 1000;
 
@@ -226,8 +222,6 @@ export interface AuditService {
   withdraw(requestId: string, auditor: string): Promise<AuditRequestDetail>;
   evidence(grantId: string, auditor: string): Promise<EvidenceRoom>;
   exportMarkdown(grantId: string, auditor: string): Promise<{ filename: string; markdown: string }>;
-  /** Throws the 409 `sign_in_wallet` on MainNet, where these writes are signed in Grofty. */
-  assertServerSigns(): void;
 }
 
 export interface AuditModule {
@@ -279,12 +273,6 @@ export function createAuditService(deps: AuditModuleDeps, catalog: AuditCatalog)
   const symbol = config.asset.symbol;
   /** Last view session logged by this process, per auditor and grant (the log is the durable check). */
   const recentViews = new Map<string, number>();
-
-  function assertServerSigns(): void {
-    if (config.network === 'mainnet') {
-      throw new ApiError(409, 'sign_in_wallet', SIGN_IN_WALLET_MESSAGE);
-    }
-  }
 
   async function logActivity(input: {
     actor: string;
@@ -903,7 +891,6 @@ export function createAuditService(deps: AuditModuleDeps, catalog: AuditCatalog)
     withdraw,
     evidence,
     exportMarkdown,
-    assertServerSigns,
   };
 }
 

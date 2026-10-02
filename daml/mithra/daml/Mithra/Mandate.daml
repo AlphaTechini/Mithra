@@ -158,7 +158,8 @@ template Mandate
         assertMsg "This Mandate does not let the agent execute payouts; the treasurer signs them" agentExecutes
         executeDistribution this agent proposalCid legs inputHoldingCids executeBefore
 
-    -- | MainNet: the treasurer is the treasury, so the treasurer signs the payout.
+    -- | The treasury itself signs a ledger payout. Not used by the backend: on MainNet payouts the money
+    -- moves outside this ledger (see `Mandate_AuthorizeExternalPayout`).
     choice Mandate_TreasuryExecute : (ContractId Mandate, ContractId DistributionOutcome)
       with
         proposalCid : ContractId Proposal
@@ -168,16 +169,47 @@ template Mandate
       controller treasury
       do executeDistribution this treasury proposalCid legs inputHoldingCids executeBefore
 
+    -- | MainNet payouts. Mithra's records live on this ledger but the money moves on Canton
+    -- MainNet, in transfers the treasurer signs in Grofty Wallet, so no token-standard transfer
+    -- happens here. This choice applies the same rules as `executeDistribution` (cap, approval
+    -- threshold, one payout per cycle), marks the cycle executed and creates one `Payment` per
+    -- payee in status `PendingExternal`, carrying the payee's MainNet party id. The agent then
+    -- records each transfer with `Payment_RecordExternal`.
+    -- `receivers` pairs each payee with their MainNet party id, in payout order.
+    choice Mandate_AuthorizeExternalPayout : (ContractId Mandate, ContractId DistributionOutcome)
+      with
+        proposalCid : ContractId Proposal
+        receivers : [(Party, Text)]
+      controller agent
+      do
+        proposal <- fetch proposalCid
+        checkExecutable this proposal
+        assertMsg "Receivers must line up one-to-one with the proposal payouts, same holders in the same order"
+          (map fst receivers == map (.holder) proposal.payouts)
+        assertMsg "Every payee needs a MainNet party id" (all (\(_, r) -> r /= "") receivers)
+        outcomeCid <- exercise proposalCid Proposal_MarkExecuted with
+          settlements =
+            [ Settlement with
+                holder
+                status = PendingExternal
+                transferInstructionCid = None
+                externalReceiver = Some receiver
+            | (holder, receiver) <- receivers ]
+          actor = agent
+        mandateCid <- create this with executedCycles = executedCycles ++ [proposal.cycleId]
+        pure (mandateCid, outcomeCid)
+
     -- | Replaced by a newer Mandate; hands over the executed cycles.
     choice Mandate_Supersede : [Text]
       controller treasury
       do pure executedCycles
 
-executeDistribution
-  : Mandate -> Party -> ContractId Proposal -> [TransferLeg] -> [ContractId Holding] -> Time
-  -> Update (ContractId Mandate, ContractId DistributionOutcome)
-executeDistribution m actor proposalCid legs inputHoldingCids executeBefore = do
-  proposal <- fetch proposalCid
+-- | The rules every payout must pass, whichever way the money moves: the proposal is this
+-- treasury's and this agent's, the cycle has not been paid (L3), and the cap (L1) or the approval
+-- threshold (L4) is met against the Mandate's current terms. Shared by `executeDistribution`
+-- (ledger transfers) and `Mandate_AuthorizeExternalPayout` (MainNet transfers).
+checkExecutable : Mandate -> Proposal -> Update ()
+checkExecutable m proposal = do
   let asset = m.terms.asset
       amountText x = showAmount x <> " " <> asset.id
   assertMsg "The proposal belongs to a different treasury" (proposal.treasury == m.treasury)
@@ -196,6 +228,15 @@ executeDistribution m actor proposalCid legs inputHoldingCids executeBefore = do
         ("This distribution needs " <> show m.terms.approvalThreshold <> " approval(s) from the Mandate's approvers and has "
           <> show (length valid))
         (length valid >= m.terms.approvalThreshold)
+
+executeDistribution
+  : Mandate -> Party -> ContractId Proposal -> [TransferLeg] -> [ContractId Holding] -> Time
+  -> Update (ContractId Mandate, ContractId DistributionOutcome)
+executeDistribution m actor proposalCid legs inputHoldingCids executeBefore = do
+  proposal <- fetch proposalCid
+  let asset = m.terms.asset
+      amountText x = showAmount x <> " " <> asset.id
+  checkExecutable m proposal
   assertMsg "Legs must line up one-to-one with the proposal payouts, same holders in the same order"
     (map (.holder) legs == map (.holder) proposal.payouts)
   now <- getTime
@@ -218,12 +259,14 @@ executeDistribution m actor proposalCid legs inputHoldingCids executeBefore = do
         extraArgs = leg.extraArgs
       settlement <- case result.output of
         TransferInstructionResult_Completed _ ->
-          pure Settlement with holder = payout.holder; status = Paid; transferInstructionCid = None
+          pure Settlement with
+            holder = payout.holder; status = Paid; transferInstructionCid = None; externalReceiver = None
         TransferInstructionResult_Pending instructionCid ->
           pure Settlement with
             holder = payout.holder
             status = AwaitingAcceptance
             transferInstructionCid = Some instructionCid
+            externalReceiver = None
         TransferInstructionResult_Failed ->
           abort ("The transfer of " <> amountText payout.amount <> " failed")
       pure (result.senderChangeCids, done ++ [settlement]))

@@ -165,7 +165,7 @@ export const sealRequests = pgTable(
     sealRequestCid: text('seal_request_cid'),
     governanceProposalCid: text('governance_proposal_cid'),
     state: text('state', {
-      enum: ['awaiting-signature', 'awaiting-nodes', 'sealed', 'failed'],
+      enum: ['awaiting-nodes', 'sealed', 'failed'],
     }).notNull(),
     /** { confirmedNodes: string[], confirmationCids: string[], executedAt: string | null } */
     confirmations: jsonb('confirmations')
@@ -182,6 +182,19 @@ export const sealRequests = pgTable(
   (t) => [index('seal_requests_state_idx').on(t.state)],
 );
 
+/**
+ * A holder's MainNet party (M10): the Grofty wallet payouts go to. One row per holder, written when
+ * the holder proves control of the wallet by signing a challenge message (`signMessage`).
+ */
+export const mainnetWallets = pgTable('mainnet_wallets', {
+  /** The holder's party on the LocalNet records ledger. */
+  holderParty: text('holder_party').primaryKey(),
+  mainnetParty: text('mainnet_party').notNull(),
+  publicKey: text('public_key').notNull(),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type MainnetWalletRow = typeof mainnetWallets.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type InviteRow = typeof invites.$inferSelect;
 export type NewInviteRow = typeof invites.$inferInsert;

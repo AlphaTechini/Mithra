@@ -1,7 +1,9 @@
 <script lang="ts">
   /**
-   * The persistent network badge: "LocalNet test mode" or "MainNet". Reads the session store, so
-   * it is the same on every screen. Renders nothing until the backend has said which network.
+   * The persistent network badge: "LocalNet test mode", or "MainNet payouts · records on LocalNet"
+   * (Mithra's records always live on the LocalNet ledger; on MainNet only the payouts move there).
+   * Reads the session store, so it is the same on every screen. Renders nothing until the backend
+   * has said which network.
    */
   import { sessionStore } from '$lib/stores/session.svelte';
   import Icon from './Icon.svelte';
@@ -13,7 +15,11 @@
 {#if current}
   <span class="badge" data-network={current}>
     <Icon name={current === 'localnet' ? 'flask' : 'globe'} size={14} />
-    <span>{current === 'localnet' ? 'LocalNet test mode' : 'MainNet'}</span>
+    <span
+      >{current === 'localnet'
+        ? 'LocalNet test mode'
+        : 'MainNet payouts · records on LocalNet'}</span
+    >
   </span>
 {/if}
 

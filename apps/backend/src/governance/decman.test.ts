@@ -16,9 +16,8 @@ import {
   type Transaction,
 } from '../ledger';
 import type { PartyNames } from '../parties/names';
-import { localnetTestConfig, mainnetTestConfig } from '../testConfig';
+import { localnetTestConfig } from '../testConfig';
 import { createDecmanSealer, parseConfirmations } from './decman';
-import { createMainnetSealer } from './mainnet';
 import { prepareSeal, type DraftSource, type SealStore } from './sealer';
 
 const TREASURY = 'treasury::1220aa';
@@ -211,7 +210,7 @@ describe('DecMan sealer against a stub Decentralization Manager', () => {
     config = {
       ...base,
       localnet: {
-        ...base.localnet!,
+        ...base.localnet,
         nodes: nodes.map((n, i) => ({
           id: n.id,
           name: `Node ${n.id.toUpperCase()}`,
@@ -224,7 +223,7 @@ describe('DecMan sealer against a stub Decentralization Manager', () => {
         decmanGovernanceRulesCid: 'rules-cid-1',
         decmanMemberParties: { a: 'member-a', b: 'member-b', c: 'member-c' },
       },
-    } as Config;
+    };
     store = memoryStore();
     submitted = [];
     orgVersion = 0;
@@ -500,22 +499,6 @@ describe('DecMan sealer against a stub Decentralization Manager', () => {
     expect(prepared.nextVersion).toBe(1);
     expect(prepared.summaryFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(prepared.terms.asset).toEqual({ admin: 'dso::1220aa', id: 'Amulet' });
-  });
-
-  it('MainNet returns awaiting-signature with a clear error', async () => {
-    const main = mainnetTestConfig();
-    const mainConfig: Config = { ...main, parties: config.parties };
-    const mainSealer = createMainnetSealer({ config: mainConfig, ledger, drafts, names, store });
-    const status = await mainSealer.start('draft-1', TREASURER);
-    expect(status).toMatchObject({
-      state: 'awaiting-signature',
-      treasurerSigned: false,
-      nodeConfirmations: null,
-      error: 'Signing in Grofty arrives with the MainNet build',
-    });
-    expect(submitted).toHaveLength(0);
-    expect(await mainSealer.status(status.sealId)).toEqual(status);
-    expect(await mainSealer.pending()).toEqual([]);
   });
 });
 

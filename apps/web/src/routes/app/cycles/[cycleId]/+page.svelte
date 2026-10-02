@@ -39,6 +39,7 @@
   import CheckList from '$lib/components/treasury/CheckList.svelte';
   import DecisionRecordPanel from '$lib/components/treasury/DecisionRecordPanel.svelte';
   import FundsWarning from '$lib/components/treasury/FundsWarning.svelte';
+  import SignPayouts from '$lib/components/treasury/SignPayouts.svelte';
   import { cycleChip, isSettled, memoSourceText, paymentChip } from '$lib/cycle';
   import { describeError, type ErrorCopy } from '$lib/errors';
   import { formatClock, formatDateTime, formatShortDate } from '$lib/format';
@@ -71,6 +72,9 @@
       proposal.approvers.some((a) => a.partyId === me.partyId) &&
       !youApproved,
   );
+  /** MainNet: the money moves as transfers the treasurer signs in Grofty (N4). */
+  const groftyRail = $derived(sessionStore.config?.payoutRail === 'grofty-mainnet');
+  const signing = $derived(status === 'awaiting-signature' || status === 'awaiting-acceptance');
   const canCancel = $derived(
     isTreasurer && (status === 'awaiting-approval' || status === 'countdown' || status === 'held'),
   );
@@ -455,6 +459,30 @@
         </div>
       {:else if status === 'executing'}
         <PendingNotice message="Waiting for the ledger to confirm the payments…" />
+      {:else if status === 'needs-wallets'}
+        <div class="wallets" role="group" aria-label="Holders who must connect Grofty Wallet">
+          <Icon name="wallet" size={20} />
+          <div>
+            <p>
+              <strong>This cycle is ready to pay.</strong> These holders must connect Grofty Wallet first,
+              so Mithra knows where to send their share:
+            </p>
+            <ul>
+              {#each detail.needsWallets ?? [] as holder (holder.partyId)}
+                <li>{holder.displayName}</li>
+              {/each}
+            </ul>
+            <p class="muted">Payouts continue by themselves once everyone has connected.</p>
+          </div>
+        </div>
+      {:else if groftyRail && status === 'awaiting-signature' && !isTreasurer}
+        <p class="muted" role="status">
+          The Mandate rules are met. The treasurer signs the payouts in Grofty Wallet.
+        </p>
+      {/if}
+
+      {#if groftyRail && signing && isTreasurer}
+        <SignPayouts {cycleId} onchange={() => void cycle.load()} />
       {/if}
 
       {#if proposal.verdict === 'needs-approval'}
@@ -625,6 +653,21 @@
     color: var(--color-link);
     text-decoration: underline;
     text-underline-offset: 0.15em;
+  }
+  .wallets {
+    display: flex;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    margin-bottom: var(--space-4);
+    background: var(--color-info-bg);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-md);
+  }
+  .wallets p {
+    margin: 0 0 var(--space-2);
+  }
+  .wallets ul {
+    margin: 0 0 var(--space-2);
   }
   .countdown {
     display: flex;

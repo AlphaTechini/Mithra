@@ -182,7 +182,10 @@
     {#if sessionStore.network === 'localnet'}
       <p><Icon name="flask" size={16} /> LocalNet test mode. Nothing here is real money.</p>
     {:else if sessionStore.network === 'mainnet'}
-      <p><Icon name="globe" size={16} /> MainNet. Payments move real CC.</p>
+      <p>
+        <Icon name="globe" size={16} /> MainNet payouts. Payments move real CC from your Grofty Wallet.
+        Mithra's own records (organization, Mandate, approvals, decisions) stay on the LocalNet ledger.
+      </p>
     {:else}
       <p>The network isn't known yet.</p>
     {/if}

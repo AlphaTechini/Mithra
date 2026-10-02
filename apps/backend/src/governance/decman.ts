@@ -127,11 +127,8 @@ export function parseConfirmations(json: unknown, proposalCid: string): ParsedCo
  */
 export function createDecmanSealer(deps: DecmanSealerDeps): MandateSealer {
   const { config, ledger, store } = deps;
-  const configured = config.localnet;
-  if (config.network !== 'localnet' || !configured) {
-    throw new Error('The DecMan sealer is for LocalNet; MainNet signs in Grofty');
-  }
-  const local: LocalnetConfig = configured;
+  // Mandates are sealed on the LocalNet records ledger on both networks (MainNet only moves the payouts).
+  const local: LocalnetConfig = config.localnet;
   const doFetch = deps.fetch ?? fetch;
   const now = deps.now ?? (() => new Date());
   const timeoutMs = deps.timeoutMs ?? 10_000;

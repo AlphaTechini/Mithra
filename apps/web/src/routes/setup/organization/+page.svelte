@@ -1,9 +1,9 @@
 <script lang="ts">
   /**
    * Setup step 1: organization (userflow 4). Treasury name, base asset (CC, fixed), approvers and
-   * the approval threshold with a live seal ring preview. On LocalNet approvers are picked from
-   * the demo parties (none preselected; the "Approver ..." ones first, the rest under "Other demo
-   * parties"); on MainNet they are typed as party ids. Problems are flagged on the field.
+   * the approval threshold with a live seal ring preview. Approvers are picked from the demo
+   * parties (none preselected; the "Approver ..." ones first, the rest under "Other demo parties"):
+   * Mithra's records live on the LocalNet ledger on both networks. Problems are flagged on the field.
    */
   import { onMount } from 'svelte';
   import type { DemoParty, OrgResponse } from '@mithra/shared';
@@ -20,70 +20,41 @@
   import { navigate } from '$lib/nav';
   import { sessionStore } from '$lib/stores/session.svelte';
 
-  const PARTY_ID = /^[^\s:]+::[0-9a-fA-F]+$/;
-
   let org = $state<OrgResponse | null>(null);
   let loadError = $state<unknown>(null);
   let loading = $state(true);
   let demoParties = $state<DemoParty[]>([]);
 
   let name = $state('');
-  /** LocalNet: the selected demo party ids. */
+  /** The selected demo party ids. */
   let picked = $state<string[]>([]);
-  /** MainNet: one typed party id per row. */
-  let typed = $state<string[]>(['', '']);
   let threshold = $state(2);
   let submitted = $state(false);
   let busy = $state(false);
   let failure = $state<ErrorCopy | null>(null);
 
-  const testMode = $derived(sessionStore.testMode === true);
   const selfId = $derived(sessionStore.party?.partyId ?? '');
   const candidates = $derived(demoParties.filter((p) => p.partyId !== selfId));
-  // LocalNet demo parties are named after their part in the story: "Approver 1" to "Approver 3"
+  // Demo parties are named after their part in the story: "Approver 1" to "Approver 3"
   // are the obvious picks, so they come first; holders and the auditor follow under a sub-heading.
   const suggested = $derived(candidates.filter((p) => p.displayName.startsWith('Approver')));
   const others = $derived(candidates.filter((p) => !p.displayName.startsWith('Approver')));
 
-  const approverIds = $derived(
-    testMode ? picked : typed.map((t) => t.trim()).filter((t) => t !== ''),
-  );
+  const approverIds = $derived(picked);
   const approverCount = $derived(approverIds.length);
   const effectiveThreshold = $derived(Math.min(Math.max(threshold, 1), Math.max(approverCount, 1)));
 
   const nameError = $derived(name.trim() === '' ? 'Enter a name for the treasury.' : null);
 
-  /** Per typed row: what is wrong with it (MainNet). */
-  const rowErrors = $derived(
-    typed.map((raw, index) => {
-      const value = raw.trim();
-      if (value === '') return null;
-      if (!PARTY_ID.test(value)) {
-        return 'This is not a party id. It looks like name::1220abc…, copied from the wallet.';
-      }
-      if (value === selfId) return 'This is your own party. Add someone else as an approver.';
-      const first = typed.findIndex((t) => t.trim() === value);
-      return first !== index
-        ? 'This party is already in the list. Each approver can be added once.'
-        : null;
-    }),
-  );
-  const approversError = $derived.by(() => {
-    if (approverCount === 0) {
-      return testMode ? 'Choose at least one approver.' : 'Add at least one approver by party id.';
-    }
-    return null;
-  });
-  const valid = $derived(
-    !nameError && !approversError && (testMode || rowErrors.every((e) => e === null)),
-  );
+  const approversError = $derived(approverCount === 0 ? 'Choose at least one approver.' : null);
+  const valid = $derived(!nameError && !approversError);
 
   async function load(): Promise<void> {
     loading = true;
     loadError = null;
     try {
       org = await getOrg();
-      if (testMode && demoParties.length === 0) {
+      if (demoParties.length === 0) {
         demoParties = await getDemoParties();
       }
     } catch (e) {
@@ -150,8 +121,8 @@
     <div>
       <h2 id="charter-title">The treasury charter isn't on the ledger yet</h2>
       <p>
-        The treasury charter isn't on the ledger yet. On LocalNet run scripts/localnet-up.sh; it
-        creates the charter through BitSafe governance. On MainNet, create it in Grofty Wallet.
+        The treasury charter isn't on the ledger yet. Run scripts/localnet-up.sh; it creates the
+        charter through BitSafe governance.
       </p>
       <Button variant="secondary" onclick={load}>Check again</Button>
     </div>
@@ -188,63 +159,33 @@
 
     <fieldset class="approvers-field">
       <legend>Approvers</legend>
-      {#if testMode}
-        <p class="hint">Pick the demo parties who can approve flagged proposals.</p>
-        {#if candidates.length === 0}
-          <p class="hint">No demo parties were found. Check that the backend is running.</p>
-        {/if}
-        {#snippet pickerList(list: DemoParty[], label: string)}
-          <ul class="picker" aria-label={label}>
-            {#each list as party (party.partyId)}
-              <li>
-                <label class="check">
-                  <input
-                    type="checkbox"
-                    checked={picked.includes(party.partyId)}
-                    onchange={(e) => toggle(party.partyId, e.currentTarget.checked)}
-                  />
-                  <span>{party.displayName}</span>
-                </label>
-                <PartyId partyId={party.partyId} />
-              </li>
-            {/each}
-          </ul>
-        {/snippet}
-        {#if suggested.length > 0}
-          {@render pickerList(suggested, 'Approver demo parties')}
-        {/if}
-        {#if others.length > 0}
-          <h3 class="subheading">Other demo parties</h3>
-          {@render pickerList(others, 'Other demo parties')}
-        {/if}
-      {:else}
-        <p class="hint">Paste each approver's party id. They sign with their own wallet.</p>
-        {#each typed, index (index)}
-          <div class="row">
-            <Field label={`Approver ${index + 1} party id`} error={rowErrors[index] ?? null}>
-              {#snippet control(attrs)}
+      <p class="hint">Pick the demo parties who can approve flagged proposals.</p>
+      {#if candidates.length === 0}
+        <p class="hint">No demo parties were found. Check that the backend is running.</p>
+      {/if}
+      {#snippet pickerList(list: DemoParty[], label: string)}
+        <ul class="picker" aria-label={label}>
+          {#each list as party (party.partyId)}
+            <li>
+              <label class="check">
                 <input
-                  {...attrs}
-                  bind:value={typed[index]}
-                  autocomplete="off"
-                  spellcheck="false"
-                  placeholder="name::1220abc…"
+                  type="checkbox"
+                  checked={picked.includes(party.partyId)}
+                  onchange={(e) => toggle(party.partyId, e.currentTarget.checked)}
                 />
-              {/snippet}
-            </Field>
-            {#if typed.length > 1}
-              <Button
-                variant="quiet"
-                small
-                aria-label={`Remove approver ${index + 1}`}
-                onclick={() => (typed = typed.filter((_, i) => i !== index))}>Remove</Button
-              >
-            {/if}
-          </div>
-        {/each}
-        <Button variant="secondary" small onclick={() => (typed = [...typed, ''])}>
-          <Icon name="plus" size={14} /> Add approver
-        </Button>
+                <span>{party.displayName}</span>
+              </label>
+              <PartyId partyId={party.partyId} />
+            </li>
+          {/each}
+        </ul>
+      {/snippet}
+      {#if suggested.length > 0}
+        {@render pickerList(suggested, 'Approver demo parties')}
+      {/if}
+      {#if others.length > 0}
+        <h3 class="subheading">Other demo parties</h3>
+        {@render pickerList(others, 'Other demo parties')}
       {/if}
       {#if submitted && approversError}
         <p class="field-error" role="alert"><Icon name="alert" size={14} /> {approversError}</p>

@@ -5,6 +5,8 @@ import { NetworkSchema } from '../network';
 export const PublicConfigSchema = z.object({
   network: NetworkSchema,
   testMode: z.boolean(),
+  /** How payouts move money: on the records ledger (LocalNet), or as MainNet transfers signed in Grofty. */
+  payoutRail: z.enum(['ledger', 'grofty-mainnet']),
   /** Display symbol of the distribution asset, e.g. "CC". */
   assetSymbol: z.string(),
   /** MainNet explorer link template containing "{updateId}"; null on LocalNet (links go to the in-app detail). */

@@ -61,12 +61,18 @@ export function buildPosition(input: PositionInput): HolderPosition {
   const payments = [...own]
     .sort((a, b) => (a.payload.executedAt < b.payload.executedAt ? 1 : -1))
     .map((p) => {
-      const updateId = input.updateIds.get(p.contractId);
+      // MainNet payments name their transaction themselves (`externalTxRef`, the Grofty update id).
+      const updateId = input.updateIds.get(p.contractId) ?? p.payload.externalTxRef;
       return {
         paymentId: opaqueId(p.contractId),
         cycleLabel: p.payload.cycleLabel,
         amount: p.payload.amount,
-        status: p.payload.status === 'Paid' ? ('paid' as const) : ('awaiting-acceptance' as const),
+        status:
+          p.payload.status === 'Paid'
+            ? ('paid' as const)
+            : p.payload.status === 'PendingExternal'
+              ? ('pending' as const)
+              : ('awaiting-acceptance' as const),
         at: p.payload.executedAt,
         link: updateId ? txLinkFor(input.config, updateId) : null,
         seeded: p.payload.seeded,

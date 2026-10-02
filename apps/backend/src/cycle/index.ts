@@ -4,9 +4,9 @@ import type { Config } from '../config/env';
 import type { Database } from '../db';
 import type { EventBus } from '../events/bus';
 import { createDecmanSealer } from '../governance/decman';
-import { createMainnetSealer } from '../governance/mainnet';
 import { createSealStore, type MandateSealer } from '../governance/sealer';
 import type { Ledger } from '../ledger';
+import type { MainnetWalletLookup } from '../mainnet/wallets';
 import type { PartyNames } from '../parties/names';
 import { createPolicyDrafts, type PolicyDrafts } from '../policy/drafts';
 import { createCycleRoutesPlugin } from '../routes/cycles';
@@ -31,10 +31,12 @@ export interface CycleModuleDeps {
   bus: EventBus;
   /** The memo writer; default: the deterministic template writer. The AI writer (M5) plugs in here. */
   memoWriter?: MemoWriter;
-  /** Replaces the sealer (tests); default: DecMan on LocalNet, Grofty (not yet) on MainNet. */
+  /** Replaces the sealer (tests); default: DecMan, on both networks (the records live on LocalNet). */
   sealer?: MandateSealer;
   /** Replaces the agent payout executor (tests). */
   agentExecutor?: PayoutExecutor;
+  /** MainNet payouts: the holders' registered Grofty wallets (required on MainNet). */
+  wallets?: MainnetWalletLookup;
   holdCountdownSeconds?: number;
   now?: () => Date;
   /** Run the in-process Hold timers. Default true. */
@@ -79,23 +81,22 @@ export function createCycleModule(deps: CycleModuleDeps): CycleModule {
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.timers === undefined ? {} : { timers: deps.timers }),
     ...(deps.agentExecutor ? { agentExecutor: deps.agentExecutor } : {}),
+    ...(deps.wallets ? { wallets: deps.wallets } : {}),
   });
   const store = createSealStore(deps.db);
   const sealPrepare = { config: deps.config, ledger: deps.ledger, drafts, names: deps.names };
   const sealer =
     deps.sealer ??
-    (deps.config.network === 'localnet'
-      ? createDecmanSealer({
-          ...sealPrepare,
-          config: deps.config,
-          ledger: deps.ledger,
-          store,
-          activity: deps.activity,
-          bus: deps.bus,
-          ...(deps.fetch ? { fetch: deps.fetch } : {}),
-          ...(deps.now ? { now: deps.now } : {}),
-        })
-      : createMainnetSealer({ ...sealPrepare, config: deps.config, store }));
+    createDecmanSealer({
+      ...sealPrepare,
+      config: deps.config,
+      ledger: deps.ledger,
+      store,
+      activity: deps.activity,
+      bus: deps.bus,
+      ...(deps.fetch ? { fetch: deps.fetch } : {}),
+      ...(deps.now ? { now: deps.now } : {}),
+    });
   const reconciler = createReconciler(
     {
       config: deps.config,

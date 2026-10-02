@@ -25,7 +25,7 @@ export function session(
   const who = role === 'treasurer' ? TREASURER : APPROVER_1;
   return {
     network,
-    testMode: network === 'localnet',
+    testMode: true,
     signedIn: true,
     party: { ...who, roles: [role], primaryRole: role },
   };
@@ -33,7 +33,9 @@ export function session(
 
 export const PUBLIC_CONFIG = (network: 'localnet' | 'mainnet' = 'localnet') => ({
   network,
-  testMode: network === 'localnet',
+  // Mithra's records live on LocalNet on both networks, so the role switcher is always on.
+  testMode: true,
+  payoutRail: network === 'mainnet' ? 'grofty-mainnet' : 'ledger',
   assetSymbol: 'CC',
   explorerTxUrlTemplate: network === 'mainnet' ? 'https://explorer.example/tx/{updateId}' : null,
   groftyMinVersion: '1.0.0',

@@ -63,17 +63,15 @@ export function localnetTestConfig(overrides: Partial<Config> = {}): Config {
   return { ...config, ...overrides } as Config;
 }
 
-export function mainnetTestConfig(): Config {
-  const { localnet: _localnet, ...rest } = localnetTestConfig();
-  void _localnet;
+/** MainNet payouts: the records stay on the LocalNet ledger, so everything of LocalNet is there too. */
+export function mainnetTestConfig(overrides: Partial<Config> = {}): Config {
+  const { localnet, ...rest } = localnetTestConfig();
+  if (!localnet) throw new Error('The LocalNet test config has no localnet section');
   return {
     ...rest,
     network: 'mainnet',
-    ledger: {
-      ...rest.ledger,
-      auth: { mode: 'none' },
-      readAsTreasury: false,
-    },
+    localnet,
     mainnet: { explorerTxUrl: 'https://explorer.example/tx/{updateId}', groftyMinVersion: '2.0.4' },
-  };
+    ...overrides,
+  } as Config;
 }

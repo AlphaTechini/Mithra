@@ -3,6 +3,7 @@ import type { Config } from '../config/env';
 import type { Ledger } from '../ledger';
 import type { PartyNames } from '../parties/names';
 import type { AutoReceiveStatus } from './autoReceive';
+import type { MainnetWalletLookup } from '../mainnet/wallets';
 import { buildHoldersResponse } from './table';
 
 export interface HoldersReaderDeps {
@@ -10,6 +11,8 @@ export interface HoldersReaderDeps {
   ledger: Pick<Ledger, 'reader'>;
   names: Pick<PartyNames, 'name'>;
   autoReceive: Pick<AutoReceiveStatus, 'getMany'>;
+  /** MainNet: shows each holder's connected Grofty wallet in the table. */
+  wallets?: Pick<MainnetWalletLookup, 'all'>;
 }
 
 /**
@@ -29,9 +32,10 @@ export function createHoldersReader(deps: HoldersReaderDeps): () => Promise<Hold
     ]);
     const changes = register?.payload.changes ?? [];
     const holderIds = [...new Set(changes.map((c) => c.holder))];
-    const [nameList, status] = await Promise.all([
+    const [nameList, status, wallets] = await Promise.all([
       Promise.all(holderIds.map((h) => deps.names.name(h))),
       deps.autoReceive.getMany(holderIds),
+      deps.wallets ? deps.wallets.all() : Promise.resolve(null),
     ]);
     return buildHoldersResponse({
       changes,
@@ -40,6 +44,7 @@ export function createHoldersReader(deps: HoldersReaderDeps): () => Promise<Hold
       payments,
       names: new Map(holderIds.map((h, i) => [h, nameList[i] ?? h])),
       autoReceive: status,
+      ...(wallets ? { mainnetWallets: wallets } : {}),
     });
   };
 }

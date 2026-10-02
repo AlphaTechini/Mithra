@@ -61,15 +61,10 @@ const localnet = {
   DECMAN_MEMBER_PARTIES: JSON.stringify({ a: PARTY('member-a'), b: PARTY('member-b') }),
 };
 
+// MainNet means "MainNet payouts": the records stay on LocalNet, so it needs everything LocalNet needs.
 const mainnet = {
-  ...common,
+  ...localnet,
   NETWORK: 'mainnet',
-  LEDGER_AUTH_MODE: 'oidc-client-credentials',
-  LEDGER_OIDC_TOKEN_URL: 'https://idp.example/oauth/token',
-  LEDGER_OIDC_CLIENT_ID: 'client',
-  LEDGER_OIDC_CLIENT_SECRET: 'secret',
-  LEDGER_OIDC_AUDIENCE: 'https://ledger.example',
-  LEDGER_OIDC_SCOPE: 'daml_ledger_api',
   MAINNET_EXPLORER_TX_URL: 'https://explorer.example/tx/{updateId}',
 };
 
@@ -293,7 +288,17 @@ describe('ledger auth modes', () => {
   });
 
   it('reads the OIDC settings', () => {
-    expect(loadConfig(mainnet).ledger.auth).toEqual({
+    expect(
+      loadConfig({
+        ...localnet,
+        LEDGER_AUTH_MODE: 'oidc-client-credentials',
+        LEDGER_OIDC_TOKEN_URL: 'https://idp.example/oauth/token',
+        LEDGER_OIDC_CLIENT_ID: 'client',
+        LEDGER_OIDC_CLIENT_SECRET: 'secret',
+        LEDGER_OIDC_AUDIENCE: 'https://ledger.example',
+        LEDGER_OIDC_SCOPE: 'daml_ledger_api',
+      }).ledger.auth,
+    ).toEqual({
       mode: 'oidc-client-credentials',
       tokenUrl: 'https://idp.example/oauth/token',
       clientId: 'client',
@@ -305,15 +310,58 @@ describe('ledger auth modes', () => {
 });
 
 describe('loadConfig on mainnet', () => {
-  it('reads the MainNet settings and never reads as the treasury', () => {
+  it('reads the MainNet settings and the LocalNet records ledger', () => {
     const config = loadConfig(mainnet);
     expect(config.network).toBe('mainnet');
     expect(config.mainnet).toEqual({
       explorerTxUrl: 'https://explorer.example/tx/{updateId}',
       groftyMinVersion: '2.0.4',
     });
-    expect(config.localnet).toBeUndefined();
-    expect(config.ledger.readAsTreasury).toBe(false);
+    // The records stay on LocalNet, so the LocalNet settings are there too.
+    expect(config.localnet).toMatchObject({
+      demoPassword: 'demo',
+      decmanGovernanceRulesCid: '00rulescid',
+    });
+    expect(config.ledger).toMatchObject({ auth: { mode: 'unsafe-hmac' }, readAsTreasury: true });
+  });
+
+  it('reads the optional Scan URL and a custom Grofty version', () => {
+    const config = loadConfig({
+      ...mainnet,
+      MAINNET_SCAN_URL: 'https://scan.example/api/scan/',
+      GROFTY_MIN_VERSION: '2.1.0',
+    });
+    expect(config.mainnet).toEqual({
+      explorerTxUrl: 'https://explorer.example/tx/{updateId}',
+      groftyMinVersion: '2.1.0',
+      scanUrl: 'https://scan.example/api/scan',
+    });
+  });
+
+  it('requires everything the LocalNet branch requires', () => {
+    const error = errorOf({
+      NETWORK: 'mainnet',
+      MAINNET_EXPLORER_TX_URL: mainnet.MAINNET_EXPLORER_TX_URL,
+    });
+    for (const name of [
+      'LOCALNET_DEMO_PASSWORD',
+      'LOCALNET_DEMO_PARTIES',
+      'LOCALNET_NODES',
+      'DECMAN_GOVERNANCE_RULES_CID',
+      'DECMAN_MEMBER_PARTIES',
+      'DATABASE_URL',
+      'TREASURY_PARTY',
+    ]) {
+      expect(error.message, name).toContain(`Missing required environment variable ${name}`);
+    }
+  });
+
+  it('names a single missing LocalNet variable', () => {
+    const { LOCALNET_NODES: _omitted, ...rest } = mainnet;
+    void _omitted;
+    expect(errorOf(rest).problems).toEqual([
+      `Missing required environment variable LOCALNET_NODES: ${ENV_DESCRIPTIONS.LOCALNET_NODES}`,
+    ]);
   });
 
   it('names MAINNET_EXPLORER_TX_URL when it is missing', () => {
@@ -331,16 +379,10 @@ describe('loadConfig on mainnet', () => {
     ).toContain('{updateId}');
   });
 
-  it('requires LEDGER_AUTH_MODE on mainnet', () => {
-    const { LEDGER_AUTH_MODE: _omitted, ...rest } = mainnet;
-    void _omitted;
-    expect(errorOf(rest).message).toContain(
-      'Missing required environment variable LEDGER_AUTH_MODE',
+  it('rejects a Scan URL that is not a URL', () => {
+    expect(errorOf({ ...mainnet, MAINNET_SCAN_URL: 'not a url' }).message).toContain(
+      'Invalid environment variable MAINNET_SCAN_URL',
     );
-  });
-
-  it('does not ask for LocalNet variables', () => {
-    expect(errorOf({ ...mainnet, DATABASE_URL: '' }).message).not.toContain('LOCALNET_');
   });
 });
 

@@ -18,20 +18,21 @@ export const HOLDER_B = {
 export function holderSession(network: 'localnet' | 'mainnet' = 'localnet'): SessionResponse {
   return {
     network,
-    testMode: network === 'localnet',
+    testMode: true,
     signedIn: true,
     party: { ...HOLDER_A, roles: ['holder'], primaryRole: 'holder' },
   };
 }
 
 export function signedOutSession(network: 'localnet' | 'mainnet' = 'localnet'): SessionResponse {
-  return { network, testMode: network === 'localnet', signedIn: false, party: null };
+  return { network, testMode: true, signedIn: false, party: null };
 }
 
 export function configFor(network: 'localnet' | 'mainnet' = 'localnet') {
   return {
     network,
-    testMode: network === 'localnet',
+    testMode: true,
+    payoutRail: network === 'mainnet' ? 'grofty-mainnet' : 'ledger',
     assetSymbol: 'CC',
     explorerTxUrlTemplate: network === 'mainnet' ? 'https://explorer.example/tx/{updateId}' : null,
     groftyMinVersion: '0.2.0',

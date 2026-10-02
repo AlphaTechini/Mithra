@@ -28,6 +28,38 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('MainNet wallets in the holders table', () => {
+  it("shows each holder's Grofty wallet status on MainNet only", async () => {
+    const routes = {
+      'GET /api/holders': {
+        totalUnits: 1000,
+        holders: [
+          holderRow({ mainnetWallet: { partyId: 'a-main::1220aabbccddeeff' } }),
+          holderRow({ holder: HOLDER_B, units: 400, sharePct: '40.00', mainnetWallet: null }),
+        ],
+      },
+    };
+    stubApi({ ...sessionRoutes('treasurer', 'mainnet'), ...routes });
+    await sessionStore.load();
+    const mainnet = render(HoldersPage);
+    expect(await screen.findByRole('columnheader', { name: 'MainNet wallet' })).toBeInTheDocument();
+    const rows = await screen.findAllByRole('row');
+    const a = rows.find((r) => within(r).queryByText('Holder A'));
+    const b = rows.find((r) => within(r).queryByText('Holder B'));
+    expect(within(a!).getByText('Confirmed')).toBeInTheDocument();
+    expect(within(a!).getByTitle('a-main::1220aabbccddeeff')).toBeInTheDocument();
+    expect(within(b!).getByText('Not connected to Grofty yet')).toBeInTheDocument();
+    mainnet.unmount();
+
+    sessionStore.reset();
+    stubApi({ ...sessionRoutes('treasurer'), ...routes });
+    await sessionStore.load();
+    render(HoldersPage);
+    await screen.findAllByRole('row');
+    expect(screen.queryByRole('columnheader', { name: 'MainNet wallet' })).toBeNull();
+  });
+});
+
 describe('Seeded tags (U8)', () => {
   it('tags seeded holders and only those', async () => {
     stubApi({

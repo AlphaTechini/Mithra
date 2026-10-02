@@ -200,34 +200,24 @@ export function newSealId(): string {
 }
 
 /** The API status of a stored seal request. `config` supplies the node names (LocalNet). */
-export function sealStatusOf(
-  row: SealRequestRow,
-  config: Pick<Config, 'network' | 'localnet'>,
-): SealStatus {
+export function sealStatusOf(row: SealRequestRow, config: Pick<Config, 'localnet'>): SealStatus {
   const progress = progressOf(row);
-  const local = config.network === 'localnet' ? config.localnet : undefined;
-  const nodes =
-    local && row.state !== 'awaiting-signature'
-      ? local.nodes.map((n) => ({
-          id: n.id,
-          name: n.name,
-          operator: n.operator,
-          confirmed:
-            progress.confirmedNodes.includes(n.id) || progress.attributedNodes.includes(n.id),
-        }))
-      : null;
+  const local = config.localnet;
+  const nodes = local.nodes.map((n) => ({
+    id: n.id,
+    name: n.name,
+    operator: n.operator,
+    confirmed: progress.confirmedNodes.includes(n.id) || progress.attributedNodes.includes(n.id),
+  }));
   return {
     sealId: row.sealId,
     state: row.state,
     treasurerSigned: row.sealRequestCid !== null,
-    nodeConfirmations:
-      local && nodes
-        ? {
-            required: local.decmanGovernanceThreshold,
-            confirmed: Math.max(nodes.filter((n) => n.confirmed).length, progress.count),
-            nodes,
-          }
-        : null,
+    nodeConfirmations: {
+      required: local.decmanGovernanceThreshold,
+      confirmed: Math.max(nodes.filter((n) => n.confirmed).length, progress.count),
+      nodes,
+    },
     mandateVersion: row.mandateVersion,
     error: row.error,
   };

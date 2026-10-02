@@ -71,18 +71,18 @@ describe('invite page', () => {
     );
   });
 
-  it('signed out on MainNet: Connect Grofty Wallet is disabled with the M10 message', async () => {
+  it('signed out on MainNet: the same demo sign-in (Grofty is connected on the welcome page)', async () => {
     stubApi({
       'GET /api/invites/AB12CD': holderInvite,
       'GET /api/session': signedOutSession('mainnet'),
       'GET /api/config/public': configFor('mainnet'),
     });
     render(Page);
-    const button = await screen.findByRole('button', { name: 'Connect Grofty Wallet' });
-    expect(button).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent(
-      'Grofty connection is set up in the MainNet build',
+    expect(await screen.findByRole('link', { name: 'Sign in to the demo' })).toHaveAttribute(
+      'href',
+      '/launch?next=/invite/AB12CD',
     );
+    expect(screen.queryByRole('button', { name: 'Connect Grofty Wallet' })).toBeNull();
   });
 
   it('signed in as a holder: continues to the welcome screen', async () => {

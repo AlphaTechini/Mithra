@@ -44,6 +44,8 @@ export interface AppModules {
   agent: AgentRouteOptions;
   /** The audit flow: requests, grants, the evidence room. */
   audit?: { routes: FastifyPluginAsync };
+  /** MainNet payouts: the treasurer's transfers to sign in Grofty (MainNet only). */
+  mainnet?: { routes: FastifyPluginAsync };
   /** Options of the live updates stream (a test shortens the role refresh). */
   events?: { roleRefreshMs?: number };
 }
@@ -150,6 +152,7 @@ export function buildApp(config: Config, deps?: AppDeps): FastifyInstance {
       if (modules) {
         void scope.register(modules.cycle.routes);
         if (modules.audit) void scope.register(modules.audit.routes);
+        if (modules.mainnet) void scope.register(modules.mainnet.routes);
         treasuryRoutes(scope, { ...modules.treasury, config, ledger, db: database.db });
         agentRoutes(scope, modules.agent);
         eventsRoute(scope, {

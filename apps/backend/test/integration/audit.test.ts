@@ -16,7 +16,6 @@ import type { CycleModule } from '../../src/cycle';
 import { createDatabase, runMigrations, type DatabaseHandle } from '../../src/db';
 import { activityLog, txRefs } from '../../src/db/schema';
 import { LedgerError } from '../../src/ledger';
-import { SIGN_IN_WALLET_MESSAGE } from '../../src/audit/service';
 import { buildAuditApp, DATABASE_URL_M9, inviteAuditor, type AuditApp } from './auditHelpers';
 import {
   createCycleWorld,
@@ -145,7 +144,6 @@ describe('audit flow against a Canton sandbox and PostgreSQL', () => {
         explorerTxUrl: 'https://explorer.example/tx/{updateId}',
         groftyMinVersion: '2.0.4',
       },
-      localnet: undefined,
     } as Config;
     mainnet = await buildAuditApp(world, database, { config: mainnetConfig });
 
@@ -765,7 +763,7 @@ describe('audit flow against a Canton sandbox and PostgreSQL', () => {
     }
   });
 
-  it('MainNet: auditor and treasurer writes are signed in Grofty (409 sign_in_wallet); reads still work', async () => {
+  it('MainNet: records are signed server-side like LocalNet (no sign_in_wallet 409)', async () => {
     const cookieOf = async (who: 'treasurer' | 'auditor') => ({
       cookie: (await mainnet.cookieFor(p()[who])).cookie,
     });
@@ -773,12 +771,8 @@ describe('audit flow against a Canton sandbox and PostgreSQL', () => {
     const auditor = await cookieOf('auditor');
     const send = (url: string, headers: { cookie: string }, payload: unknown) =>
       mainnet.app.inject({ method: 'POST', url, headers, payload: payload as object });
+    // Requests for records that do not exist reach the handlers and fail on their own terms.
     const responses = [
-      await send('/api/audit/requests', auditor, {
-        question: QUESTION,
-        items: [{ recordId: 'decision/2026-09/1', kind: 'decision', reason: 'x' }],
-        excluded: '',
-      }),
       await send('/api/audit/requests/audit-20260101-nothing/withdraw', auditor, {}),
       await send('/api/audit/requests/audit-20260101-nothing/grant', treasurer, {
         expiresIn: '7d',
@@ -787,9 +781,15 @@ describe('audit flow against a Canton sandbox and PostgreSQL', () => {
       await send(grantUrl('grant/audit-20260101-nothing', 'revoke'), treasurer, {}),
     ];
     for (const res of responses) {
-      expect(res.statusCode, res.body).toBe(409);
-      expect(errorOf(res)).toEqual({ code: 'sign_in_wallet', message: SIGN_IN_WALLET_MESSAGE });
+      expect(res.statusCode, res.body).toBe(404);
+      expect(errorOf(res).code).not.toBe('sign_in_wallet');
     }
+    const created = await send('/api/audit/requests', auditor, {
+      question: QUESTION,
+      items: [{ recordId: 'decision/2026-09/1', kind: 'decision', reason: 'x' }],
+      excluded: '',
+    });
+    expect(created.statusCode, created.body).toBe(200);
     const list = await mainnet.app.inject({
       method: 'GET',
       url: '/api/audit/requests',

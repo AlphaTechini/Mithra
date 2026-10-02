@@ -36,6 +36,7 @@ export function sessionFor(role: 'auditor' | 'treasurer'): SessionResponse {
 export const CONFIG = {
   network: 'localnet',
   testMode: true,
+  payoutRail: 'ledger',
   assetSymbol: 'CC',
   explorerTxUrlTemplate: null,
   groftyMinVersion: '1.0.0',

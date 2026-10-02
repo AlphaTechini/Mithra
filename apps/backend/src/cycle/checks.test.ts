@@ -52,6 +52,17 @@ describe('balance', () => {
     expect(short.blocking).toBe(false);
   });
 
+  it('MainNet (P5): the server cannot read the wallet, so it says the check happens in Grofty', () => {
+    const check = checkBalance({ total: '300', feeBuffer: '1', balance: null, symbol: 'CC' });
+    expect(check).toMatchObject({
+      code: 'balance',
+      passed: true,
+      blocking: false,
+      actual: 'Checked in Grofty Wallet before signing',
+      limit: 'At least 301 CC',
+    });
+  });
+
   it('passes with exactly total plus fee buffer', () => {
     expect(
       checkBalance({ total: '300', feeBuffer: '1', balance: '301', symbol: 'CC' }).passed,

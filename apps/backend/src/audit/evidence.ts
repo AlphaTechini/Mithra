@@ -160,7 +160,13 @@ const OUTCOME_KINDS = {
   Cancelled: 'cancelled',
 } as const;
 
-const PAYMENT_STATUSES = { Paid: 'paid', AwaitingAcceptance: 'awaiting-acceptance' } as const;
+// MainNet payments are recorded as `PendingExternal` in the outcome and updated on the Payment
+// contract afterwards, so the outcome's own reference shows the state at authorization time.
+const PAYMENT_STATUSES = {
+  Paid: 'paid',
+  AwaitingAcceptance: 'awaiting-acceptance',
+  PendingExternal: 'awaiting-signature',
+} as const;
 
 export function mapOutcomeEvidence(
   o: DistributionOutcome,

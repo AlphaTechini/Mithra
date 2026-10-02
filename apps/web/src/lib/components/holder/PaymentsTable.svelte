@@ -10,6 +10,7 @@
   import DataTable from '$lib/components/DataTable.svelte';
   import StatusChip from '$lib/components/StatusChip.svelte';
   import { formatShortDate } from '$lib/format';
+  import { sessionStore } from '$lib/stores/session.svelte';
   import type { TableColumn } from '$lib/types/ui';
   import TxLink from './TxLink.svelte';
 
@@ -24,6 +25,9 @@
   }
 
   let { payments, assetSymbol, acceptingId = null, onaccept }: Props = $props();
+
+  /** MainNet payouts: an offer is accepted inside Grofty Wallet, not in Mithra. */
+  const groftyRail = $derived(sessionStore.config?.payoutRail === 'grofty-mainnet');
 
   const columns = $derived<TableColumn[]>([
     { key: 'cycle', label: 'Cycle' },
@@ -49,9 +53,17 @@
         <Amount value={payment.amount} symbol={assetSymbol} hideSymbol />
       {:else if column.key === 'status'}
         <span class="status">
-          <StatusChip kind={payment.status === 'paid' ? 'paid' : 'awaiting-acceptance'} />
+          <StatusChip
+            kind={payment.status === 'paid'
+              ? 'paid'
+              : payment.status === 'pending'
+                ? 'pending'
+                : 'awaiting-acceptance'}
+          />
           {#if payment.seeded}<StatusChip kind="seeded" />{/if}
-          {#if payment.status === 'awaiting-acceptance'}
+          {#if payment.status === 'awaiting-acceptance' && groftyRail}
+            <span class="hint">Accept it in Grofty Wallet.</span>
+          {:else if payment.status === 'awaiting-acceptance'}
             <Button
               small
               busy={acceptingId === payment.paymentId}
@@ -75,6 +87,10 @@
 </div>
 
 <style>
+  .hint {
+    color: var(--color-text-muted);
+    font-size: var(--text-13);
+  }
   .date {
     white-space: nowrap;
   }

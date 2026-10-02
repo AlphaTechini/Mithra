@@ -51,10 +51,21 @@ export function checkCap(input: { total: string; cap: string; symbol: string }):
 export function checkBalance(input: {
   total: string;
   feeBuffer: string;
-  balance: string;
+  /** Null when the server cannot read the balance (MainNet: it is in the treasurer's Grofty wallet). */
+  balance: string | null;
   symbol: string;
 }): CheckResult {
   const required = toDecimal(input.total).plus(toDecimal(input.feeBuffer));
+  if (input.balance === null) {
+    return result({
+      code: 'balance',
+      label: 'Treasury balance covers the total and fees',
+      passed: true,
+      blocking: false,
+      actual: 'Checked in Grofty Wallet before signing',
+      limit: `At least ${formatAmount(required, input.symbol)}`,
+    });
+  }
   const passed = toDecimal(input.balance).gte(required);
   return result({
     code: 'balance',
@@ -290,8 +301,8 @@ export interface CheckInputs {
     unitChangeWindowDays: number;
     fixedAmount: string | null;
   };
-  /** Live balance of the treasury, a decimal string. */
-  balance: string;
+  /** Live balance of the treasury, a decimal string; null when only the wallet can tell (MainNet). */
+  balance: string | null;
   /** The Mandate or the ledger already records an executed distribution for this cycle. */
   alreadyExecuted: boolean;
   /** Executed cycles before this one, all of them; `runChecks` picks the trailing ones. */

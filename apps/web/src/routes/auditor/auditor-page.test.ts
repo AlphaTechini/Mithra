@@ -145,12 +145,12 @@ describe('auditor workspace: new request', () => {
     expect(screen.getByText(/Propose scope again to update the records/)).toBeInTheDocument();
   });
 
-  it('shows a wallet message from the server in place', async () => {
+  it('shows the ledger message in place when the request fails', async () => {
     await stub({
       'GET /api/audit/requests': { requests: [] },
       'POST /api/audit/scope/draft': DRAFT,
       'POST /api/audit/requests': () =>
-        errorResponse(409, 'sign_in_wallet', 'Sign in with your wallet to send this request.'),
+        errorResponse(422, 'ledger_rejected', 'The ledger refused the request. Try again.'),
     });
     render(Page);
     await openNewRequest();
@@ -160,7 +160,7 @@ describe('auditor workspace: new request', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Propose scope' }));
     await screen.findByRole('list', { name: 'Proposed records' });
     await fireEvent.click(screen.getByRole('button', { name: 'Request access' }));
-    expect(await screen.findByText('Sign in with your wallet to send this request.')).toBeVisible();
+    expect(await screen.findByText('The ledger refused the request. Try again.')).toBeVisible();
   });
 });
 

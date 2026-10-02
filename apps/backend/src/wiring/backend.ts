@@ -19,6 +19,12 @@ import { AutoReceiveStatus } from '../holders/autoReceive';
 import { createHoldersReader } from '../holders/response';
 import { createLedger, type Ledger } from '../ledger';
 import { createLlm, type Llm } from '../llm/client';
+import {
+  MainnetPayouts,
+  MainnetWallets,
+  createMainnetAutoReceive,
+  createMainnetRoutesPlugin,
+} from '../mainnet';
 import { PartyNames } from '../parties/names';
 import { startScheduler, type Scheduler } from '../scheduler';
 import { createAssetAdapter, type AssetAdapter } from '../wallet';
@@ -41,6 +47,8 @@ export interface BackendOverrides {
   holdCountdownSeconds?: number;
   /** Milliseconds between reconciler passes. Default 10 000. */
   reconcileIntervalMs?: number;
+  /** Replaces `fetch` for the MainNet Scan preapproval lookup (tests). */
+  scanFetch?: typeof fetch;
   /** Milliseconds between grant expiry checks. Default 60 000. */
   expiryIntervalMs?: number;
   /** Session route options (the sign-in rate limit). */
@@ -65,6 +73,8 @@ export interface Backend {
   drafter: PolicyDrafter;
   scope: ScopeDrafter;
   holderAdmin: HolderAdmin;
+  /** MainNet payouts only: the holders' Grofty wallets and the treasurer's payout records. */
+  mainnet: { wallets: MainnetWallets; payouts: MainnetPayouts } | undefined;
   /** Starts the reconciler, the scheduler and the grant expiry job. Call once, before `listen`. */
   start(): void;
   /** Stops the jobs and closes the app. Does not close the database pool. */
@@ -96,6 +106,10 @@ export function createBackend(
     info: (object: unknown, message?: string): void => late.app?.log.info(object, message),
   };
 
+  // MainNet payouts: records stay on LocalNet, the money moves in Grofty. The wallets are the
+  // holders' registered MainNet parties.
+  const wallets = config.network === 'mainnet' ? new MainnetWallets(db) : undefined;
+
   const sealer =
     typeof overrides.sealer === 'function' ? overrides.sealer({ activity }) : overrides.sealer;
   const holdCountdownSeconds = overrides.holdCountdownSeconds ?? config.holdCountdownSeconds;
@@ -110,18 +124,31 @@ export function createBackend(
     memoWriter: new AiMemoWriter({ llm }),
     ...(holdCountdownSeconds === undefined ? {} : { holdCountdownSeconds }),
     ...(sealer ? { sealer } : {}),
+    ...(wallets ? { wallets } : {}),
     ...(overrides.reconcileIntervalMs === undefined
       ? {}
       : { reconcileIntervalMs: overrides.reconcileIntervalMs }),
   });
   const funding = overrides.funding ?? createFunding({ config, ledger, asset });
 
-  const autoReceive = new AutoReceiveStatus({
-    asset,
-    treasury: config.parties.treasury,
-    onError: (holder, error) =>
-      log.warn({ err: error, holder }, 'could not read auto-receive status'),
-  });
+  const onAutoReceiveError = (holder: string, error: unknown): void =>
+    log.warn({ err: error, holder }, 'could not read auto-receive status');
+  const autoReceive =
+    config.network === 'mainnet' && wallets
+      ? createMainnetAutoReceive({
+          scanUrl: config.mainnet.scanUrl,
+          wallets,
+          onError: onAutoReceiveError,
+          ...(overrides.scanFetch ? { fetch: overrides.scanFetch } : {}),
+        })
+      : new AutoReceiveStatus({
+          asset,
+          treasury: config.parties.treasury,
+          onError: onAutoReceiveError,
+        });
+  const payouts = wallets
+    ? new MainnetPayouts({ config, db, ledger, names, activity, bus, cycles: cycle.cycles })
+    : undefined;
   const holderAdmin = createHolderAdmin({ config, ledger, names, activity, bus, db });
   const services = createAgentServices({
     config,
@@ -130,7 +157,13 @@ export function createBackend(
     cycle,
     asset,
     names,
-    holders: createHoldersReader({ config, ledger, names, autoReceive }),
+    holders: createHoldersReader({
+      config,
+      ledger,
+      names,
+      autoReceive,
+      ...(wallets ? { wallets } : {}),
+    }),
     holderAdmin,
   });
 
@@ -175,10 +208,22 @@ export function createBackend(
         funding,
         // A holder's accept marks the Payment Paid at once instead of at the next pass.
         reconcilePayments: () => cycle.reconciler.reconcilePayments(),
+        ...(wallets
+          ? {
+              mainnetWallets: wallets,
+              // A holder connecting a wallet can unblock cycles that were waiting for it.
+              walletConnected: async () => {
+                for (const cycleId of await cycle.cycles.waitingCycleIds()) {
+                  await cycle.cycles.advance(cycleId);
+                }
+              },
+            }
+          : {}),
         options: { autoReceive },
       },
       agent: { agent, drafter, scope },
       audit: { routes: audit.routes },
+      ...(payouts ? { mainnet: { routes: createMainnetRoutesPlugin(payouts) } } : {}),
       ...(overrides.eventRoleRefreshMs === undefined
         ? {}
         : { events: { roleRefreshMs: overrides.eventRoleRefreshMs } }),
@@ -205,6 +250,7 @@ export function createBackend(
     drafter,
     scope,
     holderAdmin,
+    mainnet: wallets && payouts ? { wallets, payouts } : undefined,
     start() {
       if (started) return;
       started = true;

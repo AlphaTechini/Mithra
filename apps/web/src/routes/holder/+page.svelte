@@ -11,14 +11,17 @@
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ErrorState from '$lib/components/ErrorState.svelte';
   import AutoReceiveControl from '$lib/components/holder/AutoReceiveControl.svelte';
+  import ConnectWallet from '$lib/components/holder/ConnectWallet.svelte';
   import PaymentsTable from '$lib/components/holder/PaymentsTable.svelte';
   import PositionSummary from '$lib/components/holder/PositionSummary.svelte';
   import PrivacyNote from '$lib/components/holder/PrivacyNote.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
+  import PartyId from '$lib/components/PartyId.svelte';
   import PendingNotice from '$lib/components/PendingNotice.svelte';
   import Skeleton from '$lib/components/Skeleton.svelte';
   import { describeError } from '$lib/errors';
+  import { sessionStore } from '$lib/stores/session.svelte';
   import { toasts } from '$lib/stores/toasts.svelte';
 
   let position = $state<HolderPosition | null>(null);
@@ -65,6 +68,9 @@
     }
   }
 
+  /** MainNet payouts: the holder is paid to a Grofty Wallet they connect. */
+  const groftyRail = $derived(sessionStore.config?.payoutRail === 'grofty-mainnet');
+
   const failure = $derived(
     loadError ? describeError(loadError, "Couldn't load your position.") : null,
   );
@@ -98,7 +104,34 @@
     </div>
   {/if}
 
-  {#if current.autoReceive === false}
+  {#if groftyRail && !current.mainnetWallet}
+    <div class="banner" role="region" aria-label="Connect Grofty Wallet">
+      <p>
+        <Icon name="wallet" size={16} />
+        Connect Grofty Wallet so your payouts know where to go.
+      </p>
+      <ConnectWallet onchange={setPosition} />
+    </div>
+  {:else if groftyRail && current.mainnetWallet}
+    <section class="wallet" aria-labelledby="wallet-heading">
+      <h2 id="wallet-heading">Your Grofty Wallet</h2>
+      <p>
+        Payouts are sent to <PartyId partyId={current.mainnetWallet.partyId} />
+      </p>
+    </section>
+  {/if}
+
+  {#if groftyRail && !current.mainnetWallet}
+    <!-- Auto-receive comes after the wallet is connected. -->
+  {:else if groftyRail && current.autoReceive !== true}
+    <div class="banner" role="region" aria-label="Turn on auto-receive">
+      <p>
+        <Icon name="alert" size={16} />
+        Turn on auto-receive in Grofty so yield arrives without you having to accept each payment.
+      </p>
+      <AutoReceiveControl onchange={setPosition} />
+    </div>
+  {:else if current.autoReceive === false}
     <div class="banner" role="region" aria-label="Auto-receive is off">
       <p>
         <Icon name="alert" size={16} />
@@ -167,6 +200,13 @@
     margin: 0;
     color: var(--color-info-text);
     font-weight: 500;
+  }
+  .wallet p {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0;
   }
   .unknown,
   .error {

@@ -36,6 +36,9 @@ import { demoLlmScript } from './llmScript';
 
 export const DEMO_PASSWORD = 'demo';
 
+/** The MainNet explorer link template of the test server's MainNet mode. */
+export const MAINNET_EXPLORER_TX_URL = 'https://mainnet-explorer.example/tx/{updateId}';
+
 /** The parties of the demo, by the names the role switcher shows. */
 export interface DemoParties {
   registryAdmin: string;
@@ -104,6 +107,14 @@ export interface FullStackOptions {
   webDistDir?: string | null;
   /** Keep the world in this file and reuse it (and the database) on the next boot. */
   statePath?: string;
+  /**
+   * `mainnet` boots the MainNet payouts mode (M10): the records are on the LocalNet sandbox as
+   * always, but payouts are offered for signing in Grofty instead of moving test CC. Default `localnet`.
+   */
+  network?: 'localnet' | 'mainnet';
+  /** MainNet mode: public Scan base URL for the auto-receive check, and the `fetch` that reaches it. */
+  scanUrl?: string;
+  scanFetch?: typeof fetch;
   logLevel?: Config['logLevel'];
 }
 
@@ -159,7 +170,7 @@ function configFor(
   });
   const webDistDir =
     options.webDistDir === null ? undefined : (options.webDistDir ?? repoWebBuild());
-  return {
+  const base: Config = {
     network: 'localnet',
     host: '127.0.0.1',
     port: 0,
@@ -191,6 +202,17 @@ function configFor(
       decmanGovernanceThreshold: 2,
       decmanGovernanceRulesCid: '00rules',
       decmanMemberParties: { a: 'member-a', b: 'member-b', c: 'member-c' },
+    },
+  };
+  if (options.network !== 'mainnet' || base.network !== 'localnet') return base;
+  return {
+    ...base,
+    network: 'mainnet',
+    localnet: base.localnet,
+    mainnet: {
+      explorerTxUrl: MAINNET_EXPLORER_TX_URL,
+      groftyMinVersion: '2.0.4',
+      ...(options.scanUrl ? { scanUrl: options.scanUrl } : {}),
     },
   };
 }
@@ -417,6 +439,7 @@ export async function bootFullStack(options: FullStackOptions = {}): Promise<Ful
     ...(options.eventRoleRefreshMs === undefined
       ? {}
       : { eventRoleRefreshMs: options.eventRoleRefreshMs }),
+    ...(options.scanFetch ? { scanFetch: options.scanFetch } : {}),
     // Many sign-ins per minute are normal for a test run.
     session: { signInLimit: { limit: 1000, windowMs: 60_000 } },
   });
@@ -462,6 +485,7 @@ async function main(): Promise<void> {
     ...(process.env['E2E_HOLD_SECONDS']
       ? { holdCountdownSeconds: Number(process.env['E2E_HOLD_SECONDS']) }
       : {}),
+    ...(process.env['E2E_NETWORK'] === 'mainnet' ? { network: 'mainnet' as const } : {}),
   });
   const url = await stack.listen(port, process.env['E2E_HOST'] ?? '127.0.0.1');
   const web = stack.config.webDistDir
@@ -469,7 +493,7 @@ async function main(): Promise<void> {
     : 'no web build found (API only)';
   process.stdout.write(
     [
-      `Mithra full-stack test server: ${url} (${web})`,
+      `Mithra full-stack test server: ${url} (${web}, ${stack.config.network === 'mainnet' ? 'MainNet payouts mode' : 'LocalNet mode'})`,
       `Demo password: ${DEMO_PASSWORD}`,
       `Treasury charter exists; create the organization as "Treasurer". Holder D has no auto-receive.`,
       '',

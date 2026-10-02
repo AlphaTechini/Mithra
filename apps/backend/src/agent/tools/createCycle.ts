@@ -117,6 +117,20 @@ function wordCycle(
             summary: text.replace('was already paid', 'was paid'),
           };
     }
+    case 'awaiting-signature':
+      return {
+        title: existed ? `${label} is waiting for your signatures in Grofty` : created(),
+        status: 'needs-you',
+        summary: `The ledger checked the Mandate rules for ${label}. Open the cycle and sign the payouts in Grofty; nothing is paid until you do.${tail}`,
+      };
+    case 'needs-wallets': {
+      const names = (detail.needsWallets ?? []).map((h) => h.displayName).join(', ');
+      return {
+        title: existed ? `${label} is waiting for holders to connect Grofty` : created(),
+        status: 'needs-you',
+        summary: `${label} is ready to pay, but ${names || 'some holders'} must connect Grofty Wallet first.${tail}`,
+      };
+    }
     case 'executing':
       return {
         title: `${label} is being paid`,

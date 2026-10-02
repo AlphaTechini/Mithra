@@ -18,7 +18,6 @@ import {
   LedgerError,
   ProposalSchema,
   type Contract,
-  type DisclosedContract,
   type Fingerprint,
   type Ledger,
   type Mandate,
@@ -26,19 +25,14 @@ import {
   type Proposal,
   type ProposalInput,
   type Transaction,
-  type TransferLeg,
 } from '../ledger';
 import type { ActivityLog } from '../activity/log';
 import { TREASURY_TEAM, type EventBus } from '../events/bus';
 import { shortPartyId, type PartyNames } from '../parties/names';
+import type { MainnetWalletLookup } from '../mainnet/wallets';
 import { RegistryError, type AssetAdapter } from '../wallet';
 import { runChecks, type CheckTrigger, type HistoryEntry, selectHistory } from './checks';
-import {
-  AgentPayoutExecutor,
-  AwaitingSignatureError,
-  TreasurerPayoutExecutor,
-  type PayoutExecutor,
-} from './executor';
+import { AgentPayoutExecutor, type PayoutExecutor } from './executor';
 import { fingerprint, sha256Hex } from './fingerprint';
 import { D, cycleLabel as labelOf, formatAmount, monthName, plural, shortDate } from './format';
 import { txLinkFor } from './links';
@@ -50,6 +44,7 @@ import {
   type MemoWriter,
 } from './memo';
 import { Mutex } from './mutex';
+import { GroftyMainnetRail, LedgerPayoutRail, type PayoutRail, type RailResult } from './rail';
 import {
   cycleIdForRun,
   defaultCycleId,
@@ -105,7 +100,10 @@ export type AdvanceResult =
   | 'busy'
   | 'retry'
   | 'failed'
+  /** MainNet: authorized on the ledger; the treasurer signs the payouts in Grofty. */
   | 'awaiting-signature'
+  /** MainNet: some payees have not connected Grofty Wallet. */
+  | 'needs-wallets'
   | 'idle';
 
 export interface NextCycle {
@@ -166,10 +164,12 @@ export interface CycleDeps {
   now?: () => Date;
   /** Run the Hold countdown timers; the reconciler is the backstop. Default true. */
   timers?: boolean;
-  /** Who signs payouts when the Mandate does not let the agent execute (MainNet). */
-  treasurerExecutor?: PayoutExecutor;
-  /** Replaces the agent payout executor (tests). */
+  /** Replaces the agent payout executor of the ledger rail (tests). */
   agentExecutor?: PayoutExecutor;
+  /** MainNet payouts: the holders' registered Grofty wallets. Required on MainNet. */
+  wallets?: MainnetWalletLookup;
+  /** Replaces the payout rail (tests); default: by network. */
+  rail?: PayoutRail;
   /** How long a payout may take on the ledger. Default 10 minutes. */
   executeWindowMs?: number;
 }
@@ -248,8 +248,9 @@ class CycleEngine implements CycleService {
   private readonly countdownMs: number;
   private readonly executeWindowMs: number;
   private readonly timersOn: boolean;
-  private readonly agentExecutor: PayoutExecutor;
-  private readonly treasurerExecutor: PayoutExecutor;
+  private readonly rail: PayoutRail;
+  /** `needs-wallets` activity already recorded by this process, so a retry does not repeat it. */
+  private readonly walletsNoted = new Map<string, string>();
   /** Serializes submissions that consume or read the Mandate, so they do not race each other. */
   private readonly mandateLock = new Mutex();
   /** Background pipelines and executions started by this instance, by cycle id. */
@@ -268,14 +269,38 @@ class CycleEngine implements CycleService {
     this.countdownMs = Math.max(seconds, 0) * 1000;
     this.executeWindowMs = deps.executeWindowMs ?? EXECUTE_WINDOW_MS;
     this.timersOn = deps.timers ?? true;
-    this.agentExecutor =
-      deps.agentExecutor ??
-      new AgentPayoutExecutor(
-        deps.ledger,
-        { agent: this.agent, treasury: this.treasury },
-        deps.config.ledger.readAsTreasury,
-      );
-    this.treasurerExecutor = deps.treasurerExecutor ?? new TreasurerPayoutExecutor();
+    this.rail = deps.rail ?? this.defaultRail();
+  }
+
+  private defaultRail(): PayoutRail {
+    const { deps } = this;
+    const lock = <T>(fn: () => Promise<T>): Promise<T> => this.mandateLock.run(fn);
+    if (deps.config.network === 'mainnet') {
+      if (!deps.wallets) {
+        throw new Error("MainNet payouts need the holders' wallets (CycleDeps.wallets).");
+      }
+      return new GroftyMainnetRail({
+        ledger: deps.ledger,
+        agent: this.agent,
+        readAs: this.readAs(),
+        wallets: deps.wallets,
+        lock,
+      });
+    }
+    return new LedgerPayoutRail({
+      assets: deps.assets,
+      executor:
+        deps.agentExecutor ??
+        new AgentPayoutExecutor(
+          deps.ledger,
+          { agent: this.agent, treasury: this.treasury },
+          deps.config.ledger.readAsTreasury,
+        ),
+      treasury: this.treasury,
+      executeWindowMs: this.executeWindowMs,
+      now: this.now,
+      lock,
+    });
   }
 
   // ---------------------------------------------------------------------------------------
@@ -389,9 +414,23 @@ class CycleEngine implements CycleService {
     cycles: CycleFacts[];
     ctx: ViewContext;
   }> {
-    const [ledger, rowList] = await Promise.all([this.loadLedger(), this.store.list()]);
+    const [ledger, rowList, wallets] = await Promise.all([
+      this.loadLedger(),
+      this.store.list(),
+      this.rail.kind === 'grofty-mainnet' && this.deps.wallets
+        ? this.deps.wallets.all()
+        : Promise.resolve(null),
+    ]);
     const rows = new Map<string, RunState>(rowList.map((r) => [r.cycleId, runState(r)]));
     const cycles = groupCycles(rows, ledger);
+    if (wallets) {
+      // MainNet: who of the active proposal's payees still has to connect Grofty Wallet.
+      for (const cf of cycles) {
+        cf.missingWallets = (cf.proposal?.payload.payouts ?? [])
+          .map((p) => p.holder)
+          .filter((holder) => !wallets.has(holder));
+      }
+    }
     const parties = partiesOf(cycles);
     const refs = new Map(
       await Promise.all([...parties].map(async (p) => [p, await this.deps.names.ref(p)] as const)),
@@ -640,14 +679,18 @@ class CycleEngine implements CycleService {
 
       // Checks (A4).
       current = 'checks';
-      let balance: string;
-      try {
-        balance = await this.deps.assets.balance(this.treasury);
-      } catch (error) {
-        throw new StepError(
-          'checks',
-          `Could not read the treasury balance: ${errorMessage(error)} Try again in a moment.`,
-        );
+      // MainNet: the treasurer's balance lives in their Grofty wallet, which the server cannot
+      // read. The balance check then says it is checked in the wallet before signing (P5).
+      let balance: string | null = null;
+      if (this.rail.kind === 'ledger') {
+        try {
+          balance = await this.deps.assets.balance(this.treasury);
+        } catch (error) {
+          throw new StepError(
+            'checks',
+            `Could not read the treasury balance: ${errorMessage(error)} Try again in a moment.`,
+          );
+        }
       }
       const executed = outcomes.filter((o) => HISTORY_KINDS.has(o.payload.kind));
       const executedHistory: HistoryEntry[] = executed.map((o) => ({
@@ -813,7 +856,7 @@ class CycleEngine implements CycleService {
       const balanceCheck = checks.find((c) => c.code === 'balance');
       const required = formatDecimal(toDecimal(total).plus(toDecimal(terms.feeBuffer)));
       const shortfall: Shortfall | null =
-        balanceCheck && !balanceCheck.passed
+        balance !== null && balanceCheck && !balanceCheck.passed
           ? { balance: formatDecimal(toDecimal(balance)), required }
           : null;
       const auto = proposal.payload.verdict === 'AutoExecute';
@@ -1375,9 +1418,12 @@ class CycleEngine implements CycleService {
 
   /**
    * Pays a ready proposal: claims the row (one executor at a time), re-reads the proposal and the
-   * Mandate, checks the live balance (P5), selects inputs, builds one transfer per payout with the
-   * asset adapter, and submits `Mandate_AgentExecute` with a command id that makes a retry safe.
-   * Records the transaction, the activity and the status only after the ledger confirms (P4).
+   * Mandate, and hands it to the payout rail. On LocalNet the rail checks the live balance (P5),
+   * selects inputs, builds one transfer per payout with the asset adapter and submits
+   * `Mandate_AgentExecute` with a command id that makes a retry safe. On MainNet it authorizes the
+   * payout on the ledger (`Mandate_AuthorizeExternalPayout`) and the treasurer signs the transfers
+   * in Grofty. The transaction, the activity and the status are recorded only after the ledger
+   * confirms (P4).
    */
   private async executeNow(cycleId: string): Promise<AdvanceResult> {
     const row = await this.store.get(cycleId);
@@ -1386,7 +1432,6 @@ class CycleEngine implements CycleService {
     if (!claimed) return 'busy';
     this.unschedule(cycleId);
     const label = labelOf(cycleId);
-    let announced = false;
     const revert = async (patch: {
       error?: string | null;
       fundsShortfall?: Shortfall | null;
@@ -1409,82 +1454,24 @@ class CycleEngine implements CycleService {
         return 'waiting';
       }
 
-      // P5: the live balance must cover the total plus the fee buffer.
-      const total = toDecimal(proposal.payload.total);
-      const required = total.plus(toDecimal(mandate.payload.terms.feeBuffer));
-      const balance = await this.deps.assets.balance(this.treasury);
-      if (toDecimal(balance).lt(required)) {
-        const shortfall: Shortfall = {
-          balance: formatDecimal(toDecimal(balance)),
-          required: formatDecimal(required),
-        };
-        const changed = JSON.stringify(row.fundsShortfall) !== JSON.stringify(shortfall);
-        await revert({ fundsShortfall: shortfall });
-        if (changed) {
-          await this.recordNeedsFunds(
-            cycleId,
-            balance,
-            formatDecimal(required),
-            proposal.payload.seeded,
-          );
-          await this.emitStatus(cycleId);
-        }
-        return 'needs-funds';
-      }
-
-      announced = true;
-      await this.step(
-        cycleId,
-        'execute',
-        'running',
-        'Sent to the ledger, waiting for it to confirm',
+      const result = await this.rail.run(
+        { cycleId, label, proposal, mandate },
+        {
+          announce: async () => {
+            await this.step(
+              cycleId,
+              'execute',
+              'running',
+              this.rail.kind === 'grofty-mainnet'
+                ? 'Checking the Mandate rules on the ledger'
+                : 'Sent to the ledger, waiting for it to confirm',
+            );
+            await this.emitStatus(cycleId);
+          },
+        },
       );
-      await this.emitStatus(cycleId);
-
-      const holdings = (await this.deps.assets.holdings(this.treasury))
-        .filter((h) => !h.locked)
-        .sort((a, b) => toDecimal(b.amount).comparedTo(toDecimal(a.amount)));
-      const inputs: string[] = [];
-      let covered = new D(0);
-      for (const holding of holdings) {
-        if (covered.gte(required)) break;
-        inputs.push(holding.contractId);
-        covered = covered.plus(toDecimal(holding.amount));
-      }
-      const legResults = await Promise.all(
-        proposal.payload.payouts.map((p) =>
-          this.deps.assets.transferLeg({
-            sender: this.treasury,
-            receiver: p.holder,
-            amount: p.amount,
-          }),
-        ),
-      );
-      const legs: TransferLeg[] = legResults.map((r) => r.leg);
-      const disclosed = new Map<string, DisclosedContract>();
-      for (const r of legResults) for (const d of r.disclosed) disclosed.set(d.contractId, d);
-
-      const executor = mandate.payload.agentExecutes ? this.agentExecutor : this.treasurerExecutor;
-      const tx = await this.mandateLock.run(() =>
-        executor.execute({
-          mandateCid: mandate.contractId,
-          proposalCid: proposal.contractId,
-          legs,
-          inputHoldingCids: inputs,
-          disclosed: [...disclosed.values()],
-          commandId: `execute-${proposal.payload.proposalId}`,
-          executeBefore: new Date(this.now().getTime() + this.executeWindowMs),
-        }),
-      );
-      await this.afterExecution(row, proposal, tx, label);
-      return 'executed';
+      return await this.afterRail(row, proposal, result, label, revert);
     } catch (error) {
-      if (error instanceof AwaitingSignatureError) {
-        await revert({ error: error.message });
-        if (announced) await this.step(cycleId, 'execute', 'pending', error.message);
-        await this.emitStatus(cycleId);
-        return 'awaiting-signature';
-      }
       if (isTransient(error)) {
         const text = `The ledger has not confirmed the payments for ${label} yet (${errorMessage(error)}). Mithra checks again shortly; nothing is paid twice.`;
         await revert({ error: text });
@@ -1507,6 +1494,98 @@ class CycleEngine implements CycleService {
       await this.emitStatus(cycleId);
       throw error;
     }
+  }
+
+  /** What to do with the rail's answer. */
+  private async afterRail(
+    row: CycleRunRow,
+    proposal: Contract<Proposal>,
+    result: RailResult,
+    label: string,
+    revert: (patch: { error?: string | null; fundsShortfall?: Shortfall | null }) => Promise<void>,
+  ): Promise<AdvanceResult> {
+    const cycleId = row.cycleId;
+    switch (result.kind) {
+      case 'needs-funds': {
+        const shortfall: Shortfall = { balance: result.balance, required: result.required };
+        const changed = JSON.stringify(row.fundsShortfall) !== JSON.stringify(shortfall);
+        await revert({ fundsShortfall: shortfall });
+        if (changed) {
+          await this.recordNeedsFunds(
+            cycleId,
+            result.balance,
+            result.required,
+            proposal.payload.seeded,
+          );
+          await this.emitStatus(cycleId);
+        }
+        return 'needs-funds';
+      }
+      case 'needs-wallets': {
+        await revert({});
+        const names = await Promise.all(result.holders.map((h) => this.nameOf(h)));
+        const text = `Waiting for ${names.join(', ')} to connect Grofty Wallet`;
+        await this.step(cycleId, 'execute', 'pending', text);
+        if (this.walletsNoted.get(cycleId) !== text) {
+          this.walletsNoted.set(cycleId, text);
+          await this.record(
+            this.agent,
+            'cycle.needs-wallets',
+            cycleId,
+            `${label} is ready to pay but ${names.join(', ')} ${names.length === 1 ? 'has' : 'have'} not connected Grofty Wallet yet`,
+            { holders: result.holders },
+            proposal.payload.seeded,
+          );
+        }
+        await this.emitStatus(cycleId);
+        return 'needs-wallets';
+      }
+      case 'authorized':
+        await this.afterAuthorization(row, proposal, result.tx, label);
+        return 'awaiting-signature';
+      case 'paid':
+        await this.afterExecution(row, proposal, result.tx, label);
+        return 'executed';
+    }
+  }
+
+  /**
+   * MainNet: the ledger authorized the payout and created one `PendingExternal` Payment per payee.
+   * Nothing is paid yet (P4): the cycle waits for the treasurer's signatures in Grofty, and the
+   * payments are recorded one by one (`mainnet/payouts.ts`).
+   */
+  private async afterAuthorization(
+    row: CycleRunRow,
+    proposal: Contract<Proposal>,
+    tx: Transaction,
+    label: string,
+  ): Promise<void> {
+    const cycleId = row.cycleId;
+    const created = createdIn(tx, 'Mithra.Decision:DistributionOutcome')[0];
+    if (created) await this.store.setTxRef(created.contractId, tx.updateId, 'outcome');
+    await this.store.transition(row.id, ['executing'], {
+      status: 'executed',
+      finishedAt: this.now(),
+      error: null,
+      fundsShortfall: null,
+    });
+    this.walletsNoted.delete(cycleId);
+    const count = proposal.payload.payouts.length;
+    await this.step(
+      cycleId,
+      'execute',
+      'running',
+      `Authorized on the ledger. Sign ${count === 1 ? 'the payout' : `${count} payouts`} of ${formatAmount(proposal.payload.total, this.symbol)} in Grofty`,
+    );
+    await this.record(
+      this.agent,
+      'payout.authorized',
+      cycleId,
+      `${label} is ready to pay: ${formatAmount(proposal.payload.total, this.symbol)} to ${plural(count, 'holder')}, waiting for the treasurer to sign in Grofty`,
+      { updateId: tx.updateId },
+      proposal.payload.seeded,
+    );
+    await this.emitStatus(cycleId);
   }
 
   private async afterExecution(

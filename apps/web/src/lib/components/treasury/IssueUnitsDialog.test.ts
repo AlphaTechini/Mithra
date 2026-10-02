@@ -62,19 +62,19 @@ describe('IssueUnitsDialog holder choices', () => {
     ]);
   });
 
-  it('MainNet: only the existing holders and another party id, and no demo lookup', async () => {
-    const stub = stubApi({ ...sessionRoutes('treasurer', 'mainnet') });
-    await sessionStore.load();
-    const { container } = render(IssueUnitsDialog, {
-      props: {
-        holders: [holderRow({ holder: HOLDER_A })],
-        onclose: () => {},
-        ondone: () => {},
-        oninvite: () => {},
+  it('MainNet payouts: the demo parties are offered too, because the records live on LocalNet', async () => {
+    const stub = stubApi({
+      ...sessionRoutes('treasurer', 'mainnet'),
+      'GET /api/session/demo-parties': {
+        parties: [{ ...HOLDER_A, roles: [] }],
       },
     });
+    await sessionStore.load();
+    const { container } = render(IssueUnitsDialog, {
+      props: { holders: [], onclose: () => {}, ondone: () => {}, oninvite: () => {} },
+    });
     await screen.findByRole('option', { name: 'Holder A' });
-    expect(groups(container)).toEqual([{ label: 'Current holders', options: ['Holder A'] }]);
-    expect(stub.callsTo('GET /api/session/demo-parties')).toHaveLength(0);
+    expect(groups(container)).toEqual([{ label: 'Demo parties', options: ['Holder A'] }]);
+    expect(stub.callsTo('GET /api/session/demo-parties')).toHaveLength(1);
   });
 });

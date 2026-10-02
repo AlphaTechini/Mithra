@@ -28,29 +28,27 @@ export function statusRoutes(app: FastifyInstance, config: Config, deps: StatusD
         }),
       );
     const databaseCheck = pingDatabase(deps.pool);
-    const nodeChecks =
-      config.network === 'localnet'
-        ? config.localnet.nodes.map(async (node) => {
-            const client = deps.ledger.client.atUrl(node.jsonApiUrl, {
-              timeoutMs: NODE_TIMEOUT_MS,
-              retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
-            });
-            const ok = await client.version().then(
-              () => true,
-              () => false,
-            );
-            return { id: node.id, name: node.name, operator: node.operator, ok };
-          })
-        : undefined;
+    // The records ledger is LocalNet on both networks, so its nodes are checked on both.
+    const nodeChecks = config.localnet.nodes.map(async (node) => {
+      const client = deps.ledger.client.atUrl(node.jsonApiUrl, {
+        timeoutMs: NODE_TIMEOUT_MS,
+        retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
+      });
+      const ok = await client.version().then(
+        () => true,
+        () => false,
+      );
+      return { id: node.id, name: node.name, operator: node.operator, ok };
+    });
     const [ledger, databaseOk, nodes] = await Promise.all([
       ledgerCheck,
       databaseCheck,
-      nodeChecks ? Promise.all(nodeChecks) : Promise.resolve(undefined),
+      Promise.all(nodeChecks),
     ]);
     return StatusResponseSchema.parse({
       ledger,
       database: { ok: databaseOk },
-      ...(nodes ? { nodes } : {}),
+      nodes,
     });
   });
 }
