@@ -7,6 +7,7 @@ import {
   HOLDER_IDS,
   QUESTION,
   detail,
+  evidenceRoom,
   evidenceWithLeaks,
   sessionRoutes,
   grantedView,
@@ -217,6 +218,34 @@ describe('auditor workspace: requests and evidence room', () => {
     for (const id of [...HOLDER_IDS, AUDITOR.partyId]) expect(html).not.toContain(id);
     expect(html).not.toContain('holderA::');
     expect(html).not.toContain('1220');
+  });
+
+  it('says what a payment status means in words, never the raw status name', async () => {
+    const room = evidenceWithLeaks() as ReturnType<typeof evidenceRoom>;
+    const record = room.records.find((r) => r.outcome);
+    if (!record?.outcome) throw new Error('the fixture has an outcome');
+    const payment = record.outcome.payments[0];
+    if (!payment) throw new Error('the fixture has a payment');
+    record.outcome.payments = [
+      { ...payment, holderLabel: 'Holder A', status: 'paid' },
+      { ...payment, holderLabel: 'Holder B', status: 'awaiting-acceptance', link: null },
+      { ...payment, holderLabel: 'Holder C', status: 'awaiting-signature', link: null },
+    ];
+    await stub({
+      'GET /api/audit/requests': { requests: [grantedView()] },
+      'GET /api/audit/grants/grant-1/evidence': room,
+    });
+    render(Page);
+    await fireEvent.click(await screen.findByRole('button', { name: /Show all Q3/ }));
+    const table = await screen.findByRole('table', { name: /^Payments, / });
+    const status = (label: string) =>
+      within(within(table).getByRole('row', { name: new RegExp(`^${label} `) })).getByText(
+        /Paid|Awaiting/,
+      ).textContent;
+    expect(status('Holder A')).toBe('Paid');
+    expect(status('Holder B')).toBe('Awaiting acceptance');
+    expect(status('Holder C')).toContain('Awaiting signature in Grofty');
+    expect(table.textContent).not.toMatch(/awaiting-acceptance|awaiting-signature/);
   });
 
   it('shows the grant ring in the expiring state with the right label, and the export link', async () => {

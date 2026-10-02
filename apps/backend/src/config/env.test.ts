@@ -325,6 +325,16 @@ describe('loadConfig on mainnet', () => {
     expect(config.ledger).toMatchObject({ auth: { mode: 'unsafe-hmac' }, readAsTreasury: true });
   });
 
+  it('reads the optional demo video URL and rejects one that is not a URL', () => {
+    expect(loadConfig(localnet).demoVideoUrl).toBeUndefined();
+    expect(
+      loadConfig({ ...localnet, DEMO_VIDEO_URL: 'https://video.example/demo' }).demoVideoUrl,
+    ).toBe('https://video.example/demo');
+    expect(errorOf({ ...localnet, DEMO_VIDEO_URL: 'not a url' }).message).toContain(
+      'Invalid environment variable DEMO_VIDEO_URL',
+    );
+  });
+
   it('reads the optional Scan URL and a custom Grofty version', () => {
     const config = loadConfig({
       ...mainnet,

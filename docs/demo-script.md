@@ -1,6 +1,6 @@
 # Demo script
 
-The main pitch demo (about 5 minutes), following `details.md` section 10. It runs on LocalNet, in "LocalNet test mode", with the role switcher in the header ("Acting as"). The video can start from a fresh setup (steps 1 to 4) or from a seeded one (`pnpm seed:localnet`, see `docs/verification.md`): the seed has the organization, the Mandate, four holders and the seeded history of June (400 CC) and July (420 CC), with auto-receive on for Holders A to C. Holder D has none, so only D shows the pending-acceptance path. August and September are left for the day.
+The main pitch demo (about 5 minutes), following `details.md` section 10. It runs on LocalNet, in "LocalNet test mode", with the role switcher in the header ("Acting as"; holder screens show **Switch demo party** instead, so they never list other holders). The video can start from a fresh setup (steps 1 to 4) or from a seeded one (`pnpm seed:localnet`, see `docs/verification.md`): the seed has the organization, the Mandate, four holders and the seeded history of June (400 CC) and July (420 CC), with auto-receive on for Holders A to C. Holder D has none, so only D shows the pending-acceptance path. August and September are left for the day.
 
 Dates below assume the demo runs in October 2026; use the previous two months otherwise. The record date of a cycle is the last day of the previous month.
 
@@ -19,7 +19,7 @@ Dates below assume the demo runs in October 2026; use the previous two months ot
 
 ## 3. September: the flagged cycle (about 2 minutes)
 
-1. Acting as Treasurer, Holders, **Issue units**: Holder C, 900 units, effective date 30 August (the day before the record date, 31 August). *Sees:* Holder C now holds 1,500 of 2,900 units.
+1. Acting as Treasurer, Holders, **Issue units**: Holder C, 900 units, effective date 28 September (inside the 3 days before the record date: a cycle's record date is the last day of its month, 30 September for September). *Sees:* Holder C now holds 1,500 of 2,900 units.
 2. Agent: `Distribute 1,200 CC for September.`
 3. *Sees:* the card "Created proposal for September 2026, 4 payees, 1,200 CC", status "Needs you", needing 2 of 3 approvals. 1,200 CC is under the 5,000 CC cap, so the reasons are the two flags on the cycle page: the total against the average of the last cycles (the check shows the exact percentage; the average is near 400 CC) and Holder C's units jump in the 3 days before the record date. The memo explains both ("Written by the AI reviewer", or "Written from the checks" without the model). Open **View decision record**.
 4. Switch to Approver 1: Approvals, open September, read the memo, **Approve**, note "Checked with Holder C". *Sees:* one segment of the seal fills, "Approved (1 of 2)". Switch to Approver 2, **Approve**: the seal closes, payments execute, the cycle becomes "Paid after approval" (Holder D's payment waits for acceptance again).

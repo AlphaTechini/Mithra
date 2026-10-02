@@ -30,7 +30,7 @@
 
 <div class="shell" style:--strip-height={showStrip ? '2rem' : '0px'}>
   {#if showStrip}
-    <div class="strip"><NetworkBadge /></div>
+    <aside class="strip" aria-label="Network mode"><NetworkBadge /></aside>
   {/if}
   {@render children()}
 </div>

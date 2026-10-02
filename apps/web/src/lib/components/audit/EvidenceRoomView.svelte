@@ -225,7 +225,15 @@
                           <span class="muted">Not yet on the ledger</span>
                         {/if}
                       {:else if column.key === 'status'}
-                        {row.status}
+                        {#if row.status === 'paid' || row.status === 'awaiting-acceptance'}
+                          <StatusChip kind={row.status} />
+                        {:else if row.status === 'awaiting-signature'}
+                          <span class="plain-status"
+                            ><Icon name="key" size={16} /> Awaiting signature in Grofty</span
+                          >
+                        {:else}
+                          {row.status}
+                        {/if}
                       {:else}
                         {row.holderLabel}
                       {/if}
@@ -242,6 +250,11 @@
 </section>
 
 <style>
+  .plain-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
   .room {
     display: grid;
     gap: var(--space-5);

@@ -14,6 +14,7 @@ export function publicConfig(config: Config): PublicConfig {
     explorerTxUrlTemplate: config.network === 'mainnet' ? config.mainnet.explorerTxUrl : null,
     groftyMinVersion:
       config.network === 'mainnet' ? config.mainnet.groftyMinVersion : DEFAULT_GROFTY_MIN_VERSION,
+    demoVideoUrl: config.demoVideoUrl ?? null,
   });
 }
 

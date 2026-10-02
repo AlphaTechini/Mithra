@@ -13,5 +13,7 @@ export const PublicConfigSchema = z.object({
   explorerTxUrlTemplate: z.string().nullable(),
   /** Minimum Grofty Wallet version the MainNet flow needs. */
   groftyMinVersion: z.string(),
+  /** Public URL of the 3-minute demo video (the landing page's secondary button); null hides the button. */
+  demoVideoUrl: z.string().nullable(),
 });
 export type PublicConfig = z.infer<typeof PublicConfigSchema>;

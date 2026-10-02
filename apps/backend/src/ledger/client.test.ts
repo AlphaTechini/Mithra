@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { urlOf } from '../testUtils';
 import { none, unsafeHmac, type TokenProvider } from './auth';
 import { LedgerClient, createdIn, exerciseResultOf } from './client';
-import { LedgerError } from './errors';
+import { LedgerError, NODES_DID_NOT_CONFIRM_MESSAGE, setNodeConfirmationLogger } from './errors';
 
 interface Call {
   method: string;
@@ -398,5 +398,27 @@ describe('other calls', () => {
     expect(error).toBeInstanceOf(LedgerError);
     expect(error).toMatchObject({ code: 'LEDGER_UNREACHABLE', retryable: true, status: 0 });
     expect((error as LedgerError).message).toContain('LEDGER_JSON_API_URL');
+  });
+  it('reports a submission that times out as the treasury nodes not confirming (N8), but a read as a plain timeout', async () => {
+    const lines: string[] = [];
+    setNodeConfirmationLogger((line) => lines.push(line));
+    try {
+      const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+      const { client } = makeClient(() => timeout);
+      const submitted = await client
+        .submit({ actAs: ['p1'], commands: [], shape: 'LEDGER_EFFECTS' })
+        .catch((e: unknown) => e);
+      expect(submitted).toMatchObject({
+        code: 'LEDGER_TIMEOUT',
+        message: NODES_DID_NOT_CONFIRM_MESSAGE,
+        retryable: true,
+        status: 0,
+      });
+      expect(lines.length).toBeGreaterThan(0);
+      const read = await client.version().catch((e: unknown) => e);
+      expect((read as LedgerError).message).toContain('did not answer in time');
+    } finally {
+      setNodeConfirmationLogger(undefined);
+    }
   });
 });

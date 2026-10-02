@@ -87,6 +87,43 @@ describe('setup organization page', () => {
     });
   });
 
+  it('reads the session again once the organization exists, so the treasurer screens accept the party', async () => {
+    // The party had no role when the page loaded; after POST /api/org it is the treasurer.
+    let created = false;
+    const roleless = {
+      network: 'localnet',
+      testMode: true,
+      signedIn: true,
+      party: { ...TREASURER, roles: [], primaryRole: null },
+    };
+    const api = stubApi({
+      ...sessionRoutes('treasurer'),
+      'GET /api/session': () =>
+        created ? sessionRoutes('treasurer')['GET /api/session'] : roleless,
+      'GET /api/org': FRESH,
+      'GET /api/session/demo-parties': {
+        parties: [{ ...APPROVER_1, roles: ['approver'] }],
+      },
+      'POST /api/org': () => {
+        created = true;
+        return {};
+      },
+    });
+    await sessionStore.load();
+    expect(sessionStore.party?.primaryRole).toBeNull();
+    render(Page);
+    await fireEvent.input(await screen.findByLabelText('Treasury name'), {
+      target: { value: 'Acme Fund' },
+    });
+    await fireEvent.click(await screen.findByRole('checkbox', { name: 'Approver 1' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(goto).toHaveBeenCalled());
+    expect(String((goto.mock.calls as unknown[][])[0]?.[0])).toContain('/setup/policy');
+    // Read again after the organization was created, before moving on.
+    expect(api.callsTo('GET /api/session').length).toBeGreaterThanOrEqual(2);
+    expect(sessionStore.party?.primaryRole).toBe('treasurer');
+  });
+
   it('explains the missing treasury charter instead of showing the form', async () => {
     stubApi({
       ...sessionRoutes('treasurer'),

@@ -203,7 +203,7 @@ export class LedgerClient {
     const url = `${this.baseUrl}${path}`;
     for (let attempt = 1; ; attempt += 1) {
       try {
-        return await this.callOnce(method, url, options);
+        return await this.callOnce(method, url, path, options);
       } catch (error) {
         const ledgerError = error instanceof LedgerError ? error : undefined;
         if (!ledgerError?.retryable || attempt >= policy.maxAttempts) throw error;
@@ -215,6 +215,7 @@ export class LedgerClient {
   private async callOnce(
     method: 'GET' | 'POST',
     url: string,
+    path: string,
     options: { json?: unknown; bytes?: Uint8Array },
   ): Promise<unknown> {
     const headers: Record<string, string> = { accept: 'application/json' };
@@ -237,7 +238,8 @@ export class LedgerClient {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (cause) {
-      throw ledgerUnreachable(this.baseUrl, cause);
+      // The path lets a submission that timed out read as "the treasury's nodes did not confirm".
+      throw ledgerUnreachable(this.baseUrl, cause, path);
     }
     const text = await response.text().catch(() => '');
     let parsed: unknown = undefined;

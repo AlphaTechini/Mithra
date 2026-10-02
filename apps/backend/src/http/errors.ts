@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { LedgerError } from '../ledger/errors';
+import { LedgerError, NODES_DID_NOT_CONFIRM_MESSAGE } from '../ledger/errors';
 import { RegistryError } from '../wallet/tokenStandard';
 
 /** Body of every API error response. */
@@ -38,6 +38,14 @@ export function upstreamErrorResponse(
   error: unknown,
 ): { status: number; body: ErrorBody } | undefined {
   if (error instanceof LedgerError) {
+    // The treasury's nodes could not confirm (BitSafe, N8): say so instead of "not reachable",
+    // because the ledger is reachable and the fix is to bring a node back (503, retry later).
+    if (error.retryable && error.message === NODES_DID_NOT_CONFIRM_MESSAGE) {
+      return {
+        status: 503,
+        body: errorBody('treasury_nodes_unconfirmed', NODES_DID_NOT_CONFIRM_MESSAGE),
+      };
+    }
     if (error.status === 0 || error.retryable) {
       return {
         status: 503,

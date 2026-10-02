@@ -62,7 +62,16 @@ describe('GET /api/config/public', () => {
       assetSymbol: 'CC',
       explorerTxUrlTemplate: null,
       groftyMinVersion: '2.0.4',
+      demoVideoUrl: null,
     });
+  });
+
+  it('passes the optional demo video URL on, and null when it is not set', async () => {
+    app = buildApp({ ...baseConfig, demoVideoUrl: 'https://video.example/mithra-demo' });
+    const res = await app.inject({ method: 'GET', url: '/api/config/public' });
+    expect(PublicConfigSchema.parse(res.json()).demoVideoUrl).toBe(
+      'https://video.example/mithra-demo',
+    );
   });
 
   it('gives MainNet the explorer template and the Grofty version', async () => {
@@ -76,6 +85,7 @@ describe('GET /api/config/public', () => {
       assetSymbol: 'CC',
       explorerTxUrlTemplate: 'https://explorer.example/tx/{updateId}',
       groftyMinVersion: '2.0.4',
+      demoVideoUrl: null,
     });
   });
 

@@ -277,6 +277,62 @@ describe('outcome evidence', () => {
     expect(byLabel.get('Holder A')?.status).toBe('paid');
   });
 
+  it('takes a payment recorded later from the live contract: status and the MainNet link', () => {
+    const pending: Evidence = {
+      tag: 'EvOutcome',
+      value: outcome({
+        payments: outcome().payments.map((p) => ({ ...p, status: 'PendingExternal' as const })),
+      }),
+    };
+    const base = context([pending]);
+    const mainnet = {
+      network: 'mainnet',
+      mainnet: { explorerTxUrl: 'https://explorer.example/tx/{updateId}', groftyMinVersion: '2' },
+    } as never;
+    const ctx: EvidenceContext = {
+      ...base,
+      linkFor: (updateId) => auditorTxLink(mainnet, updateId),
+      livePayment: (cycleId, holder) => {
+        expect(cycleId).toBe('2026-09');
+        if (holder === HOLDER_A)
+          return { paymentCid: 'live-a', status: 'Paid', externalTxRef: 'grofty-update-a' };
+        if (holder === HOLDER_M)
+          return { paymentCid: 'live-m', status: 'AwaitingAcceptance', externalTxRef: 'grofty-m' };
+        return null;
+      },
+    };
+    const byLabel = new Map(
+      toEvidenceRecord(pending, ctx).outcome?.payments.map((p) => [p.holderLabel, p]),
+    );
+    // Holder A: recorded as paid after the outcome, so the room says paid and links the explorer.
+    expect(byLabel.get('Holder A')).toMatchObject({
+      status: 'paid',
+      link: { href: 'https://explorer.example/tx/grofty-update-a', external: true },
+    });
+    expect(byLabel.get('Holder B')).toMatchObject({ status: 'awaiting-acceptance' });
+    // Holder C has no live contract that could be read: the snapshot stays.
+    expect(byLabel.get('Holder C')).toMatchObject({ status: 'awaiting-signature', link: null });
+  });
+
+  it('prefers the transaction of the live contract, then the snapshot contract, then the MainNet id', () => {
+    const base = context([O], { 'live-a': 'u-live', 'cid-a': 'u-snapshot' });
+    const withLive: EvidenceContext = {
+      ...base,
+      livePayment: (_cycle, holder) =>
+        holder === HOLDER_A
+          ? { paymentCid: 'live-a', status: 'Paid', externalTxRef: 'u-external' }
+          : null,
+    };
+    const hrefOf = (ctx: EvidenceContext): string | undefined =>
+      toEvidenceRecord(O, ctx).outcome?.payments.find((p) => p.holderLabel === 'Holder A')?.link
+        ?.href;
+    expect(hrefOf(withLive)).toBe('/auditor/tx/u-live');
+    expect(
+      hrefOf({ ...withLive, updateIdOf: (cid) => (cid === 'cid-a' ? 'u-snapshot' : null) }),
+    ).toBe('/auditor/tx/u-snapshot');
+    expect(hrefOf({ ...withLive, updateIdOf: () => null })).toBe('/auditor/tx/u-external');
+  });
+
   it('keeps the reason of a rejection, redacted', () => {
     const rejected: Evidence = {
       tag: 'EvOutcome',

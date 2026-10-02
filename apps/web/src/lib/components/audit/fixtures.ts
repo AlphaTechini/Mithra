@@ -40,6 +40,7 @@ export const CONFIG = {
   assetSymbol: 'CC',
   explorerTxUrlTemplate: null,
   groftyMinVersion: '1.0.0',
+  demoVideoUrl: null,
 };
 
 export function sessionRoutes(role: 'auditor' | 'treasurer'): Record<string, unknown> {
@@ -179,7 +180,7 @@ export function evidenceRoom(overrides: Partial<EvidenceRoom> = {}): EvidenceRoo
             {
               holderLabel: 'Holder A',
               amount: '650.0000000000',
-              status: 'Paid',
+              status: 'paid',
               link: { updateId: 'upd-1', href: '/app/tx/upd-1', external: false },
             },
           ],

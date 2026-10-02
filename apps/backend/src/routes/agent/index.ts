@@ -1,14 +1,17 @@
 import {
   DraftPolicyRequestSchema,
+  ScopeDraftSchema,
   SendAgentMessageRequestSchema,
   type AgentConversation,
   type PolicyDraft,
+  type ScopeDraft,
   type SendAgentMessageResponse,
 } from '@mithra/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Agent } from '../../agent/agent';
 import type { PolicyDrafter } from '../../agent/policyDrafter';
+import { labelForRecordId } from '../../audit/catalog';
 import type { AuditScopeResult, ScopeDrafter } from '../../audit/scope';
 import { requireRole, requireRoleOrNone, rolesOfRequest } from '../../auth/roles';
 import { ApiError, parse } from '../../http/errors';
@@ -20,6 +23,28 @@ export interface AgentRouteOptions {
   scope: ScopeDrafter;
   /** Messages per party per window. Default 20 per minute. */
   messageLimit?: { limit: number; windowMs: number; now?: () => number };
+}
+
+/** Shown with a scope the rules drafted because the model could not (A11). */
+export const RULES_SCOPE_NOTICE =
+  'The agent could not use its language model, so the rules drafted this scope.';
+
+/**
+ * The scope as the API contract has it (`ScopeDraftSchema`): every item with its label, and a
+ * notice when the rules, not the model, drafted it. The auditor's screen reads exactly this.
+ */
+export function scopeDraftView(result: AuditScopeResult): ScopeDraft {
+  return ScopeDraftSchema.parse({
+    items: result.items.map((item) => ({
+      recordId: item.recordId,
+      kind: item.kind,
+      label: labelForRecordId(item.recordId),
+      reason: item.reason,
+    })),
+    excluded: result.excluded,
+    source: result.source,
+    notice: result.source === 'rules' ? RULES_SCOPE_NOTICE : null,
+  });
 }
 
 export const AuditScopeDraftRequestSchema = z.object({
@@ -75,9 +100,9 @@ export function agentRoutes(app: FastifyInstance, options: AgentRouteOptions): v
   app.post(
     '/api/audit/scope/draft',
     { preHandler: requireRoleOrNone('auditor', 'treasurer') },
-    async (request): Promise<AuditScopeResult> => {
+    async (request): Promise<ScopeDraft> => {
       const body = parse(AuditScopeDraftRequestSchema, request.body);
-      return options.scope.draft(body.question);
+      return scopeDraftView(await options.scope.draft(body.question));
     },
   );
 }

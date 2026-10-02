@@ -20,6 +20,7 @@
   import { describeError, type ErrorCopy } from '$lib/errors';
   import { formatAmount } from '$lib/format';
   import { navigate } from '$lib/nav';
+  import { sessionStore } from '$lib/stores/session.svelte';
   import { RECORD_DATE_RULES } from '$lib/policyForm';
   import { live } from '$lib/stores/live.svelte';
   import { toasts } from '$lib/stores/toasts.svelte';
@@ -58,7 +59,12 @@
     if (next.state === 'sealed' && !celebrated) {
       celebrated = true;
       toasts.push('Mandate sealed');
-      window.setTimeout(() => void navigate('/app/overview'), REDIRECT_MS);
+      // Read the roles again first: a session loaded before the organization existed has none, and
+      // the treasurer's screens would send it back to the start page.
+      window.setTimeout(
+        () => void sessionStore.refresh().then(() => navigate('/app/overview')),
+        REDIRECT_MS,
+      );
     }
   }
 

@@ -796,6 +796,8 @@ export function createAuditService(deps: AuditModuleDeps, catalog: AuditCatalog)
     }
   }
 
+  type LivePayment = NonNullable<ReturnType<NonNullable<EvidenceContext['livePayment']>>>;
+
   async function evidenceContext(
     evidence: Parameters<typeof holderLabelsFor>[0],
   ): Promise<EvidenceContext> {
@@ -815,7 +817,33 @@ export function createAuditService(deps: AuditModuleDeps, catalog: AuditCatalog)
         if (!replacements.has(text)) replacements.set(text, 'another holder');
       }
     }
-    const cids = [...new Set(evidence.flatMap(paymentCidsOf))];
+    // The live state of the payments of the outcomes in this grant. The grant decides which
+    // outcomes (and so which cycles and holders) the auditor gets; this only brings their payment
+    // rows up to date (a MainNet payment is recorded as paid after the outcome was written).
+    const live = new Map<string, LivePayment>();
+    const grantedCycles = new Set(
+      evidence.flatMap((e) => (e.tag === 'EvOutcome' ? [e.value.cycleId] : [])),
+    );
+    if (grantedCycles.size > 0) {
+      try {
+        for (const p of await reader.payments()) {
+          if (!grantedCycles.has(p.payload.cycleId)) continue;
+          live.set(`${p.payload.cycleId}|${p.payload.holder}`, {
+            paymentCid: p.contractId,
+            status: p.payload.status,
+            externalTxRef: p.payload.externalTxRef ?? null,
+          });
+        }
+      } catch {
+        // Best effort: the outcome's own snapshot of the payments is still shown.
+      }
+    }
+    const cids = [
+      ...new Set([
+        ...evidence.flatMap(paymentCidsOf),
+        ...[...live.values()].map((l) => l.paymentCid),
+      ]),
+    ];
     const updates = new Map<string, string>();
     if (cids.length > 0) {
       const rows = await db
@@ -829,6 +857,7 @@ export function createAuditService(deps: AuditModuleDeps, catalog: AuditCatalog)
       approverName: (party) => approverNames.get(party) ?? shortPartyId(party),
       updateIdOf: (cid) => updates.get(cid) ?? null,
       linkFor: (updateId) => auditorTxLink(config, updateId),
+      livePayment: (cycleId, holder) => live.get(`${cycleId}|${holder}`) ?? null,
       redact: createRedactor(replacements),
     };
   }

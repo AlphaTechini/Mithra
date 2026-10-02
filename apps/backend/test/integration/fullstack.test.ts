@@ -10,6 +10,8 @@ import {
   OverviewResponseSchema,
   PolicyDraftSchema,
   SealStatusSchema,
+  ScopeDraftSchema,
+  ShowcaseSchema,
   SendAgentMessageResponseSchema,
   SessionResponseSchema,
   TxDetailSchema,
@@ -541,6 +543,32 @@ describe('full stack: the happy path over HTTP (sessions to paid cycles)', () =>
     expect((await as('holderA').post(`/api/me/payments/${dPayment}/accept`)).status).toBe(404);
   });
 
+  it('the landing page showcase is public and holds only the aggregate of the approved cycle', async () => {
+    const anonymous = new Client(base);
+    const reply = await anonymous.get('/api/public/showcase');
+    expect(reply.status).toBe(200);
+    const showcase = ShowcaseSchema.parse(reply.json());
+    expect(showcase).toEqual({
+      cycleLabel: `${flagged.name} ${flagged.id.slice(0, 4)}`,
+      total: '1200.0000000000',
+      assetSymbol: 'CC',
+      payees: 4,
+      approvals: { have: 2, need: 2, approvers: 3 },
+    });
+    const { parties } = stack;
+    for (const secret of [
+      ...(Object.values(parties) as string[]),
+      'Holder A',
+      'Holder B',
+      'Holder C',
+      'Holder D',
+      'Approver',
+      '::',
+    ]) {
+      expect(reply.body).not.toContain(secret);
+    }
+  });
+
   it('shows the overview, the cycles and the activity log', async () => {
     const overview = OverviewResponseSchema.parse(
       (await as('treasurer').get('/api/overview')).json(),
@@ -631,6 +659,9 @@ describe('full stack: the happy path over HTTP (sessions to paid cycles)', () =>
       items: { recordId: string; kind: string; reason: string }[];
     }>('/api/audit/scope/draft', { question });
     expect(drafted.status).toBe(200);
+    // The same schema the auditor's screen parses the answer with (labels and notice included).
+    const draft = ScopeDraftSchema.parse(drafted.json());
+    expect(draft.items.every((item) => item.label !== '')).toBe(true);
     const items = drafted.json().items;
     expect(items.length, drafted.body).toBeGreaterThan(0);
 

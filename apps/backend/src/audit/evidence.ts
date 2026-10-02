@@ -8,7 +8,7 @@ import {
 import type { Config } from '../config/env';
 import { txLinkFor } from '../cycle/links';
 import { formatAmount, plural, showAmountText } from '../cycle/format';
-import type { DecisionRecord, DistributionOutcome, Evidence } from '../ledger';
+import type { DecisionRecord, DistributionOutcome, Evidence, Payment } from '../ledger';
 import { compareRecordIds, isFlagged, labelForRecordId } from './catalog';
 
 /**
@@ -96,6 +96,16 @@ export interface EvidenceContext {
   /** Update id of a payment's transaction, from `tx_refs`; null when unknown. */
   updateIdOf(paymentCid: string): string | null;
   linkFor(updateId: string): TxLink;
+  /**
+   * The payment's live state on the treasury's ledger, for the outcome of `cycleId` and its
+   * `holder`; null when it cannot be read. An outcome records each payment as it was when the
+   * distribution was executed; a MainNet payment is recorded as paid later, so the room shows the
+   * live contract wherever the grant covers the outcome.
+   */
+  livePayment?(
+    cycleId: string,
+    holder: string,
+  ): { paymentCid: string; status: Payment['status']; externalTxRef: string | null } | null;
   /** Removes holder names and ids from free text. */
   redact(text: string): string;
 }
@@ -181,11 +191,18 @@ export function mapOutcomeEvidence(
     })),
     payments: o.payments
       .map((p) => {
-        const updateId = ctx.updateIdOf(p.paymentCid);
+        const live = ctx.livePayment?.(o.cycleId, p.holder) ?? null;
+        // The same order as the cycle page: the transaction of the live contract, then of the
+        // snapshot's contract, then the MainNet update id the payment names itself.
+        const updateId =
+          (live ? ctx.updateIdOf(live.paymentCid) : null) ??
+          ctx.updateIdOf(p.paymentCid) ??
+          live?.externalTxRef ??
+          null;
         return {
           holderLabel: labelOfHolder(ctx, p.holder),
           amount: p.amount,
-          status: PAYMENT_STATUSES[p.status],
+          status: PAYMENT_STATUSES[live?.status ?? p.status],
           link: updateId ? ctx.linkFor(updateId) : null,
         };
       })

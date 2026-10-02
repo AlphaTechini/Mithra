@@ -39,6 +39,7 @@ export const PUBLIC_CONFIG = (network: 'localnet' | 'mainnet' = 'localnet') => (
   assetSymbol: 'CC',
   explorerTxUrlTemplate: network === 'mainnet' ? 'https://explorer.example/tx/{updateId}' : null,
   groftyMinVersion: '1.0.0',
+  demoVideoUrl: null,
 });
 
 export function sessionRoutes(

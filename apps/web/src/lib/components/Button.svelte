@@ -13,6 +13,8 @@
     variant?: 'primary' | 'secondary' | 'quiet' | 'danger';
     type?: 'button' | 'submit' | 'reset';
     href?: Pathname;
+    /** An absolute http(s) URL on another site: a link that opens in a new tab. */
+    externalHref?: string;
     busy?: boolean;
     disabled?: boolean;
     fullWidth?: boolean;
@@ -30,6 +32,7 @@
     variant = 'primary',
     type = 'button',
     href,
+    externalHref,
     busy = false,
     disabled = false,
     fullWidth = false,
@@ -42,7 +45,20 @@
   const inactive = $derived(disabled || busy);
 </script>
 
-{#if href && !inactive}
+{#if externalHref}
+  <a
+    class="btn {variant}"
+    class:full={fullWidth}
+    class:small
+    href={externalHref}
+    target="_blank"
+    rel="external noopener noreferrer"
+    {onclick}
+    {...rest}
+  >
+    {@render children()}
+  </a>
+{:else if href && !inactive}
   <a
     class="btn {variant}"
     class:full={fullWidth}

@@ -2,6 +2,8 @@
   /**
    * Who is signed in, with the LocalNet role switcher and Sign out. Used in the header of every
    * signed-in layout. `actions` adds layout-specific buttons (for example "Ask the agent").
+   * `switcher="link"` replaces the role switcher with a link to /launch: holder screens use it so
+   * they never list other holders' names (U7), even in LocalNet test mode.
    */
   import type { Snippet } from 'svelte';
   import { describeError } from '$lib/errors';
@@ -12,7 +14,8 @@
   import PartyId from './PartyId.svelte';
   import RoleSwitcher from './RoleSwitcher.svelte';
 
-  let { actions }: { actions?: Snippet } = $props();
+  let { actions, switcher = 'inline' }: { actions?: Snippet; switcher?: 'inline' | 'link' } =
+    $props();
 
   let signingOut = $state(false);
 
@@ -38,7 +41,13 @@
     {/if}
   </div>
   <div class="controls">
-    {#if sessionStore.testMode}<RoleSwitcher compact />{/if}
+    {#if sessionStore.testMode}
+      {#if switcher === 'link'}
+        <Button variant="quiet" href="/launch">Switch demo party</Button>
+      {:else}
+        <RoleSwitcher compact />
+      {/if}
+    {/if}
     {@render actions?.()}
     <Button variant="quiet" busy={signingOut} onclick={signOut}>Sign out</Button>
   </div>

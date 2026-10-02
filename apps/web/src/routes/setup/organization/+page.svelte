@@ -84,6 +84,9 @@
         approvers: approverIds,
         approvalThreshold: effectiveThreshold,
       });
+      // The party is the treasurer now. The session in the store was read before the organization
+      // existed (no role yet), and the treasurer screens would send it back to /start.
+      await sessionStore.refresh();
       await navigate('/setup/policy');
     } catch (e) {
       failure = describeError(e, "Couldn't create the organization.");

@@ -28,6 +28,7 @@ import { LedgerError, PaymentSchema, createdIn, type Ledger } from '../../ledger
 import type { PartyNames } from '../../parties/names';
 import type { PolicyDrafts } from '../../policy/drafts';
 import { termsView } from '../../policy/fields';
+import { showcaseRoute } from '../showcase';
 
 export interface CycleRouteDeps {
   config: Config;
@@ -87,6 +88,9 @@ export function cycleRoutes(app: FastifyInstance, deps: CycleRouteDeps): void {
   const treasuryTeam = requireRole('treasurer', 'approver');
   const treasurerOnly = requireRole('treasurer');
   const approverOnly = requireRole('approver');
+
+  // The landing page's live seal: aggregate numbers only, readable without signing in.
+  showcaseRoute(app, { cycles, assetSymbol: config.asset.symbol });
 
   app.get('/api/cycles', { preHandler: treasuryTeam }, async (): Promise<CyclesResponse> => ({
     cycles: await cycles.listCycles(),

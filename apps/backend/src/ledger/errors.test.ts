@@ -85,6 +85,17 @@ describe('ledgerErrorFromResponse', () => {
     ).toBe(true);
   });
 
+  it('retries a command whose input contracts routing does not know yet', () => {
+    const error = ledgerErrorFromResponse(400, {
+      code: 'UNKNOWN_CONTRACT_SYNCHRONIZERS',
+      cause:
+        'The synchronizers for the contracts (00f3, 004a) are currently unknown due to ongoing contract reassignments or disconnected synchronizers.',
+      errorCategory: 9,
+    });
+    expect(error.retryable).toBe(true);
+    expect(error.code).toBe('UNKNOWN_CONTRACT_SYNCHRONIZERS');
+  });
+
   it('copes with a body that is not a ledger error', () => {
     expect(ledgerErrorFromResponse(404, 'not here')).toMatchObject({
       code: 'HTTP_404',

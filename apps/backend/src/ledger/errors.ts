@@ -40,6 +40,10 @@ const RETRYABLE_CODES = new Set([
   'PARTY_ALLOCATION_WITHOUT_CONNECTED_SYNCHRONIZER',
   'NO_SYNCHRONIZER_ON_WHICH_ALL_SUBMITTERS_CAN_SUBMIT',
   'SYNCHRONIZER_NOT_CONNECTED',
+  // Seen on the Canton 3.4 sandbox right after a transaction that archived and recreated the
+  // command's input contracts: routing has not caught up yet. The command is rejected before it is
+  // sequenced, so sending it again is safe; it succeeds a moment later.
+  'UNKNOWN_CONTRACT_SYNCHRONIZERS',
 ]);
 
 /**

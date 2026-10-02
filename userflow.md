@@ -88,6 +88,8 @@ Footer: network badge (LocalNet test mode or MainNet), GitHub link.
 
 ## 3. Launch and connect
 
+> **Update (decision 11, 2026-10-02).** Mithra's records always live on the LocalNet ledger, so on both networks the app starts with the LocalNet sign-in and the role switcher; the badge reads "LocalNet test mode", or "MainNet payouts · records on LocalNet" when `NETWORK=mainnet`. On MainNet only the CC payouts are signed in Grofty Wallet (by the treasurer). Holders connect Grofty on their welcome page to register the MainNet wallet they are paid to. The "Connect Grofty Wallet" step 2 below applies to holders and to the treasurer's payouts, not to signing in. See `docs/decisions.md`.
+
 1. User clicks **Launch app**.
 2. **MainNet mode:** "Connect Grofty Wallet". If the extension is missing, show how to install it and a link back. On connect, show the party ID shortened with a copy button.
    **LocalNet mode:** a sign-in screen, then a role switcher listing the demo parties (Treasurer, Approver 1, 2, 3, Holders A to D, Auditor). A persistent "LocalNet test mode" badge stays visible.
@@ -134,6 +136,8 @@ A three-step setup with a progress indicator (this is a real sequence, so number
 - Empty state: "No holders yet. Issue units to your first holder to start paying yield."
 
 ## 6. Holder onboarding and home
+
+> **Update (decision 11, 2026-10-02).** Accepting units, and everything else a holder does besides their wallet, is recorded on the LocalNet ledger as the demo party. On MainNet payouts the holder additionally **connects Grofty Wallet** (the app asks the wallet to sign a short message, so the server knows which MainNet party the holder is paid to) and **turns on auto-receive in Grofty**; payments are then CC transfers on MainNet and link to the explorer. Step 2 below reads "Connects wallet" in that sense. See `docs/decisions.md`.
 
 1. Holder opens the invite link, sees the fund name and units offered.
 2. Connects wallet (Grofty on MainNet).

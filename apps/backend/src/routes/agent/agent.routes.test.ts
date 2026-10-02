@@ -1,8 +1,9 @@
-import type {
-  AgentConversation,
-  PolicyDraft,
-  Role,
-  SendAgentMessageResponse,
+import {
+  ScopeDraftSchema,
+  type AgentConversation,
+  type PolicyDraft,
+  type Role,
+  type SendAgentMessageResponse,
 } from '@mithra/shared';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -91,7 +92,11 @@ async function build(limit = 20): Promise<{ app: FastifyInstance; calls: Calls }
     scope: {
       draft(question): Promise<AuditScopeResult> {
         calls.scope.push(question);
-        return Promise.resolve({ items: [], excluded: 'x', source: 'rules' });
+        return Promise.resolve({
+          items: [{ recordId: 'decision/2026-09/1', kind: 'decision', reason: 'r' }],
+          excluded: 'x',
+          source: question === 'Show Q3 (model)' ? 'ai' : 'rules',
+        });
       },
     },
   });
@@ -254,7 +259,19 @@ describe('agent routes', () => {
         payload: { question: 'Show Q3' },
       });
       expect(ok.statusCode, party).toBe(200);
-      expect(ok.json()).toEqual({ items: [], excluded: 'x', source: 'rules' });
+      expect(ok.json()).toEqual({
+        items: [
+          {
+            recordId: 'decision/2026-09/1',
+            kind: 'decision',
+            label: 'Decision record, September 2026',
+            reason: 'r',
+          },
+        ],
+        excluded: 'x',
+        source: 'rules',
+        notice: 'The agent could not use its language model, so the rules drafted this scope.',
+      });
     }
     for (const party of ['approver::1', 'holder::1']) {
       const denied = await app.inject({
@@ -273,5 +290,22 @@ describe('agent routes', () => {
     });
     expect(bad.statusCode).toBe(400);
     expect(built.calls.scope).toEqual(['Show Q3', 'Show Q3', 'Show Q3']);
+  });
+
+  it('POST /api/audit/scope/draft answers in the shape the auditor screen reads: labels, and no notice for a model draft', async () => {
+    const built = await build();
+    app = built.app;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/audit/scope/draft',
+      headers: as('auditor::1'),
+      payload: { question: 'Show Q3 (model)' },
+    });
+    expect(res.statusCode).toBe(200);
+    // The same schema the web app parses the response with: label and notice must be there.
+    const draft = ScopeDraftSchema.parse(res.json());
+    expect(draft.notice).toBeNull();
+    expect(draft.items[0]?.label).toBe('Decision record, September 2026');
+    expect(draft.source).toBe('ai');
   });
 });

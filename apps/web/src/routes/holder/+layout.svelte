@@ -14,7 +14,7 @@
 <SessionGate allow={['holder']}>
   <header class="top">
     <a class="brand" href={resolve('/holder')}>Mithra</a>
-    <PartyBar />
+    <PartyBar switcher="link" />
   </header>
   <div class="column">
     <nav aria-label="Holder">

@@ -36,6 +36,7 @@ export function configFor(network: 'localnet' | 'mainnet' = 'localnet') {
     assetSymbol: 'CC',
     explorerTxUrlTemplate: network === 'mainnet' ? 'https://explorer.example/tx/{updateId}' : null,
     groftyMinVersion: '0.2.0',
+    demoVideoUrl: null,
   };
 }
 

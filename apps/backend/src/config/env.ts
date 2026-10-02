@@ -18,6 +18,8 @@ export const ENV_DESCRIPTIONS = {
   LOG_LEVEL: 'Log level for the backend: fatal, error, warn, info, debug, trace or silent.',
   HOLD_COUNTDOWN_SECONDS:
     'Seconds of the Hold countdown before an auto-execute distribution is paid (default 30).',
+  DEMO_VIDEO_URL:
+    'Optional: public URL of the 3-minute demo video; the landing page shows "Watch the 3-minute demo" only when it is set.',
   DATABASE_URL: 'PostgreSQL connection string for the application database.',
   SESSION_SECRET:
     'Secret that signs the session cookie, at least 32 characters (for example: openssl rand -hex 32).',
@@ -122,6 +124,7 @@ const commonShape = {
   WEB_DIST_DIR: z.string().min(1).optional(),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   HOLD_COUNTDOWN_SECONDS: z.coerce.number().int().min(0).max(3600).default(30),
+  DEMO_VIDEO_URL: z.url().optional(),
   DATABASE_URL: z.url(),
   SESSION_SECRET: z.string().min(32, 'must be at least 32 characters long'),
   LLM_BASE_URL: z.url().default('https://api.openai.com/v1'),
@@ -233,6 +236,8 @@ export interface BaseConfig {
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent';
   /** Seconds of the Hold countdown before an auto-execute distribution is paid. Absent means 30. */
   holdCountdownSeconds?: number;
+  /** Public URL of the demo video, shown on the landing page when set. */
+  demoVideoUrl?: string;
   databaseUrl: string;
   /** Secret that signs the session cookie. */
   sessionSecret: string;
@@ -419,6 +424,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     webDistDir: values.WEB_DIST_DIR,
     logLevel: values.LOG_LEVEL,
     holdCountdownSeconds: values.HOLD_COUNTDOWN_SECONDS,
+    ...(values.DEMO_VIDEO_URL ? { demoVideoUrl: values.DEMO_VIDEO_URL } : {}),
     databaseUrl: values.DATABASE_URL,
     sessionSecret: values.SESSION_SECRET,
     llm: {
