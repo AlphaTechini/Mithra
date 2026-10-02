@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { toDecimal, formatDecimal } from '@mithra/shared';
 import Decimal from 'decimal.js';
 import type { Config } from '../../src/config/env';
+import { lastDayOfCycleMonth } from '../../src/cycle/period';
 import type { DatabaseHandle } from '../../src/db';
 import {
   choiceResults,
@@ -386,9 +387,9 @@ export async function createWorld(): Promise<World> {
   const { orgCid, mandateCid } = choiceResults.orgApplySeal(applyTx);
 
   const units = [
-    { holder: parties.holderA, units: 100, effectiveDate: isoDate(daysAgo(60)) },
-    { holder: parties.holderB, units: 300, effectiveDate: isoDate(daysAgo(60)) },
-    { holder: parties.holderC, units: 600, effectiveDate: isoDate(daysAgo(40)) },
+    { holder: parties.holderA, units: 100, effectiveDate: '2026-05-01' },
+    { holder: parties.holderB, units: 300, effectiveDate: '2026-05-01' },
+    { holder: parties.holderC, units: 600, effectiveDate: '2026-06-01' },
   ];
   let registerCid = register0;
   for (const u of units) {
@@ -429,13 +430,18 @@ const adminLedger: Ledger = createLedger({
   parties: { treasury: 'unused', agent: 'unused', operator: 'unused' },
 });
 
-/** A Mandate_Propose input with the correct pro-rata payouts for the world's units. */
+/**
+ * A Mandate_Propose input with the correct pro-rata payouts for the world's units. The record date
+ * is the last day of the cycle month, which is what the ledger accepts under the default rule, so
+ * `cycleId` must be a month that has ended. The world's units take effect before July 2026.
+ */
 export function proposalInput(
   world: World,
   options: {
     cycleId: string;
     total: string;
     attempt?: number;
+    recordDate?: string;
     checks?: CheckResult[];
     payouts?: Payout[];
   },
@@ -446,7 +452,7 @@ export function proposalInput(
     cycleLabel: `Cycle ${options.cycleId}`,
     attempt: options.attempt ?? 1,
     total: options.total,
-    recordDate: isoDate(daysAgo(1)),
+    recordDate: options.recordDate ?? lastDayOfCycleMonth(options.cycleId),
     trigger: 'TriggerSchedule',
     triggerDetail: 'Monthly schedule 0 9 1 * *',
     payouts: options.payouts ?? proRata(options.total, holdings),

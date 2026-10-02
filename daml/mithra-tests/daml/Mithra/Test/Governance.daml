@@ -86,7 +86,7 @@ test_n8_governed_mandate_change_below_threshold_fails = do
   c1again <- confirm c c.m1 proposal
   failsWith "No duplicate confirmers" (asMember c c.m1) (executeConfirmedCmd c c.m1 proposal [c1, c1again])
   -- nothing changed
-  m <- mandateOf fx fx.mandateCid
+  m <- liveMandate fx
   assertMsg "the Mandate is unchanged" (m.terms.cap == 5000.0 && m.version == 1)
   -- the proposer is not a member and cannot execute
   failsWith "Executor is a governance member" (asMember c fx.operator) (executeConfirmedCmd c fx.operator proposal [c1])

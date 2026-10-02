@@ -106,11 +106,15 @@ template Proposal
     -- | Called by the Mandate after the transfers. Creates the payments and the outcome
     -- here because this choice carries both the treasury's and the agent's authority, so
     -- the same body works when the treasurer executes (MainNet) and when the agent does.
+    -- It checks nothing itself (the cap, the approvals and one payout per cycle are checked by
+    -- the Mandate choices that call it, L1, L3, L4), so it must not be reachable without the
+    -- Mandate: it needs the treasury and the treasurer together, and only a Mandate
+    -- choice holds both (the Mandate is signed by both).
     choice Proposal_MarkExecuted : ContractId DistributionOutcome
       with
         settlements : [Settlement]
         actor : Party
-      controller treasury
+      controller treasury, treasurer
       do
         assertMsg "Settlements must line up one-to-one with the proposal payouts"
           (map (.holder) settlements == map (.holder) payouts)

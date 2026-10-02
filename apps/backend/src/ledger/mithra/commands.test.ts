@@ -336,7 +336,12 @@ describe('choice results', () => {
       orgCid: '00a',
       registerCid: '00b',
     });
-    expect(choiceResults.mandatePropose(tx('Mandate_Propose', { _1: '00p', _2: '00d' }))).toEqual({
+    expect(
+      choiceResults.mandatePropose(
+        tx('Mandate_Propose', { mandateCid: '00m', proposalCid: '00p', decisionRecordCid: '00d' }),
+      ),
+    ).toEqual({
+      mandateCid: '00m',
       proposalCid: '00p',
       decisionRecordCid: '00d',
     });
@@ -351,6 +356,9 @@ describe('choice results', () => {
 
   it('fails clearly when the shape is wrong or the choice is missing', () => {
     expect(() => choiceResults.mandatePropose(tx('Mandate_Propose', ['00p', '00d']))).toThrow();
+    expect(() =>
+      choiceResults.mandatePropose(tx('Mandate_Propose', { _1: '00p', _2: '00d' })),
+    ).toThrow();
     expect(() => choiceResults.orgApplySeal(tx('Mandate_Propose', {}))).toThrow(/LEDGER_EFFECTS/);
   });
 });

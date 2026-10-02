@@ -15,11 +15,11 @@ test_l4_one_of_two_fails = do
   fx <- setup
   (proposalCid, _) <- proposeTotal fx "2026-09" 6000.0
   approved <- approve proposalCid fx.approver1
-  cmd <- executeCmd fx fx.mandateCid approved
+  cmd <- executeCmd fx approved
   failsWith "needs 2 approval(s) from the Mandate's approvers and has 1" (asAgent fx) cmd
   balance <- treasuryBalance fx
   assertMsg "nothing was paid" (balance == 1000000.0)
-  m <- mandateOf fx fx.mandateCid
+  m <- liveMandate fx
   assertMsg "the cycle is still open" (m.executedCycles == [])
 
 -- | Two of two execute, and the outcome carries both approvals.
@@ -46,7 +46,7 @@ test_l4_removed_approver_does_not_count = do
   approved <- approveBoth fx proposalCid
   -- approver2 is replaced by the outsider; the threshold stays 2
   fx1 <- reseal fx (fx.terms with approvers = [fx.approver1, fx.outsider])
-  cmd <- executeCmd fx1 fx1.mandateCid approved
+  cmd <- executeCmd fx1 approved
   failsWith "needs 2 approval(s) from the Mandate's approvers and has 1" (asAgent fx1) cmd
 
 -- L5 -------------------------------------------------------------------------
@@ -100,7 +100,7 @@ test_a7_agent_cannot_approve = do
     note = "forged"
   p <- proposalOf fx proposalCid
   assertMsg "no approvals were recorded" (null p.approvals)
-  cmd <- executeCmd fx fx.mandateCid proposalCid
+  cmd <- executeCmd fx proposalCid
   failsWith "needs 2 approval(s)" (asAgent fx) cmd
 
 -- | A proposal inside the cap is not an approval proposal.
@@ -147,7 +147,7 @@ test_l11_treasurer_cancels_pending = do
   assertMsg "the proposal is gone" (null proposals)
   _ <- decisionOf fx recordCid
   -- the cycle is still open
-  m <- mandateOf fx fx.mandateCid
+  m <- liveMandate fx
   assertMsg "the cycle is not executed" (m.executedCycles == [])
   input <- inputFor fx "2026-09" 6000.0
   _ <- propose fx (input with attempt = 2)

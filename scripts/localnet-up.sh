@@ -40,7 +40,7 @@ done
 
 on_exit() {
   local rc=$?
-  dry_cleanup
+  if is_dry; then dry_cleanup; fi
   if [ "$rc" -ne 0 ]; then
     printf '\nLocalNet bring-up failed during: %s (exit %s).\nFix the problem and run scripts/localnet-up.sh again, finished steps are skipped.\n' "$CURRENT_STEP" "$rc" >&2
   fi
@@ -424,6 +424,8 @@ create_treasury_party() {
   existing="$(dm_find_treasury)"
   if [ -n "$existing" ]; then
     state_set_str '.treasury.party' "$existing"
+    # An earlier run may have been interrupted after the party was created and before the grant.
+    ledger_grant_rights a readAs "$existing"
     log_skip "Treasury party $(short_party "$existing") (hosted on $(node_list_text); threshold $HOSTING_THRESHOLD)"
     return 0
   fi

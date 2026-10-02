@@ -12,6 +12,16 @@ export const DecimalString = z
   .string()
   .regex(/^-?\d+(\.\d{1,10})?$/, 'Expected a decimal string with up to 10 fraction digits');
 
+/**
+ * A `DecimalString` that is not below zero: for caps, fixed amounts, percentages, buffers and
+ * totals. Zero is allowed here (whether an amount must be above zero is the caller's rule), and so
+ * is "-0", which is zero.
+ */
+export const NonNegativeDecimalString = DecimalString.refine(
+  (s) => !s.startsWith('-') || !/[1-9]/.test(s),
+  'Expected an amount that is not negative',
+);
+
 // Dedicated constructor so global Decimal settings can never leak into amount arithmetic.
 const MithraDecimal = Decimal.clone({ precision: 40, rounding: Decimal.ROUND_HALF_EVEN });
 

@@ -1,5 +1,11 @@
 export { NetworkSchema, type Network } from './network';
-export { DecimalString, toDecimal, formatDecimal, sumDecimals } from './decimal';
+export {
+  DecimalString,
+  NonNegativeDecimalString,
+  toDecimal,
+  formatDecimal,
+  sumDecimals,
+} from './decimal';
 export { HealthResponseSchema, type HealthResponse } from './api/health';
 export { ApiErrorBodySchema, type ApiErrorBody } from './api/error';
 export { PublicConfigSchema, type PublicConfig } from './api/config';

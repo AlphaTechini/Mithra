@@ -1,6 +1,7 @@
 module Mithra.Mandate where
 
 import DA.Action (foldlA)
+import DA.Date (toDateUTC)
 import DA.List (dedup)
 import qualified DA.TextMap as TextMap
 import Splice.Api.Token.HoldingV1 (Holding)
@@ -57,6 +58,36 @@ data ProposalInput = ProposalInput with
     seeded : Bool
   deriving (Eq, Show)
 
+-- | The newest attempt number proposed for a cycle. The Mandate keeps one per cycle, which is
+-- what makes `decision/<cycleId>/<n>` and `proposal/<cycleId>/<n>` unique.
+data CycleAttempt = CycleAttempt with
+    cycleId : Text
+    attempt : Int
+  deriving (Eq, Show)
+
+-- | What `Mandate_Propose` returns: the Mandate that now records the attempt, and the new
+-- proposal and decision record.
+data ProposeResult = ProposeResult with
+    mandateCid : ContractId Mandate
+    proposalCid : ContractId Proposal
+    decisionRecordCid : ContractId DecisionRecord
+
+-- | What a Mandate hands to its successor when the treasurer seals new terms.
+data MandateCarryover = MandateCarryover with
+    executedCycles : [Text]
+    cycleAttempts : [CycleAttempt]
+
+-- | The newest attempt proposed for `cycleId`, 0 when there is none yet.
+lastAttemptOf : Text -> [CycleAttempt] -> Int
+lastAttemptOf cycleId attempts = case filter (\a -> a.cycleId == cycleId) attempts of
+  a :: _ -> a.attempt
+  [] -> 0
+
+-- | `attempts` with the newest attempt for `cycleId` set to `attempt`.
+withAttempt : Text -> Int -> [CycleAttempt] -> [CycleAttempt]
+withAttempt cycleId attempt attempts =
+  filter (\a -> a.cycleId /= cycleId) attempts ++ [CycleAttempt with cycleId; attempt]
+
 -- | The sealed terms the agent works inside. There is no choice that changes terms (L6).
 template Mandate
   with
@@ -67,6 +98,7 @@ template Mandate
     terms : MandateTerms
     agentExecutes : Bool
     executedCycles : [Text]
+    cycleAttempts : [CycleAttempt]   -- newest attempt number proposed per cycle
     sealedAt : Time
     summaryFingerprint : Text
   where
@@ -75,16 +107,33 @@ template Mandate
     ensure termsValid agent terms && version >= 1
 
     -- | The agent proposes a distribution. Creates the decision record and the proposal
-    -- together, so a proposal never exists without its record (L10).
-    nonconsuming choice Mandate_Propose : (ContractId Proposal, ContractId DecisionRecord)
+    -- together, so a proposal never exists without its record (L10). The ledger checks what the
+    -- agent could otherwise invent: the cycle id is the canonical `YYYY-MM`, the record date
+    -- follows the Mandate's rule for that cycle and has already happened, and the attempt is
+    -- the next one for the cycle. Consuming: the new Mandate records the attempt, so no two
+    -- decision records can share a record id.
+    choice Mandate_Propose : ProposeResult
       with
         input : ProposalInput
       controller agent
       do
+        assertMsg ("The cycle id must be YYYY-MM, like 2026-09, not " <> input.cycleId)
+          (isCycleId input.cycleId)
         assertMsg ("A distribution for " <> input.cycleLabel <> " has already been executed")
           (input.cycleId `notElem` executedCycles)
         assertMsg "Total must be greater than zero" (input.total > 0.0)
         assertMsg "Attempt numbers start at 1" (input.attempt >= 1)
+        let lastAttempt = lastAttemptOf input.cycleId cycleAttempts
+        assertMsg
+          ("Attempt " <> show input.attempt <> " for cycle " <> input.cycleId <> " is not the next one: the last attempt is "
+            <> show lastAttempt <> ", so this one must be " <> show (lastAttempt + 1))
+          (input.attempt == lastAttempt + 1)
+        now <- getTime
+        case recordDateProblem terms.recordDateRule input.cycleId input.recordDate of
+          Some problem -> abort problem
+          None -> pure ()
+        assertMsg ("The record date " <> show input.recordDate <> " has not happened yet")
+          (input.recordDate <= toDateUTC now)
         assertMsg "Every check must come from the deterministic rules or from the AI"
           (all (\c -> c.source == "deterministic" || c.source == "ai") input.checks)
         assertMsg "AI checks are advisory and cannot be blocking"
@@ -100,7 +149,6 @@ template Mandate
             blockingFailure = any (\c -> c.blocking && not c.passed) input.checks
             verdict = if overCap || blockingFailure then NeedsApproval else AutoExecute
             suffix = "/" <> input.cycleId <> "/" <> show input.attempt
-        now <- getTime
         decisionRecordCid <- create DecisionRecord with
           recordId = "decision" <> suffix
           treasury
@@ -143,7 +191,9 @@ template Mandate
           mandateVersion = version
           createdAt = now
           seeded = input.seeded
-        pure (proposalCid, decisionRecordCid)
+        mandateCid <- create this with
+          cycleAttempts = withAttempt input.cycleId input.attempt cycleAttempts
+        pure ProposeResult with mandateCid; proposalCid; decisionRecordCid
 
     -- | The agent executes a proposal: payments go out through the token standard
     -- inside this choice, so the cap and the approval threshold are ledger rules (L1, L4).
@@ -199,10 +249,11 @@ template Mandate
         mandateCid <- create this with executedCycles = executedCycles ++ [proposal.cycleId]
         pure (mandateCid, outcomeCid)
 
-    -- | Replaced by a newer Mandate; hands over the executed cycles.
-    choice Mandate_Supersede : [Text]
+    -- | Replaced by a newer Mandate; hands over the executed cycles and the attempt numbers
+    -- already used, so a cycle's record ids stay unique across Mandates.
+    choice Mandate_Supersede : MandateCarryover
       controller treasury
-      do pure executedCycles
+      do pure MandateCarryover with executedCycles; cycleAttempts
 
 -- | The rules every payout must pass, whichever way the money moves: the proposal is this
 -- treasury's and this agent's, the cycle has not been paid (L3), and the cap (L1) or the approval

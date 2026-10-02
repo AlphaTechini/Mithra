@@ -380,6 +380,8 @@ export type MithraCommands = ReturnType<typeof createMithraCommands>;
 
 const Cid = z.string().min(1);
 
+const ProposeResult = z.object({ mandateCid: Cid, proposalCid: Cid, decisionRecordCid: Cid });
+
 function pair(tx: Transaction, choice: string): { first: string; second: string } {
   const parsed = lfTuple2(Cid, Cid).parse(exerciseResultOf(tx, choice));
   return { first: parsed._1, second: parsed._2 };
@@ -408,9 +410,13 @@ export const choiceResults = {
   orgDenyAccess(tx: Transaction): { deniedCid: string } {
     return { deniedCid: Cid.parse(exerciseResultOf(tx, 'Org_DenyAccess')) };
   },
-  mandatePropose(tx: Transaction): { proposalCid: string; decisionRecordCid: string } {
-    const { first, second } = pair(tx, 'Mandate_Propose');
-    return { proposalCid: first, decisionRecordCid: second };
+  /** `Mandate_Propose` consumes the Mandate: `mandateCid` is the one that records the attempt. */
+  mandatePropose(tx: Transaction): {
+    mandateCid: string;
+    proposalCid: string;
+    decisionRecordCid: string;
+  } {
+    return ProposeResult.parse(exerciseResultOf(tx, 'Mandate_Propose'));
   },
   mandateAgentExecute(tx: Transaction): { mandateCid: string; outcomeCid: string } {
     const { first, second } = pair(tx, 'Mandate_AgentExecute');

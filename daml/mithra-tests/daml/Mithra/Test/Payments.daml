@@ -38,7 +38,7 @@ test_p2_holder_without_preapproval_gets_pending_transfer : Script ()
 test_p2_holder_without_preapproval_gets_pending_transfer = do
   fx <- setup
   (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
-  cmd <- executeCmdFor fx fx.mandateCid proposalCid [fx.holderC]
+  cmd <- executeCmdFor fx proposalCid [fx.holderC]
   (_, outcomeCid) <- submit (asAgent fx) cmd
   o <- outcomeOf fx outcomeCid
   let statuses = [(r.holder, r.status) | r <- o.payments]
@@ -74,7 +74,7 @@ test_p2_rejected_transfer_returns_funds : Script ()
 test_p2_rejected_transfer_returns_funds = do
   fx <- setup
   (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
-  cmd <- executeCmdFor fx fx.mandateCid proposalCid [fx.holderC]
+  cmd <- executeCmdFor fx proposalCid [fx.holderC]
   _ <- submit (asAgent fx) cmd
   [(_, payment)] <- query @Payment fx.holderC
   Some instructionCid <- pure payment.transferInstructionCid
@@ -91,7 +91,7 @@ test_payments_insufficient_funds_roll_back = do
   -- the treasury holds 1,000,000; ask for far more than that, with approvals
   (proposalCid, _) <- proposeTotal fx "2026-09" 2000000.0
   approved <- approveBoth fx proposalCid
-  cmd <- executeCmd fx fx.mandateCid approved
+  cmd <- executeCmd fx approved
   failsWith "Input holdings do not cover the amount" (asAgent fx) cmd
   payments <- query @Payment fx.treasury
   outcomes <- query @DistributionOutcome fx.treasury
@@ -107,14 +107,15 @@ test_payments_legs_must_match_payouts = do
   holdings <- treasuryHoldings fx
   now <- getTime
   p <- proposalOf fx proposalCid
+  mandateNow <- liveMandateCid fx
   let legs = legsFor fx p.payouts []
-      run ls = exerciseCmd fx.mandateCid Mandate_AgentExecute with
+      run ls = exerciseCmd mandateNow Mandate_AgentExecute with
         proposalCid; legs = ls; inputHoldingCids = holdings; executeBefore = addRelTime now (days 1)
   failsWith "line up one-to-one" (asAgent fx) (run (reverse legs))
   failsWith "line up one-to-one" (asAgent fx) (run (take 2 legs))
   failsWith "line up one-to-one" (asAgent fx) (run (map (\l -> l with holder = fx.outsider) legs))
   failsWith "executeBefore must be in the future" (asAgent fx)
-    (exerciseCmd fx.mandateCid Mandate_AgentExecute with
+    (exerciseCmd mandateNow Mandate_AgentExecute with
       proposalCid; legs; inputHoldingCids = holdings; executeBefore = now)
   _ <- submit (asAgent fx) (run legs)
   pure ()
@@ -128,7 +129,8 @@ test_mainnet_treasury_executes = do
   holdings <- treasuryHoldings fx
   now <- getTime
   p <- proposalOf fx proposalCid
-  let treasuryRun = exerciseCmd fx.mandateCid Mandate_TreasuryExecute with
+  mandateNow <- liveMandateCid fx
+  let treasuryRun = exerciseCmd mandateNow Mandate_TreasuryExecute with
         proposalCid
         legs = legsFor fx p.payouts []
         inputHoldingCids = holdings
@@ -143,11 +145,12 @@ test_mainnet_treasury_executes = do
   payments <- query @Payment fx.holderB
   assertMsg "B was paid 1,500" (map (\(_, pay) -> pay.amount) payments == [1500.0])
   -- the cap still binds the treasury's own execution path
-  (second, _) <- proposeTotal (fx with mandateCid) "2026-10" 5000.0000000001
+  (second, _) <- proposeTotal fx "2026-08" 5000.0000000001
   holdings2 <- treasuryHoldings fx
   p2 <- proposalOf fx second
+  mandateAfter <- liveMandateCid fx
   failsWith "needs 2 approval(s)" (actAs fx.treasury)
-    (exerciseCmd mandateCid Mandate_TreasuryExecute with
+    (exerciseCmd mandateAfter Mandate_TreasuryExecute with
       proposalCid = second
       legs = legsFor fx p2.payouts []
       inputHoldingCids = holdings2
@@ -162,12 +165,13 @@ test_mainnet_agent_execution_can_be_switched_off = do
     sealRequestCid = req; currentMandateCid = Some fx.mandateCid
   let fx1 = fx with orgCid = org; mandateCid = mandate
   (proposalCid, _) <- proposeTotal fx1 "2026-09" 1000.0
-  cmd <- executeCmd fx1 fx1.mandateCid proposalCid
+  cmd <- executeCmd fx1 proposalCid
   failsWith "does not let the agent execute" (asAgent fx1) cmd
   holdings <- treasuryHoldings fx1
   now <- getTime
   p <- proposalOf fx1 proposalCid
-  (_, outcomeCid) <- submit fx.treasury $ exerciseCmd mandate Mandate_TreasuryExecute with
+  mandateNow <- liveMandateCid fx1
+  (_, outcomeCid) <- submit fx.treasury $ exerciseCmd mandateNow Mandate_TreasuryExecute with
     proposalCid
     legs = legsFor fx1 p.payouts []
     inputHoldingCids = holdings
@@ -210,7 +214,7 @@ test_funding_agent_cannot_accept_for_others : Script ()
 test_funding_agent_cannot_accept_for_others = do
   fx <- setup
   (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
-  cmd <- executeCmdFor fx fx.mandateCid proposalCid [fx.holderC]
+  cmd <- executeCmdFor fx proposalCid [fx.holderC]
   _ <- submit (asAgent fx) cmd
   [(_, payment)] <- query @Payment fx.holderC
   Some instructionCid <- pure payment.transferInstructionCid

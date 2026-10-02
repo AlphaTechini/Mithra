@@ -30,10 +30,9 @@ import {
   acceptTransfer,
   addFunds,
   createCycleWorld,
-  daysAgo,
+  RECORD_DATE,
   directExecute,
   eventually,
-  isoDate,
   issueUnits,
   makeModule,
   sleep,
@@ -51,13 +50,11 @@ import { monthName, shortDate } from '../../src/cycle/format';
 import { defaultCycleId } from '../../src/cycle/period';
 import { sha256Hex } from '../../src/cycle/fingerprint';
 
-const RECORD_DATE = isoDate(daysAgo(1));
-
 const FOUR_HOLDERS: HolderSpec[] = [
-  { name: 'holderA', units: 100, daysAgo: 90, preapproval: true },
-  { name: 'holderB', units: 200, daysAgo: 90, preapproval: true },
-  { name: 'holderC', units: 300, daysAgo: 90, preapproval: true },
-  { name: 'holderD', units: 400, daysAgo: 90, preapproval: false },
+  { name: 'holderA', units: 100, daysBefore: 400, preapproval: true },
+  { name: 'holderB', units: 200, daysBefore: 400, preapproval: true },
+  { name: 'holderC', units: 300, daysBefore: 400, preapproval: true },
+  { name: 'holderD', units: 400, daysBefore: 400, preapproval: false },
 ];
 
 function same(actual: string, expected: string): void {
@@ -86,7 +83,6 @@ async function runCycle(
   input: {
     cycleId?: string;
     total?: string;
-    recordDate?: string;
     trigger?: 'schedule' | 'prompt' | 'manual';
     promptText?: string;
     seeded?: boolean;
@@ -98,7 +94,6 @@ async function runCycle(
     actorParty: world.parties.treasurer,
     cycleId: input.cycleId ?? '2026-09',
     total: input.total ?? '300',
-    recordDate: input.recordDate ?? RECORD_DATE,
     ...(input.promptText ? { promptText: input.promptText } : {}),
     ...(input.seeded === undefined ? {} : { seeded: input.seeded }),
   });
@@ -335,9 +330,9 @@ describe('1b. a holder who declines a pending payment: the reconciler records it
 });
 
 const THREE_HOLDERS: HolderSpec[] = [
-  { name: 'holderA', units: 100, daysAgo: 90, preapproval: true },
-  { name: 'holderB', units: 200, daysAgo: 90, preapproval: true },
-  { name: 'holderC', units: 300, daysAgo: 90, preapproval: true },
+  { name: 'holderA', units: 100, daysBefore: 400, preapproval: true },
+  { name: 'holderB', units: 200, daysBefore: 400, preapproval: true },
+  { name: 'holderC', units: 300, daysBefore: 400, preapproval: true },
 ];
 
 describe('2. flagged cycle: a unit jump and a total far above history need two approvals', () => {
@@ -347,9 +342,9 @@ describe('2. flagged cycle: a unit jump and a total far above history need two a
   beforeAll(async () => {
     world = await createCycleWorld(handle, {
       holders: [
-        { name: 'holderA', units: 500, daysAgo: 90, preapproval: true },
-        { name: 'holderB', units: 400, daysAgo: 90, preapproval: true },
-        { name: 'holderC', units: 100, daysAgo: 90, preapproval: true },
+        { name: 'holderA', units: 500, daysBefore: 400, preapproval: true },
+        { name: 'holderB', units: 400, daysBefore: 400, preapproval: true },
+        { name: 'holderC', units: 100, daysBefore: 400, preapproval: true },
       ],
       funds: '1000000',
     });
@@ -362,7 +357,6 @@ describe('2. flagged cycle: a unit jump and a total far above history need two a
     await runCycle(module, world, {
       cycleId: '2026-07',
       total: '100',
-      recordDate: isoDate(daysAgo(20)),
     });
     expect((await module.cycles.getCycle('2026-07')).summary.status).toBe('countdown');
     await sleep(1300);
@@ -630,7 +624,6 @@ describe('3b. the policy has a fixed amount: a prompt for another amount is flag
       triggerDetail: 'Prompt by Treasurer',
       cycleId: '2026-09',
       total: '1500',
-      recordDate: RECORD_DATE,
       promptText: 'Distribute 1,500 CC for September',
       modelFingerprints: [{ label: 'agent-turn', sha256: 'ee'.repeat(32) }],
       actorParty: world.parties.treasurer,
@@ -652,7 +645,6 @@ describe('3b. the policy has a fixed amount: a prompt for another amount is flag
       trigger: 'schedule',
       triggerDetail: 'Schedule: Monthly on the 1st at 09:00 UTC',
       cycleId: '2026-08',
-      recordDate: RECORD_DATE,
       actorParty: world.parties.agent,
     });
     await module.cycles.settled();
@@ -834,7 +826,6 @@ describe('6. double run: one proposal per cycle, restarts do not repeat it, a se
       triggerDetail: 'Run cycle now by Treasurer',
       cycleId: '2026-09',
       total: '300',
-      recordDate: RECORD_DATE,
       actorParty: world.parties.treasurer,
     };
     const [one, two] = await Promise.all([module.cycles.run(input), module.cycles.run(input)]);
@@ -860,7 +851,6 @@ describe('6. double run: one proposal per cycle, restarts do not repeat it, a se
       trigger: 'schedule',
       triggerDetail: 'Schedule: Monthly on the 1st at 09:00 UTC',
       cycleId: '2026-09',
-      recordDate: RECORD_DATE,
       total: '300',
       actorParty: world.parties.agent,
     });
@@ -882,7 +872,6 @@ describe('6. double run: one proposal per cycle, restarts do not repeat it, a se
       triggerDetail: 'Run cycle now by Treasurer',
       cycleId: '2026-09',
       total: '300',
-      recordDate: RECORD_DATE,
       actorParty: world.parties.treasurer,
     });
     expect(again).toEqual({ cycleId: '2026-09' });
@@ -906,7 +895,6 @@ describe('6. double run: one proposal per cycle, restarts do not repeat it, a se
     const stray = await strayProposalInput(second, {
       cycleId: '2026-09',
       total: '300',
-      recordDate: RECORD_DATE,
       attempt: 2,
     });
     const mandate = await second.ledger.reader.mandate();
@@ -935,7 +923,6 @@ describe('6. double run: one proposal per cycle, restarts do not repeat it, a se
     const late = await strayProposalInput(second, {
       cycleId: '2026-09',
       total: '300',
-      recordDate: RECORD_DATE,
       attempt: 3,
     });
     const current = await second.ledger.reader.mandate();
@@ -961,7 +948,6 @@ describe('6. double run: one proposal per cycle, restarts do not repeat it, a se
       triggerDetail: 'Run cycle now by Treasurer',
       cycleId: '2026-09',
       total: '300',
-      recordDate: RECORD_DATE,
       actorParty: world.parties.treasurer,
     });
     await module.cycles.settled();
@@ -1326,6 +1312,17 @@ describe('8. routes: roles, the contract shapes, approvals, the Mandate, drafts 
     });
     expect(future.statusCode).toBe(422);
     expect(errorOf(future).code).toBe('record_date_in_future');
+    // The Mandate's rule is the last day of the cycle month; the ledger enforces it, so the run
+    // is refused up front with the reason, and nothing is reserved.
+    const offRule = await as(p('treasurer'), 'POST', '/api/cycles/run', {
+      cycleId: '2026-09',
+      total: '300',
+      recordDate: '2026-09-15',
+    });
+    expect(offRule.statusCode).toBe(422);
+    expect(errorOf(offRule).code).toBe('invalid_record_date');
+    expect(errorOf(offRule).message).toContain('last day of 2026-09');
+    expect((await as(p('treasurer'), 'GET', '/api/cycles/2026-09')).statusCode).toBe(404);
     expect((await as(p('treasurer'), 'GET', '/api/cycles/2020-01')).statusCode).toBe(404);
   });
 
@@ -1333,7 +1330,6 @@ describe('8. routes: roles, the contract shapes, approvals, the Mandate, drafts 
     const run = await as(p('treasurer'), 'POST', '/api/cycles/run', {
       cycleId: '2026-09',
       total: '300',
-      recordDate: RECORD_DATE,
     });
     expect(run.statusCode).toBe(202);
     expect(run.json()).toEqual({ cycleId: '2026-09' });

@@ -8,6 +8,7 @@ import { sessionPlugin } from '../../src/auth/plugin';
 import { createRoleResolver } from '../../src/auth/roles';
 import { SessionService, SESSION_COOKIE } from '../../src/auth/sessions';
 import type { Config } from '../../src/config/env';
+import { lastDayOfCycleMonth } from '../../src/cycle/period';
 import type { DatabaseHandle } from '../../src/db';
 import { EventBus, type Published } from '../../src/events/bus';
 import { FundingError, type Funding, type FundingResult } from '../../src/funding';
@@ -34,7 +35,6 @@ import {
   TEST_FACTORY,
   TEST_HOLDING,
   TEST_PREAPPROVAL,
-  isoDate,
   localnetConfig,
   passingCheck,
   proRata,
@@ -437,8 +437,8 @@ export function treasuryProposalInput(
     cycleLabel: `Cycle ${options.cycleId}`,
     attempt: 1,
     total: options.total,
-    // Today: every unit tranche counts, whatever its effective date (the default is today).
-    recordDate: isoDate(new Date()),
+    // The last day of the cycle month, which is the record date the ledger accepts.
+    recordDate: lastDayOfCycleMonth(options.cycleId),
     trigger: 'TriggerSchedule',
     triggerDetail: 'Monthly schedule 0 9 1 * *',
     payouts: proRata(options.total, holdings),

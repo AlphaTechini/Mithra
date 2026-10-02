@@ -121,6 +121,64 @@ export async function ensureAutoReceive(
   return 'done';
 }
 
+/**
+ * Brings one demo cycle to an executed state and says what it did.
+ * - An executed cycle (`EXECUTED`) is skipped.
+ * - A new run starts only when there is no cycle yet or its run `failed`.
+ * - A cycle that is under way (running, countdown, proposed, executing) is polled and advanced to
+ *   completion, without starting a new run.
+ * - A cycle that is stuck in any other way (rejected, cancelled, short of funds, waiting for
+ *   approvals) throws the `SeedError` the polling uses: nothing happens by itself from there.
+ */
+export async function ensureCycle(
+  ctx: SeedContext,
+  demo: { cycleId: string; total: string },
+  treasurer: string,
+): Promise<{ outcome: StepResult['outcome']; text: string }> {
+  const { backend } = ctx;
+  const step = `Cycle ${demo.cycleId}`;
+  const symbol = backend.config.asset.symbol;
+  const existing = (await backend.cycle.cycles.listCycles()).find(
+    (c) => c.cycleId === demo.cycleId,
+  );
+  if (existing && EXECUTED.has(existing.status)) {
+    return { outcome: 'skipped', text: `already done (${existing.status})` };
+  }
+  const resumed = existing !== undefined && existing.status !== 'failed';
+  if (!existing || existing.status === 'failed') {
+    await backend.cycle.cycles.run({
+      trigger: 'manual',
+      triggerDetail: 'Seeded demo cycle',
+      cycleId: demo.cycleId,
+      total: demo.total,
+      actorParty: treasurer,
+      seeded: true,
+    });
+  }
+  const deadline = Date.now() + (ctx.cycleTimeoutMs ?? 3 * 60_000);
+  for (;;) {
+    const detail = await backend.cycle.cycles.getCycle(demo.cycleId);
+    const status = detail.summary.status;
+    if (EXECUTED.has(status)) {
+      return {
+        outcome: 'done',
+        text: `${resumed ? 'finished' : 'ran'} ${formatAmount(demo.total)} ${symbol}, ${status}, seeded`,
+      };
+    }
+    if (STUCK.has(status)) {
+      throw new SeedError(
+        `${step} stopped at "${status}"${detail.error ? `: ${detail.error}` : ''}. Fix that and seed again.`,
+      );
+    }
+    if (Date.now() > deadline) {
+      throw new SeedError(`${step} did not execute in time (status "${status}").`);
+    }
+    // The reconciler may not be running in this process: this pays the cycle once its countdown is over.
+    await backend.cycle.cycles.advance(demo.cycleId).catch(() => undefined);
+    await sleep(ctx.pollMs ?? 1000);
+  }
+}
+
 /** Runs every seeding step in order and prints one line for each. */
 export async function runSeed(ctx: SeedContext): Promise<StepResult[]> {
   const { backend } = ctx;
@@ -284,43 +342,8 @@ export async function runSeed(ctx: SeedContext): Promise<StepResult[]> {
 
   // (f) Cycles ------------------------------------------------------------------------------
   for (const demo of DEMO_CYCLES) {
-    const step = `Cycle ${demo.cycleId}`;
-    const symbol = config.asset.symbol;
-    const existing = (await backend.cycle.cycles.listCycles()).find(
-      (c) => c.cycleId === demo.cycleId,
-    );
-    if (existing && existing.status !== 'failed') {
-      report(step, 'skipped', `already done (${existing.status})`);
-      continue;
-    }
-    await backend.cycle.cycles.run({
-      trigger: 'manual',
-      triggerDetail: 'Seeded demo cycle',
-      cycleId: demo.cycleId,
-      total: demo.total,
-      actorParty: treasurer,
-      seeded: true,
-    });
-    const deadline = Date.now() + (ctx.cycleTimeoutMs ?? 3 * 60_000);
-    for (;;) {
-      const detail = await backend.cycle.cycles.getCycle(demo.cycleId);
-      const status = detail.summary.status;
-      if (EXECUTED.has(status)) {
-        report(step, 'done', `ran ${formatAmount(demo.total)} ${symbol}, ${status}, seeded`);
-        break;
-      }
-      if (STUCK.has(status)) {
-        throw new SeedError(
-          `${step} stopped at "${status}"${detail.error ? `: ${detail.error}` : ''}. Fix that and seed again.`,
-        );
-      }
-      if (Date.now() > deadline) {
-        throw new SeedError(`${step} did not execute in time (status "${status}").`);
-      }
-      // The reconciler may not be running in this process: this pays the cycle once its countdown is over.
-      await backend.cycle.cycles.advance(demo.cycleId).catch(() => undefined);
-      await sleep(pollMs);
-    }
+    const { outcome, text } = await ensureCycle(ctx, demo, treasurer);
+    report(`Cycle ${demo.cycleId}`, outcome, text);
   }
 
   return results;

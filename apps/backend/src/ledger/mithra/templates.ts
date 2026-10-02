@@ -196,6 +196,10 @@ export const MandateSealRequestSchema = z.object({
 });
 export type MandateSealRequest = z.infer<typeof MandateSealRequestSchema>;
 
+/** The newest attempt number proposed for a cycle (`Mandate.cycleAttempts`). */
+export const CycleAttemptSchema = z.object({ cycleId: z.string(), attempt: LfInt });
+export type CycleAttempt = z.infer<typeof CycleAttemptSchema>;
+
 export const MandateSchema = z.object({
   treasury: Party,
   treasurer: Party,
@@ -204,6 +208,8 @@ export const MandateSchema = z.object({
   terms: MandateTermsSchema,
   agentExecutes: z.boolean(),
   executedCycles: z.array(z.string()),
+  /** The newest attempt number proposed per cycle: the next proposal for a cycle must be one more. */
+  cycleAttempts: z.array(CycleAttemptSchema),
   sealedAt: LfTime,
   summaryFingerprint: z.string(),
 });

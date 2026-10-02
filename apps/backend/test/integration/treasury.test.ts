@@ -16,7 +16,6 @@ import { txRefs } from '../../src/db/schema';
 import { choiceResults } from '../../src/ledger';
 import { opaqueId } from '../../src/holders/position';
 import {
-  daysAgo,
   defaultTerms,
   isoDate,
   requireSandbox,
@@ -299,7 +298,8 @@ describe('treasury, holder and overview routes against a Canton sandbox and Post
       post('/api/holders/issue', 'treasurer', {
         holder,
         units,
-        effectiveDate: isoDate(daysAgo(40)),
+        // Before the record date of the cycle paid below, whenever the test runs.
+        effectiveDate: '2026-06-01',
         ...extra,
       });
 
@@ -325,11 +325,7 @@ describe('treasury, holder and overview routes against a Canton sandbox and Post
     ] as const) {
       expect((await issue(holder, units)).statusCode).toBe(200);
     }
-    // The effective date defaults to today.
-    const last = await post('/api/holders/issue', 'treasurer', {
-      holder: p().holderD,
-      units: 1000,
-    });
+    const last = await issue(p().holderD, 1000);
     expect(last.statusCode).toBe(200);
     const fromIssue = HoldersResponseSchema.parse(last.json());
     expect(fromIssue.totalUnits).toBe(2000);
@@ -637,14 +633,14 @@ describe('treasury, holder and overview routes against a Canton sandbox and Post
       [ledger.commands.mandatePropose(mandate?.contractId ?? '', input)],
       { readAs: [parties.treasury] },
     );
-    const { proposalCid } = choiceResults.mandatePropose(proposeTx);
+    const { proposalCid, mandateCid } = choiceResults.mandatePropose(proposeTx);
     const treasuryHoldings = await createTestAssetAdapter(world, switches).holdings(
       parties.treasury,
     );
     const executeTx = await as.as(
       [parties.agent],
       [
-        ledger.commands.mandateAgentExecute(mandate?.contractId ?? '', {
+        ledger.commands.mandateAgentExecute(mandateCid, {
           proposalCid,
           legs: input.payouts.map((x) =>
             testLeg(ids.factoryCid, x.holder, ids.preapprovals[x.holder]),

@@ -168,6 +168,7 @@ const mandate: Contract<Mandate> = contract('m1', {
   },
   agentExecutes: true,
   executedCycles: [],
+  cycleAttempts: [],
   sealedAt: '2026-09-01T00:00:00Z',
   summaryFingerprint: 'ff',
 });

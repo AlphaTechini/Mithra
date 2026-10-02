@@ -9,6 +9,7 @@ import {
   lastDayOfCycleMonth,
   nextRun,
   recordDateFor,
+  recordDateProblem,
 } from './period';
 
 describe('cycle ids', () => {
@@ -50,12 +51,62 @@ describe('record date rules', () => {
   it('day_before_payment is the day before the first scheduled payment after the cycle month', () => {
     const monthly = { cron: '0 9 1 * *', tz: 'UTC' };
     expect(recordDateFor('day_before_payment', '2026-09', monthly)).toBe('2026-09-30');
+  });
+
+  it('day_before_payment stays inside the cycle month, which is all the ledger accepts', () => {
+    // paid on the 15th of the next month: the day before is October 14, outside September
     const mid = { cron: '0 9 15 * *', tz: 'UTC' };
-    expect(recordDateFor('day_before_payment', '2026-09', mid)).toBe('2026-10-14');
+    expect(recordDateFor('day_before_payment', '2026-09', mid)).toBe('2026-09-30');
+    // the first payment after the month ends is on November 1 in Auckland (UTC+13 in summer)
+    const auckland = { cron: '0 9 1 * *', tz: 'Pacific/Auckland' };
+    expect(recordDateFor('day_before_payment', '2026-09', auckland)).toBe('2026-09-30');
+    // paid on the 30th at 17:00 in Los Angeles: the day before is still in the month
+    const la = { cron: '0 17 30 * *', tz: 'America/Los_Angeles' };
+    expect(recordDateFor('day_before_payment', '2026-09', la)).toBe('2026-09-29');
   });
 
   it('day_before_payment without a schedule falls back to the last day of the month', () => {
     expect(recordDateFor('day_before_payment', '2026-09')).toBe('2026-09-30');
+  });
+
+  it('whatever recordDateFor gives passes the ledger rule', () => {
+    const schedules = [
+      undefined,
+      { cron: '0 9 1 * *', tz: 'UTC' },
+      { cron: '0 9 15 * *', tz: 'UTC' },
+      { cron: '0 9 1 * *', tz: 'Pacific/Auckland' },
+      { cron: '0 0 1 * *', tz: 'America/Los_Angeles' },
+      { cron: '0 9 * * 1', tz: 'Europe/Zurich' },
+    ];
+    for (const cycleId of ['2026-01', '2026-02', '2026-09', '2026-12', '2028-02']) {
+      for (const rule of ['last_day_of_previous_month', 'day_before_payment'] as const) {
+        for (const schedule of schedules) {
+          const date = recordDateFor(rule, cycleId, schedule);
+          expect(recordDateProblem(rule, cycleId, date), `${rule} ${cycleId} ${date}`).toBeNull();
+        }
+      }
+    }
+  });
+});
+
+describe('record date problems (the ledger rule)', () => {
+  it('last_day_of_previous_month wants the last day of the cycle month and nothing else', () => {
+    const rule = 'last_day_of_previous_month';
+    expect(recordDateProblem(rule, '2026-09', '2026-09-30')).toBeNull();
+    expect(recordDateProblem(rule, '2028-02', '2028-02-29')).toBeNull();
+    expect(recordDateProblem(rule, '2026-09', '2026-09-29')).toMatch(/last day of 2026-09/);
+    expect(recordDateProblem(rule, '2026-09', '2026-08-31')).not.toBeNull();
+    expect(recordDateProblem(rule, '2026-09', '2026-10-31')).not.toBeNull();
+  });
+
+  it('day_before_payment wants a day inside the cycle month', () => {
+    const rule = 'day_before_payment';
+    for (const date of ['2026-09-01', '2026-09-14', '2026-09-30']) {
+      expect(recordDateProblem(rule, '2026-09', date)).toBeNull();
+    }
+    for (const date of ['2026-08-31', '2026-10-01', '2025-09-15']) {
+      expect(recordDateProblem(rule, '2026-09', date)).toMatch(/inside 2026-09/);
+    }
   });
 });
 

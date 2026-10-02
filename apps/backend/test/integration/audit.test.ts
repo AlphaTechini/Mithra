@@ -17,15 +17,7 @@ import { createDatabase, runMigrations, type DatabaseHandle } from '../../src/db
 import { activityLog, txRefs } from '../../src/db/schema';
 import { LedgerError } from '../../src/ledger';
 import { buildAuditApp, DATABASE_URL_M9, inviteAuditor, type AuditApp } from './auditHelpers';
-import {
-  createCycleWorld,
-  daysAgo,
-  isoDate,
-  issueUnits,
-  makeModule,
-  sleep,
-  type CycleWorld,
-} from './cycleHelpers';
+import { createCycleWorld, issueUnits, makeModule, sleep, type CycleWorld } from './cycleHelpers';
 import { requireSandbox, resetDatabase } from './helpers';
 
 const QUESTION = 'Show all Q3 distributions and the approvals behind any flagged one.';
@@ -99,10 +91,10 @@ describe('audit flow against a Canton sandbox and PostgreSQL', () => {
     // July is clean, September is flagged (a deviation and a unit spike) and needs 2 approvals.
     world = await createCycleWorld(database, {
       holders: [
-        { name: 'holderA', units: 500, daysAgo: 90, preapproval: true },
-        { name: 'holderB', units: 400, daysAgo: 90, preapproval: true },
-        { name: 'holderC', units: 100, daysAgo: 90, preapproval: true },
-        { name: 'holderD', units: 100, daysAgo: 90, preapproval: true },
+        { name: 'holderA', units: 500, daysBefore: 400, preapproval: true },
+        { name: 'holderB', units: 400, daysBefore: 400, preapproval: true },
+        { name: 'holderC', units: 100, daysBefore: 400, preapproval: true },
+        { name: 'holderD', units: 100, daysBefore: 400, preapproval: true },
       ],
       funds: '1000000',
     });
@@ -114,7 +106,6 @@ describe('audit flow against a Canton sandbox and PostgreSQL', () => {
       actorParty: p().treasurer,
       cycleId: '2026-07',
       total: '100',
-      recordDate: isoDate(daysAgo(20)),
     });
     await cycles.cycles.settled();
     await sleep(1300);
@@ -125,7 +116,6 @@ describe('audit flow against a Canton sandbox and PostgreSQL', () => {
       actorParty: p().treasurer,
       cycleId: '2026-09',
       total: '1000',
-      recordDate: isoDate(daysAgo(1)),
     });
     await cycles.cycles.settled();
     await cycles.cycles.approve('proposal/2026-09/1', p().approver1, 'Checked the unit change');

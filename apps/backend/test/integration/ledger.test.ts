@@ -6,6 +6,7 @@ import {
   createLedger,
   createdIn,
   type DistributionOutcome,
+  type ProposalInput,
   type Transaction,
 } from '../../src/ledger';
 import { createTokenStandardAdapter } from '../../src/wallet';
@@ -134,7 +135,10 @@ describe('ledger module against a Canton sandbox', () => {
         readAs: [parties.treasury],
       },
     );
-    const { proposalCid } = choiceResults.mandatePropose(proposeTx);
+    const { proposalCid, mandateCid: afterPropose } = choiceResults.mandatePropose(proposeTx);
+    // Proposing consumes the Mandate: the new one records the attempt.
+    expect(afterPropose).not.toBe(ids.mandateCid);
+    world.ids.mandateCid = afterPropose;
 
     const proposals = await ledger.reader.proposals();
     expect(proposals).toHaveLength(1);
@@ -294,7 +298,7 @@ describe('ledger module against a Canton sandbox', () => {
 
   it('surfaces a Daml assertion as a LedgerError with the clean message', async () => {
     const { parties, ids, ledger } = world;
-    const good = proposalInput(world, { cycleId: '2026-10', total: '6000' });
+    const good = proposalInput(world, { cycleId: '2026-08', total: '6000' });
     const [first, ...rest] = good.payouts;
     const altered = { ...good, payouts: [{ ...first!, amount: '1' }, ...rest] };
     const error = await as
@@ -327,7 +331,7 @@ describe('ledger module against a Canton sandbox', () => {
 
   it('runs an over-cap proposal through approvals, cancel, a second attempt and reject', async () => {
     const { parties, ids, ledger } = world;
-    const input = proposalInput(world, { cycleId: '2026-10', total: '6000' });
+    const input = proposalInput(world, { cycleId: '2026-08', total: '6000' });
     const proposeTx = await as.as(
       [parties.agent],
       [ledger.commands.mandatePropose(ids.mandateCid, input)],
@@ -335,7 +339,8 @@ describe('ledger module against a Canton sandbox', () => {
         readAs: [parties.treasury],
       },
     );
-    const { proposalCid } = choiceResults.mandatePropose(proposeTx);
+    const { proposalCid, mandateCid } = choiceResults.mandatePropose(proposeTx);
+    world.ids.mandateCid = mandateCid;
     expect(
       (await ledger.reader.proposals()).find((p) => p.contractId === proposalCid)?.payload.verdict,
     ).toBe('NeedsApproval');
@@ -390,13 +395,13 @@ describe('ledger module against a Canton sandbox', () => {
     choiceResults.proposalCancel(cancelTx);
     const cancelled = (await ledger.reader.outcomes()).find((o) => o.payload.kind === 'Cancelled');
     expect(cancelled?.payload).toMatchObject({
-      recordId: 'outcome/2026-10/1',
+      recordId: 'outcome/2026-08/1',
       reason: null,
       actor: parties.treasurer,
     });
     expect(cancelled?.payload.approvals).toHaveLength(1);
 
-    const second = proposalInput(world, { cycleId: '2026-10', total: '6000', attempt: 2 });
+    const second = proposalInput(world, { cycleId: '2026-08', total: '6000', attempt: 2 });
     const secondTx = await as.as(
       [parties.agent],
       [ledger.commands.mandatePropose(ids.mandateCid, second)],
@@ -404,10 +409,12 @@ describe('ledger module against a Canton sandbox', () => {
         readAs: [parties.treasury],
       },
     );
+    const secondResult = choiceResults.mandatePropose(secondTx);
+    world.ids.mandateCid = secondResult.mandateCid;
     const rejectTx = await as.as(
       [parties.approver2],
       [
-        ledger.commands.proposalReject(choiceResults.mandatePropose(secondTx).proposalCid, {
+        ledger.commands.proposalReject(secondResult.proposalCid, {
           approver: parties.approver2,
           reason: 'Too much for this month',
         }),
@@ -416,16 +423,57 @@ describe('ledger module against a Canton sandbox', () => {
     choiceResults.proposalReject(rejectTx);
     const rejected = (await ledger.reader.outcomes()).find((o) => o.payload.kind === 'Rejected');
     expect(rejected?.payload).toMatchObject({
-      recordId: 'outcome/2026-10/2',
+      recordId: 'outcome/2026-08/2',
       reason: 'Too much for this month',
       actor: parties.approver2,
     });
     expect(await ledger.reader.proposals()).toEqual([]);
+
+    // The ledger numbers the attempts: attempt 2 is taken, so the next one is 3.
+    const propose = (input: ProposalInput) =>
+      as.as([parties.agent], [ledger.commands.mandatePropose(ids.mandateCid, input)], {
+        readAs: [parties.treasury],
+      });
+    await expect(propose(second)).rejects.toMatchObject({
+      message: expect.stringContaining('Attempt 2 for cycle 2026-08 is not the next one') as string,
+    });
+    await expect(propose({ ...second, attempt: 4 })).rejects.toMatchObject({
+      message: expect.stringContaining('must be 3') as string,
+    });
+    // The cycle id and the record date are checked by the ledger, whatever the agent sends.
+    const third = proposalInput(world, { cycleId: '2026-08', total: '6000', attempt: 3 });
+    await expect(propose({ ...third, cycleId: '2026-08-b' })).rejects.toMatchObject({
+      message: expect.stringContaining('The cycle id must be YYYY-MM') as string,
+    });
+    await expect(propose({ ...third, recordDate: '2026-08-30' })).rejects.toMatchObject({
+      message: expect.stringContaining('last day of 2026-08') as string,
+    });
+    const future = proposalInput(world, { cycleId: '2099-12', total: '6000' });
+    await expect(propose(future)).rejects.toMatchObject({
+      message: expect.stringContaining('has not happened yet') as string,
+    });
+    // Attempt 3 goes through and the Mandate moves on again.
+    const thirdResult = choiceResults.mandatePropose(await propose(third));
+    world.ids.mandateCid = thirdResult.mandateCid;
+    expect(
+      (await ledger.reader.decisionRecords())
+        .filter((d) => d.payload.cycleId === '2026-08')
+        .map((d) => d.payload.recordId)
+        .sort(),
+    ).toEqual(['decision/2026-08/1', 'decision/2026-08/2', 'decision/2026-08/3']);
+    expect(
+      (await ledger.reader.mandate())?.payload.cycleAttempts.find((a) => a.cycleId === '2026-08')
+        ?.attempt,
+    ).toBe(3);
+    // Left pending, a cycle nobody uses again: cancel it so the next test starts clean.
+    choiceResults.proposalCancel(
+      await as.as([parties.treasurer], [ledger.commands.proposalCancel(thirdResult.proposalCid)]),
+    );
   });
 
   it('lets the treasury execute a payout itself (MainNet path) and record who acted', async () => {
     const { parties, ids, ledger } = world;
-    const input = proposalInput(world, { cycleId: '2026-11', total: '1000' });
+    const input = proposalInput(world, { cycleId: '2026-07', total: '1000' });
     const proposeTx = await as.as(
       [parties.agent],
       [ledger.commands.mandatePropose(ids.mandateCid, input)],
@@ -433,7 +481,8 @@ describe('ledger module against a Canton sandbox', () => {
         readAs: [parties.treasury],
       },
     );
-    const { proposalCid } = choiceResults.mandatePropose(proposeTx);
+    const { proposalCid, mandateCid: proposedOn } = choiceResults.mandatePropose(proposeTx);
+    world.ids.mandateCid = proposedOn;
     const adapter = createTokenStandardAdapter({
       ledger: ledger.client,
       registryUrl: 'http://localhost:1/unused',
@@ -458,7 +507,7 @@ describe('ledger module against a Canton sandbox', () => {
     world.ids.mandateCid = mandateCid;
     const outcome = (await ledger.reader.outcomes()).find((o) => o.contractId === outcomeCid);
     expect(outcome?.payload).toMatchObject({ kind: 'Executed', actor: parties.treasury });
-    expect((await ledger.reader.mandate())?.payload.executedCycles).toEqual(['2026-09', '2026-11']);
+    expect((await ledger.reader.mandate())?.payload.executedCycles).toEqual(['2026-09', '2026-07']);
   });
 
   it('encodes variants and tuples: Org_GrantAccess with RefDecision and RefOutcome evidence', async () => {
@@ -731,7 +780,7 @@ describe('ledger module against a Canton sandbox', () => {
         commands: [
           ledger.commands.mandatePropose(
             world.ids.mandateCid,
-            proposalInput(world, { cycleId: '2026-11', total: '1000' }),
+            proposalInput(world, { cycleId: '2026-07', total: '1000' }),
           ),
         ],
       }),

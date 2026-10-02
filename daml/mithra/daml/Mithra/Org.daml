@@ -93,8 +93,8 @@ template Organization
         assertMsg "The seal request is for a different treasury" (request.treasury == treasury)
         assertMsg "The seal request was signed by a different treasurer" (request.treasurer == treasurer)
         assertMsg "The seal request names a different agent" (request.agent == agent)
-        executed <- case (currentMandateCid, mandateVersion) of
-          (None, 0) -> pure []
+        carryover <- case (currentMandateCid, mandateVersion) of
+          (None, 0) -> pure MandateCarryover with executedCycles = []; cycleAttempts = []
           (Some cid, v) | v > 0 -> do
             current <- fetch cid
             assertMsg "The current Mandate does not belong to this organization"
@@ -115,7 +115,8 @@ template Organization
           version = mandateVersion + 1
           terms = request.terms
           agentExecutes = request.agentExecutes
-          executedCycles = executed
+          executedCycles = carryover.executedCycles
+          cycleAttempts = carryover.cycleAttempts
           sealedAt = now
           summaryFingerprint = request.summaryFingerprint
         pure (orgCid, mandateCid)

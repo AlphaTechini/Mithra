@@ -1,6 +1,10 @@
 import { Cron } from 'croner';
 import { cycleLabel as labelOf, int } from './format';
 
+/**
+ * `last_day_of_previous_month` is the last day of the month before the payment date, which is the
+ * cycle's own month (a September cycle paid on October 1 has the record date September 30).
+ */
 export type RecordDateRule = 'last_day_of_previous_month' | 'day_before_payment';
 
 const CYCLE_ID = /^(\d{4})-(0[1-9]|1[0-2])$/;
@@ -42,7 +46,13 @@ export function lastDayOfCycleMonth(cycleId: string): string {
   return `${last.getUTCFullYear()}-${pad(last.getUTCMonth() + 1)}-${pad(last.getUTCDate())}`;
 }
 
-/** `date` ("YYYY-MM-DD") minus `days` days. */
+/** The first day of the cycle month, `2026-09-01`. */
+export function firstDayOfCycleMonth(cycleId: string): string {
+  const { year, month } = parseCycleId(cycleId);
+  return `${String(year).padStart(4, '0')}-${pad(month)}-01`;
+}
+
+/** `date` ("YYYY-MM-DD") plus `days` days (negative for earlier). */
 export function addDays(date: string, days: number): string {
   const [y = 0, m = 1, d = 1] = date.split('-').map(int);
   const result = new Date(Date.UTC(y, m - 1, d + days));
@@ -100,8 +110,9 @@ export interface Schedule {
  * after the cycle month ends (the 1st of the next month at 09:00 for `0 9 1 * *`).
  * - `last_day_of_previous_month`: the last day of the month before the payment date, which is the
  *   last day of the cycle month;
- * - `day_before_payment`: the day before the payment date. Without a schedule the payment date is
- *   the first of the next month, so this is also the last day of the cycle month.
+ * - `day_before_payment`: the day before the payment date, kept inside the cycle month because the
+ *   ledger accepts only record dates inside it (`Mandate_Propose`). Without a schedule the payment
+ *   date is the first of the next month, so this is also the last day of the cycle month.
  */
 export function recordDateFor(rule: RecordDateRule, cycleId: string, schedule?: Schedule): string {
   const lastDay = lastDayOfCycleMonth(cycleId);
@@ -109,7 +120,33 @@ export function recordDateFor(rule: RecordDateRule, cycleId: string, schedule?: 
   const monthEnd = new Date(`${lastDay}T23:59:59.999Z`);
   const payment = nextRun(schedule.cron, schedule.tz, monthEnd);
   if (!payment) return lastDay;
-  return addDays(localDate(payment, schedule.tz), -1);
+  const dayBefore = addDays(localDate(payment, schedule.tz), -1);
+  return dayBefore < firstDayOfCycleMonth(cycleId)
+    ? firstDayOfCycleMonth(cycleId)
+    : dayBefore > lastDay
+      ? lastDay
+      : dayBefore;
+}
+
+/**
+ * Why `recordDate` is not allowed for the cycle under `rule`, or null when it is. This is the rule
+ * the ledger enforces in `Mandate_Propose`: the last day of the cycle month for
+ * `last_day_of_previous_month`, any day inside the cycle month for `day_before_payment`.
+ */
+export function recordDateProblem(
+  rule: RecordDateRule,
+  cycleId: string,
+  recordDate: string,
+): string | null {
+  const lastDay = lastDayOfCycleMonth(cycleId);
+  if (rule === 'last_day_of_previous_month') {
+    return recordDate === lastDay
+      ? null
+      : `The record date must be the last day of ${cycleId}, ${lastDay}.`;
+  }
+  return recordDate >= firstDayOfCycleMonth(cycleId) && recordDate <= lastDay
+    ? null
+    : `The record date must fall inside ${cycleId}, between ${firstDayOfCycleMonth(cycleId)} and ${lastDay}.`;
 }
 
 /**

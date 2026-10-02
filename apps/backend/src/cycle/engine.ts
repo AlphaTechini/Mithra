@@ -52,6 +52,7 @@ import {
   isoDateOf,
   nextRun,
   recordDateFor,
+  recordDateProblem,
   addDays,
   type RecordDateRule,
 } from './period';
@@ -213,6 +214,12 @@ class StepError extends Error {
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/** The attempt number the ledger accepts next for a cycle: one more than the newest on the Mandate. */
+export function nextAttempt(mandate: Mandate, cycleId: string): number {
+  const last = mandate.cycleAttempts.find((a) => a.cycleId === cycleId)?.attempt ?? 0;
+  return last + 1;
 }
 
 /** True for ledger errors that say the contract used in the command is no longer active. */
@@ -552,6 +559,16 @@ class CycleEngine implements CycleService {
         `The record date ${recordDate} has not happened yet, so units cannot be snapshotted. Pick a cycle that has ended or an earlier record date.`,
       );
     }
+    // The ledger enforces the same rule in `Mandate_Propose`; saying so here gives a readable
+    // refusal instead of a failed run.
+    const dateProblem = recordDateProblem(rule, cycleId, recordDate);
+    if (dateProblem !== null) {
+      throw new ApiError(
+        422,
+        'invalid_record_date',
+        `${dateProblem} The Mandate's rule is "${rule === 'day_before_payment' ? 'the day before payment' : 'last day of the previous month'}".`,
+      );
+    }
 
     const reserved = await this.store.reserve({
       cycleId,
@@ -827,17 +844,9 @@ class CycleEngine implements CycleService {
       if (input.trigger === 'prompt' && input.promptText !== undefined) {
         fingerprints.push({ label: 'prompt', sha256: sha256Hex(input.promptText) });
       }
-      const attempt =
-        1 +
-        outcomes.filter(
-          (o) =>
-            o.payload.cycleId === cycleId &&
-            (o.payload.kind === 'Rejected' || o.payload.kind === 'Cancelled'),
-        ).length;
-      const proposalInput: ProposalInput = {
+      const proposalInput: Omit<ProposalInput, 'attempt'> = {
         cycleId,
         cycleLabel: label,
-        attempt,
         total,
         recordDate,
         trigger: TRIGGER_ENUM[input.trigger],
@@ -915,9 +924,14 @@ class CycleEngine implements CycleService {
     }
   }
 
-  /** `Mandate_Propose` as the agent, retried when the Mandate contract changed under us. */
+  /**
+   * `Mandate_Propose` as the agent, retried when the Mandate contract changed under us. The
+   * Mandate keeps the newest attempt number per cycle and the ledger accepts only the next one,
+   * so the attempt is read from the Mandate being proposed against (`Mandate_Propose` consumes
+   * it, which is also why each try reads the Mandate again).
+   */
   private async propose(
-    input: ProposalInput,
+    input: Omit<ProposalInput, 'attempt'>,
   ): Promise<{ proposal: Contract<Proposal>; updateId: string; decisionRecordCid: string }> {
     const { reader, client, commands } = this.deps.ledger;
     return this.mandateLock.run(async () => {
@@ -928,7 +942,12 @@ class CycleEngine implements CycleService {
           const tx = await client.submit({
             actAs: [this.agent],
             readAs: this.readAs(),
-            commands: [commands.mandatePropose(mandate.contractId, input)],
+            commands: [
+              commands.mandatePropose(mandate.contractId, {
+                ...input,
+                attempt: nextAttempt(mandate.payload, input.cycleId),
+              }),
+            ],
             shape: 'LEDGER_EFFECTS',
           });
           const ids = choiceResults.mandatePropose(tx);

@@ -136,7 +136,7 @@ describe('agent, grant expiry, scheduler and live events against a Canton sandbo
       ],
       { readAs: [parties.treasury] },
     );
-    choiceResults.mandatePropose(proposeTx);
+    world.ids.mandateCid = choiceResults.mandatePropose(proposeTx).mandateCid;
     const decision = (await ledger.reader.decisionRecords()).find(
       (d) => d.payload.cycleId === '2026-09',
     );
@@ -239,7 +239,7 @@ describe('agent, grant expiry, scheduler and live events against a Canton sandbo
   it('A7: the agent party has no ledger right to approve, seal, grant, deny, revoke or execute without approvals', async () => {
     const { parties, ids, ledger } = world;
     const { commands } = ledger;
-    const input = proposalInput(world, { cycleId: '2026-10', total: '6000' });
+    const input = proposalInput(world, { cycleId: '2026-08', total: '6000' });
     const proposeTx = await as.as(
       [parties.agent],
       [commands.mandatePropose(ids.mandateCid, input)],
@@ -247,7 +247,8 @@ describe('agent, grant expiry, scheduler and live events against a Canton sandbo
         readAs: [parties.treasury],
       },
     );
-    const { proposalCid } = choiceResults.mandatePropose(proposeTx);
+    const { proposalCid, mandateCid } = choiceResults.mandatePropose(proposeTx);
+    world.ids.mandateCid = mandateCid;
     const asAgent = (
       command: Parameters<typeof as.as>[1][number],
       readAs: string[] = [parties.treasury],

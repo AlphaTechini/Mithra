@@ -5,6 +5,7 @@ module Mithra.Test.Setup where
 import Daml.Script
 import DA.Date
 import DA.Time
+import DA.Optional (fromSome)
 import DA.Stack (HasCallStack)
 import qualified DA.Text as T
 import Splice.Api.Token.HoldingV1
@@ -137,9 +138,10 @@ sealRequestFor treasury treasurer agent terms agentExecutes = submit treasurer $
 reseal : Fixture -> MandateTerms -> Script Fixture
 reseal fx terms = do
   req <- sealRequest fx terms True
+  current <- liveMandateCid fx
   (org, mandate) <- submit fx.treasury $ exerciseCmd fx.orgCid Org_ApplySeal with
     sealRequestCid = req
-    currentMandateCid = Some fx.mandateCid
+    currentMandateCid = Some current
   pure fx with orgCid = org; mandateCid = mandate; terms
 
 registerChanges : Fixture -> Script [UnitChange]
@@ -162,20 +164,26 @@ holderBalance holder = do
   hs <- query @TestHolding holder
   pure (sum [h.amount | (_, h) <- hs, h.owner == holder])
 
--- | A proposal input for `total` in cycle `cycleId` with the correct pro-rata payouts
--- and one passing deterministic check.
+-- | The record date the Mandate's rule gives for `cycleId`: the last day of that month.
+recordDateOfCycle : Text -> Date
+recordDateOfCycle cycleId = fromSome (lastDayOfCycle cycleId)
+
+-- | A proposal input for `total` in cycle `cycleId` with the correct record date, the correct
+-- pro-rata payouts, the next attempt number for the cycle and one passing deterministic check.
 inputFor : Fixture -> Text -> Decimal -> Script ProposalInput
 inputFor fx cycleId total = do
   changes <- registerChanges fx
+  m <- liveMandate fx
+  let recordDate = recordDateOfCycle cycleId
   pure ProposalInput with
     cycleId
     cycleLabel = "Cycle " <> cycleId
-    attempt = 1
+    attempt = lastAttemptOf cycleId m.cycleAttempts + 1
     total
-    recordDate = testRecordDate
+    recordDate
     trigger = TriggerSchedule
     triggerDetail = "Monthly schedule 0 9 1 * *"
-    payouts = computeProRata total (unitsAt testRecordDate changes)
+    payouts = computeProRata total (unitsAt recordDate changes)
     registerCid = fx.registerCid
     inputFingerprints = [Fingerprint with label = "register"; sha256 = "ab12"]
     checks = [passingCheck "cap" "Within the auto-execute cap"]
@@ -188,11 +196,38 @@ passingCheck : Text -> Text -> CheckResult
 passingCheck code label = CheckResult with
   code; label; passed = True; blocking = True; actual = "ok"; limit = "ok"; source = "deterministic"
 
-proposeCmd : Fixture -> ProposalInput -> Commands (ContractId Proposal, ContractId DecisionRecord)
-proposeCmd fx input = exerciseCmd fx.mandateCid Mandate_Propose with input
+-- | The one active Mandate. Proposing and executing both replace it, so tests look it up
+-- instead of holding on to the contract id they sealed it with.
+liveMandateCid : Fixture -> Script (ContractId Mandate)
+liveMandateCid fx = do
+  ms <- query @Mandate fx.treasury
+  case ms of
+    [(cid, _)] -> pure cid
+    _ -> abort ("Expected exactly one active Mandate, found " <> show (length ms))
 
+liveMandate : Fixture -> Script Mandate
+liveMandate fx = do
+  cid <- liveMandateCid fx
+  mandateOf fx cid
+
+-- | `Mandate_Propose` on the active Mandate.
+proposeCmd : Fixture -> ProposalInput -> Script (Commands ProposeResult)
+proposeCmd fx input = do
+  cid <- liveMandateCid fx
+  pure (exerciseCmd cid Mandate_Propose with input)
+
+-- | Proposes on the active Mandate; the Mandate is replaced by one that records the attempt.
 propose : Fixture -> ProposalInput -> Script (ContractId Proposal, ContractId DecisionRecord)
-propose fx input = submit (asAgent fx) (proposeCmd fx input)
+propose fx input = do
+  cmd <- proposeCmd fx input
+  r <- submit (asAgent fx) cmd
+  pure (r.proposalCid, r.decisionRecordCid)
+
+-- | The proposal must be refused, with a failure that mentions `expected`.
+proposeFailsWith : HasCallStack => Text -> Fixture -> ProposalInput -> Script ()
+proposeFailsWith expected fx input = do
+  cmd <- proposeCmd fx input
+  failsWith expected (asAgent fx) cmd
 
 -- | Propose `total` for `cycleId` with correct payouts.
 proposeTotal : Fixture -> Text -> Decimal -> Script (ContractId Proposal, ContractId DecisionRecord)
@@ -213,11 +248,12 @@ legsFor fx payouts pending =
   [ legFor fx.factoryCid p.holder (if p.holder `elem` pending then None else lookup p.holder fx.preapprovals)
   | p <- payouts ]
 
-executeCmdFor : Fixture -> ContractId Mandate -> ContractId Proposal -> [Party]
+executeCmdFor : Fixture -> ContractId Proposal -> [Party]
   -> Script (Commands (ContractId Mandate, ContractId DistributionOutcome))
-executeCmdFor fx mandateCid proposalCid pending = do
+executeCmdFor fx proposalCid pending = do
   Some proposal <- queryContractId fx.agent proposalCid
   holdings <- treasuryHoldings fx
+  mandateCid <- liveMandateCid fx
   now <- getTime
   pure $ exerciseCmd mandateCid Mandate_AgentExecute with
     proposalCid
@@ -225,14 +261,14 @@ executeCmdFor fx mandateCid proposalCid pending = do
     inputHoldingCids = holdings
     executeBefore = addRelTime now (days 1)
 
-executeCmd : Fixture -> ContractId Mandate -> ContractId Proposal
+executeCmd : Fixture -> ContractId Proposal
   -> Script (Commands (ContractId Mandate, ContractId DistributionOutcome))
-executeCmd fx mandateCid proposalCid = executeCmdFor fx mandateCid proposalCid []
+executeCmd fx proposalCid = executeCmdFor fx proposalCid []
 
--- | The agent executes against the fixture's Mandate.
+-- | The agent executes against the active Mandate.
 execute : Fixture -> ContractId Proposal -> Script (ContractId Mandate, ContractId DistributionOutcome)
 execute fx proposalCid = do
-  cmd <- executeCmd fx fx.mandateCid proposalCid
+  cmd <- executeCmd fx proposalCid
   submit (asAgent fx) cmd
 
 -- | The submission must fail, and the failure must mention `expected`. A bare

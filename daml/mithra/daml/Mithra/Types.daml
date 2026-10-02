@@ -1,5 +1,6 @@
 module Mithra.Types where
 
+import DA.Date (Month, fromGregorian, monthDayCount, toGregorian)
 import DA.Foldable (maximum)
 import DA.List (dedup, head, sortOn)
 import qualified DA.Text as T
@@ -47,7 +48,8 @@ data MandateTerms = MandateTerms with
     asset : InstrumentId         -- CC on the configured network; USDCx later without redesign
     scheduleCron : Text          -- e.g. "0 9 1 * *"
     scheduleTimezone : Text      -- "UTC"
-    recordDateRule : Text        -- "last_day_of_previous_month"
+    -- "last_day_of_previous_month" is the last day of the month before the payment date, that is the cycle's own month
+    recordDateRule : Text        -- "last_day_of_previous_month" | "day_before_payment"
     fixedAmount : Optional Decimal
     deviationPct : Decimal       -- flag if total deviates more than this % from trailing average
     trailingCycles : Int
@@ -159,3 +161,56 @@ groupDigits _ [] = []
 groupDigits n (c :: cs)
   | n > 0 && n % 3 == 0 = "," :: c :: groupDigits (n + 1) cs
   | otherwise = c :: groupDigits (n + 1) cs
+
+-- | The month a cycle id names, or None unless the id is canonical: `YYYY-MM` with a four digit
+-- year from 0001 and a two digit month from 01 to 12.
+cycleMonthOf : Text -> Optional (Int, Month)
+cycleMonthOf cycleId = case T.splitOn "-" cycleId of
+  [y, m] ->
+    if T.length y == 4 && T.length m == 2 && all isDigit (T.explode (y <> m))
+      then case (T.parseInt y, T.parseInt m) of
+        (Some year, Some month) | year >= 1 && month >= 1 && month <= 12 -> Some (year, toEnum (month - 1))
+        _ -> None
+      else None
+  _ -> None
+  where
+    isDigit c = c `elem` ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+
+-- | The canonical cycle id, `YYYY-MM`, of the month containing `d`.
+cycleIdOfDate : Date -> Text
+cycleIdOfDate d =
+  let (y, m, _) = toGregorian d
+  in padZeros 4 (show y) <> "-" <> padZeros 2 (show (fromEnum m + 1))
+  where
+    padZeros n t = T.implode (replicate (n - T.length t) "0") <> t
+
+-- | Whether `cycleId` is a canonical `YYYY-MM`.
+isCycleId : Text -> Bool
+isCycleId cycleId = case cycleMonthOf cycleId of
+  Some (y, m) -> cycleIdOfDate (fromGregorian (y, m, 1)) == cycleId
+  None -> False
+
+-- | The last day of the month a cycle id names, or None for a cycle id that is not canonical.
+lastDayOfCycle : Text -> Optional Date
+lastDayOfCycle cycleId = case cycleMonthOf cycleId of
+  Some (y, m) -> Some (fromGregorian (y, m, monthDayCount y m))
+  None -> None
+
+-- | Nothing when `recordDate` follows `rule` for the cycle `cycleId`, otherwise why not.
+--   * "last_day_of_previous_month": the last day of the month before the payment date, that is
+--     the last day of the cycle's own month;
+--   * "day_before_payment": any day inside the cycle's month (the backend takes the day before the
+--     payment date and keeps it inside the month).
+recordDateProblem : Text -> Text -> Date -> Optional Text
+recordDateProblem rule cycleId recordDate = case (lastDayOfCycle cycleId, cycleMonthOf cycleId) of
+  (Some lastDay, Some (y, m)) ->
+    let (ry, rm, _) = toGregorian recordDate
+        inMonth = ry == y && rm == m
+    in if rule == "last_day_of_previous_month" then
+         (if recordDate == lastDay then None
+          else Some ("The record date must be the last day of " <> cycleId <> " (" <> show lastDay <> ")"))
+       else if rule == "day_before_payment" then
+         (if inMonth then None
+          else Some ("The record date must fall inside " <> cycleId))
+       else Some ("Unknown record date rule " <> rule)
+  _ -> Some ("The cycle id must be YYYY-MM, like 2026-09, not " <> cycleId)

@@ -34,7 +34,7 @@ GovernanceRules
                                              ├─ consumes MandateSealRequest
                                              ├─ supersedes the old Mandate
                                              └─ Mandate (sig: treasury, treasurer)
-Mandate_Propose (ctl: agent)        ──> DecisionRecord + Proposal (sig: treasury, agent)
+Mandate_Propose (ctl: agent)        ──> DecisionRecord + Proposal (sig: treasury, agent), new Mandate (records the attempt)
 Proposal_Approve (ctl: approver)    ──> Proposal.approvals += approver, Approval (sig: approver)
 Mandate_AgentExecute (ctl: agent)   ──> TransferFactory_Transfer (sender: treasury) per payee,
                                          Payment per payee, DistributionOutcome
@@ -74,7 +74,8 @@ data MandateTerms = MandateTerms with
     asset : InstrumentId         -- CC on the configured network; USDCx later without redesign
     scheduleCron : Text          -- e.g. "0 9 1 * *"
     scheduleTimezone : Text      -- "UTC"
-    recordDateRule : Text        -- "last_day_of_previous_month"
+    -- "last_day_of_previous_month" is the last day of the month before the payment date, that is the cycle's own month
+    recordDateRule : Text        -- "last_day_of_previous_month" | "day_before_payment"
     fixedAmount : Optional Decimal
     deviationPct : Decimal       -- flag if total deviates more than this % from trailing average
     trailingCycles : Int
@@ -126,7 +127,7 @@ Daml implementation of `floor10 n d` (n, d Decimal, d > 0): `q = n / d`; if `q *
 `signatory treasury, treasurer; observer agent, operator, approvers`. Fields: `treasury, treasurer, agent, operator, name, asset, approvers, approvalThreshold, mandateVersion : Int` (0 before the first seal). `ensure` unique approvers, `1 <= threshold <= length approvers`, `agent notElem approvers`.
 - `Org_IssueUnits` (nonconsuming) `controller treasurer` with `registerCid, holder, units : Int (> 0), effectiveDate : Date (<= today), seeded : Bool` → `Register_Record` + creates `FundUnit` (not yet accepted). Returns `(ContractId UnitRegister, ContractId FundUnit)`.
 - `Org_AcceptDeposit` (nonconsuming) `controller agent` with `instructionCid : ContractId TransferInstruction, extraArgs : ExtraArgs` → accepts a pending incoming transfer of the organization's asset addressed to the treasury (funding; on LocalNet the treasury cannot submit). Rejects transfers to anyone else or of another instrument.
-- `Org_ApplySeal` (consuming) `controller treasury` with `sealRequestCid, currentMandateCid : Optional (ContractId Mandate)` → consumes the treasurer-signed `MandateSealRequest` (must match this org's treasury/treasurer), requires `currentMandateCid` to be `None` iff `mandateVersion == 0`, supersedes the current mandate (carrying `executedCycles`), recreates the `Organization` with the request's asset, approvers and threshold and `mandateVersion + 1`, creates the new `Mandate`. Returns `(ContractId Organization, ContractId Mandate)`.
+- `Org_ApplySeal` (consuming) `controller treasury` with `sealRequestCid, currentMandateCid : Optional (ContractId Mandate)` → consumes the treasurer-signed `MandateSealRequest` (must match this org's treasury/treasurer), requires `currentMandateCid` to be `None` iff `mandateVersion == 0`, supersedes the current mandate (carrying `executedCycles` and `cycleAttempts`), recreates the `Organization` with the request's asset, approvers and threshold and `mandateVersion + 1`, creates the new `Mandate`. Returns `(ContractId Organization, ContractId Mandate)`.
 - `Org_GrantAccess` (nonconsuming) `controller treasurer` with `requestCid, expiresAt : Time (> now), evidence : [EvidenceRef]` → resolves the request, fetches each referenced record, checks each record's `recordId` is in the request scope, creates one `SharedRecord` per record and an `AccessGrant`. Returns the grant cid.
 - `Org_DenyAccess` (nonconsuming) `controller treasurer` with `requestCid, reason : Text` → resolves the request, creates `AccessDenied`.
 
@@ -144,14 +145,17 @@ Daml implementation of `floor10 n d` (n, d Decimal, d > 0): `q = n / d`; if `q *
 - `SealRequest_Withdraw` `controller treasurer`.
 
 ### `Mandate` (`Mithra.Mandate`)
-`signatory treasury, treasurer; observer agent, terms.approvers`. Fields: `treasury, treasurer, agent, version : Int, terms : MandateTerms, agentExecutes : Bool, executedCycles : [Text], sealedAt : Time, summaryFingerprint : Text`.
-- `Mandate_Propose` (nonconsuming) `controller agent` with `input : ProposalInput`, where `ProposalInput { cycleId, cycleLabel, attempt : Int, total, recordDate, trigger, triggerDetail, payouts, registerCid, inputFingerprints, checks, memo, memoSource, modelFingerprints, seeded }` (`attempt` is 1 for the first proposal of a cycle and counts up after a cancel or reject; it only numbers the record ids, because the ledger has no keys to count with):
+`signatory treasury, treasurer; observer agent, terms.approvers`. Fields: `treasury, treasurer, agent, version : Int, terms : MandateTerms, agentExecutes : Bool, executedCycles : [Text], cycleAttempts : [CycleAttempt], sealedAt : Time, summaryFingerprint : Text`. `CycleAttempt { cycleId : Text, attempt : Int }` is the newest attempt number proposed for a cycle, one entry per cycle.
+- `Mandate_Propose` (consuming, recreated with the attempt recorded in `cycleAttempts`) `controller agent` with `input : ProposalInput`, where `ProposalInput { cycleId, cycleLabel, attempt : Int, total, recordDate, trigger, triggerDetail, payouts, registerCid, inputFingerprints, checks, memo, memoSource, modelFingerprints, seeded }` (`attempt` is 1 for the first proposal of a cycle and counts up after a cancel or reject):
+  - `cycleId` is the canonical `YYYY-MM` (`isCycleId`), so the agent cannot invent a second id such as `2026-09-b` for the same period,
   - `cycleId notElem executedCycles` (L3, early),
+  - `attempt == lastAttempt + 1`, where `lastAttempt` is the cycle's entry in `cycleAttempts` (0 when there is none). This makes `decision/<cycleId>/<n>`, `proposal/<cycleId>/<n>` and `outcome/<cycleId>/<n>` unique, which an audit grant scoped by record id relies on. The Mandate hands `cycleAttempts` to its successor in `Org_ApplySeal`, so a new Mandate does not reset the numbering,
+  - the record date follows `terms.recordDateRule` for the cycle (`recordDateProblem`): for `last_day_of_previous_month` it is the last day of the `cycleId` month, for `day_before_payment` any day inside that month; any other rule value is refused. It is not after the ledger's current UTC date (`toDateUTC <$> getTime`),
   - every check has `source` `"deterministic"` or `"ai"`, and an `"ai"` check cannot be `blocking` (A5: the AI can add advisory flags, not block or clear anything),
   - fetch the register; `payouts == computeProRata total (unitsAt recordDate register.changes)` and non-empty (L2),
   - `total > 0`,
   - verdict is computed **here**: `NeedsApproval` if `total > terms.cap` or any check has `blocking && not passed`, else `AutoExecute` (A5, A6: the agent cannot pick the verdict, and an AI flag can add a failed check but the deterministic ones are supplied and kept as given),
-  - creates `DecisionRecord` and `Proposal`. Returns `(ContractId Proposal, ContractId DecisionRecord)`.
+  - creates `DecisionRecord` and `Proposal` and the new `Mandate`. Returns `ProposeResult { mandateCid, proposalCid, decisionRecordCid }`.
 - `Mandate_AgentExecute` (consuming, recreated with `cycleId` added to `executedCycles`) `controller agent` with `proposalCid, legs : [TransferLeg], inputHoldingCids : [ContractId Holding], executeBefore : Time`; requires `agentExecutes`. Returns `(ContractId Mandate, ContractId DistributionOutcome)`.
 - `Mandate_TreasuryExecute` — same arguments and body, `controller treasury`. Kept, tested, and not used by the backend since decision 11.
 - `Mandate_AuthorizeExternalPayout` (consuming, recreated with `cycleId` added to `executedCycles`) `controller agent` with `proposalCid, receivers : [(Party, Text)]` (each payee's MainNet party id, in payout order). MainNet payouts: runs **the same checks** as the shared execution body below (the function `checkExecutable`), requires `receivers` to line up with the proposal payouts (same holders, same order) and every receiver to be a non-empty string, makes **no token-standard transfer**, and through `Proposal_MarkExecuted` creates one `Payment` per payee with status `PendingExternal` and `externalReceiver`, and the `Executed` outcome (actor: the agent). Returns `(ContractId Mandate, ContractId DistributionOutcome)`. It does not look at `agentExecutes`: nothing moves until the treasurer signs the transfers in Grofty.
@@ -163,7 +167,7 @@ Daml implementation of `floor10 n d` (n, d Decimal, d > 0): `q = n / d`; if `q *
   - `legs` line up one-to-one with `proposal.payouts` (same holder, same order),
   - for each payout: `exercise leg.factoryCid TransferFactory_Transfer with expectedAdmin = terms.asset.admin, transfer = Transfer { sender = treasury, receiver = holder, amount, instrumentId = terms.asset, requestedAt = now, executeBefore, inputHoldingCids = current, meta }, extraArgs = leg.extraArgs`; the next transfer's inputs are this result's `senderChangeCids`; `Completed` → `Paid`, `Pending` → `AwaitingAcceptance` with the instruction cid, `Failed` → abort,
   - then exercises `Proposal_MarkExecuted` with the `Settlement`s, which creates one `Payment` per payee and a `DistributionOutcome` (kind `Executed`) and archives the proposal. That choice carries both the treasury's and the agent's authority, so the same body works for `Mandate_AgentExecute`, `Mandate_TreasuryExecute` and `Mandate_AuthorizeExternalPayout` (where the agent submits and no transfer is made).
-- `Mandate_Supersede` `controller treasury` → returns `executedCycles`.
+- `Mandate_Supersede` `controller treasury` → returns `MandateCarryover { executedCycles, cycleAttempts }`.
 - No choice lets the agent change terms (L6).
 
 ### `Proposal` (`Mithra.Proposal`)
@@ -171,7 +175,7 @@ Daml implementation of `floor10 n d` (n, d Decimal, d > 0): `q = n / d`; if `q *
 - `Proposal_Approve` (consuming, recreated) `controller approver` with `approver, note`: approver in `approvers`, not already in `approvals` (L5), verdict is `NeedsApproval`; also creates an `Approval` (sig: approver). Returns `(ContractId Proposal, ContractId Approval)`.
 - `Proposal_Reject` (consuming) `controller approver` with `approver, reason` (non-empty) → `DistributionOutcome` kind `Rejected`.
 - `Proposal_Cancel` (consuming) `controller treasurer` → `DistributionOutcome` kind `Cancelled` (L11).
-- `Proposal_MarkExecuted` (consuming) `controller treasury` with `settlements : [Settlement]` (one per payout, same holders in the same order) and `actor : Party` → creates the `Payment`s and the `Executed` `DistributionOutcome`, returns `ContractId DistributionOutcome`.
+- `Proposal_MarkExecuted` (consuming) `controller treasury, treasurer` (both, so neither can call it alone: it checks nothing itself, the Mandate's choices that call it check the cap, the approvals and one payout per cycle, and the Mandate is signed by both) with `settlements : [Settlement]` (one per payout, same holders in the same order) and `actor : Party` → creates the `Payment`s and the `Executed` `DistributionOutcome`, returns `ContractId DistributionOutcome`.
 
 ### `Approval` (`Mithra.Proposal`)
 `signatory approver; observer treasury, treasurer, agent`. Fields: `approver, treasury, treasurer, agent, proposalId, cycleId, decisionRecordId, at, note`. The approver's signed decision.

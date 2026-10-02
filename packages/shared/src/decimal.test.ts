@@ -1,6 +1,12 @@
 import Decimal from 'decimal.js';
 import { describe, expect, it } from 'vitest';
-import { DecimalString, formatDecimal, sumDecimals, toDecimal } from './index';
+import {
+  DecimalString,
+  NonNegativeDecimalString,
+  formatDecimal,
+  sumDecimals,
+  toDecimal,
+} from './index';
 
 describe('DecimalString', () => {
   it.each(['0', '1', '-1', '12345', '0.1', '-0.5', '100.0000000001', '0.0000000001', '007'])(
@@ -33,6 +39,29 @@ describe('DecimalString', () => {
   it('rejects non-string values', () => {
     expect(DecimalString.safeParse(1).success).toBe(false);
     expect(DecimalString.safeParse(null).success).toBe(false);
+  });
+});
+
+describe('NonNegativeDecimalString', () => {
+  it.each(['0', '0.0', '1', '5000.0000000001', '007', '-0', '-0.000'])('accepts %s', (s) => {
+    expect(NonNegativeDecimalString.safeParse(s).success).toBe(true);
+  });
+
+  it.each(['-1', '-0.5', '-0.0000000001', '-100.25'])('rejects the negative amount %s', (s) => {
+    expect(NonNegativeDecimalString.safeParse(s).success).toBe(false);
+  });
+
+  it.each(['', '1e5', '+1', '.5', '1.00000000001', 'abc'])(
+    'still rejects what is not a DecimalString: %j',
+    (s) => {
+      expect(NonNegativeDecimalString.safeParse(s).success).toBe(false);
+    },
+  );
+
+  it('works as an optional or nullable field', () => {
+    expect(NonNegativeDecimalString.optional().safeParse(undefined).success).toBe(true);
+    expect(NonNegativeDecimalString.nullable().safeParse(null).success).toBe(true);
+    expect(NonNegativeDecimalString.nullable().safeParse('-1').success).toBe(false);
   });
 });
 

@@ -21,7 +21,7 @@ test_l7_holder_sees_only_own = do
   fx <- setup
   (fx1, _) <- distribute fx "2026-09" 5000.0
   -- a pending proposal for the next cycle, so there is something to leak
-  (_, _) <- proposeTotal fx1 "2026-10" 6000.0
+  (_, _) <- proposeTotal fx1 "2026-08" 6000.0
   units <- query @FundUnit fx.holderA
   assertMsg "A sees exactly their own FundUnit"
     (map (\(_, u) -> (u.holder, u.units)) units == [(fx.holderA, 100)])
@@ -125,7 +125,8 @@ test_l10_proposal_cannot_be_created_directly = do
   -- the Mandate executes only a Proposal: another contract id in its place fails
   holdings <- treasuryHoldings fx
   now <- getTime
-  submitMustFail (asAgent fx) $ exerciseCmd fx.mandateCid Mandate_AgentExecute with
+  mandateNow <- liveMandateCid fx
+  submitMustFail (asAgent fx) $ exerciseCmd mandateNow Mandate_AgentExecute with
     proposalCid = coerceContractId recordCid
     legs = []
     inputHoldingCids = holdings

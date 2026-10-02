@@ -152,10 +152,10 @@ test_l2_non_holder_payee_fails = do
   input <- inputFor fx "2026-09" 5000.0
   let extra = Payout with holder = fx.outsider; units = 1; amount = 0.0000000001
       withExtra = input with payouts = input.payouts ++ [extra]
-  submitMustFail (asAgent fx) (proposeCmd fx withExtra)
+  proposeFailsWith "must equal the pro-rata split" fx withExtra
   let swapped = input with
         payouts = [if p.holder == fx.holderC then p with holder = fx.outsider else p | p <- input.payouts]
-  submitMustFail (asAgent fx) (proposeCmd fx swapped)
+  proposeFailsWith "must equal the pro-rata split" fx swapped
   -- the correct split is accepted
   (_, record) <- propose fx input
   Some d <- queryContractId fx.agent record
@@ -170,10 +170,10 @@ test_l2_altered_amount_fails = do
       shift = case input.payouts of
         (a :: b :: rest) -> (a with amount = a.amount - 0.0000000001) :: (b with amount = b.amount + 0.0000000001) :: rest
         ps -> ps
-  submitMustFail (asAgent fx) (proposeCmd fx (input with payouts = map bump input.payouts))
-  submitMustFail (asAgent fx) (proposeCmd fx (input with payouts = shift))
+  proposeFailsWith "must equal the pro-rata split" fx (input with payouts = map bump input.payouts)
+  proposeFailsWith "must equal the pro-rata split" fx (input with payouts = shift)
   -- a different total with the old amounts no longer matches the split
-  submitMustFail (asAgent fx) (proposeCmd fx (input with total = 5000.0000000001))
+  proposeFailsWith "must equal the pro-rata split" fx (input with total = 5000.0000000001)
   _ <- propose fx input
   pure ()
 
@@ -192,8 +192,8 @@ test_l2_units_after_record_date_excluded = do
   assertMsg "A's share excludes the new units" ([p.amount | p <- d.payouts, p.holder == fx.holderA] == [100.0])
   -- a split that counts the new units is rejected
   let counted = computeProRata 1000.0 [(fx.holderA, 200), (fx.holderB, 300), (fx.holderC, 600)]
-  input2 <- inputFor fx1 "2026-10" 1000.0
-  submitMustFail (asAgent fx1) (proposeCmd fx1 (input2 with payouts = counted))
+  input2 <- inputFor fx1 "2026-09" 1000.0
+  proposeFailsWith "must equal the pro-rata split" fx1 (input2 with payouts = counted)
   -- on a later record date they do count
   Some register <- queryContractId fx.agent register1
   assertMsg "A is 200 units from 2026-10-01"

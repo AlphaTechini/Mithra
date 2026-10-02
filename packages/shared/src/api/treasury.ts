@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DecimalString } from '../decimal';
+import { DecimalString, NonNegativeDecimalString } from '../decimal';
 
 /**
  * API contract for the treasurer, approver and holder screens (userflow.md sections 4 to 10, 12).
@@ -97,18 +97,18 @@ export type CreateOrgRequest = z.infer<typeof CreateOrgRequestSchema>;
 
 /** Editable policy before sealing (A1). Same fields as the terms, approvers as party ids. */
 export const PolicyFieldsSchema = z.object({
-  cap: DecimalString,
+  cap: NonNegativeDecimalString,
   approvers: z.array(PartyId).min(1),
   approvalThreshold: z.number().int().positive(),
   scheduleCron: z.string().min(1),
   scheduleTimezone: z.string().min(1),
   recordDateRule: z.enum(['last_day_of_previous_month', 'day_before_payment']),
-  fixedAmount: DecimalString.nullable(),
-  deviationPct: DecimalString,
+  fixedAmount: NonNegativeDecimalString.nullable(),
+  deviationPct: NonNegativeDecimalString,
   trailingCycles: z.number().int().positive(),
-  unitChangePct: DecimalString,
+  unitChangePct: NonNegativeDecimalString,
   unitChangeWindowDays: z.number().int().positive(),
-  feeBuffer: DecimalString,
+  feeBuffer: NonNegativeDecimalString,
 });
 export type PolicyFields = z.infer<typeof PolicyFieldsSchema>;
 
@@ -374,7 +374,7 @@ export const RunCycleRequestSchema = z.object({
     .string()
     .regex(/^\d{4}-\d{2}$/)
     .optional(),
-  total: DecimalString.optional(),
+  total: NonNegativeDecimalString.optional(),
   recordDate: IsoDate.optional(),
 });
 export type RunCycleRequest = z.infer<typeof RunCycleRequestSchema>;

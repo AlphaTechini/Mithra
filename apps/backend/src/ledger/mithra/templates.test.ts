@@ -5,6 +5,7 @@ import {
   MITHRA_PAYLOAD_SCHEMAS,
   MITHRA_TEMPLATE_ENTITIES,
   DistributionOutcomeSchema,
+  MandateSchema,
   MandateTermsSchema,
   mithraTemplateIds,
 } from './templates';
@@ -48,6 +49,28 @@ describe('payload decoding', () => {
     expect(parsed.approvalThreshold).toBe(2);
     expect(parsed.cap).toBe('5000.0000000000');
     expect(parsed.fixedAmount).toBe('120.5');
+  });
+
+  it('decodes the Mandate with the newest attempt number per cycle', () => {
+    const mandate = MandateSchema.parse({
+      treasury: 't',
+      treasurer: 'tr',
+      agent: 'a',
+      version: '2',
+      terms,
+      agentExecutes: true,
+      executedCycles: ['2026-08'],
+      cycleAttempts: [
+        { cycleId: '2026-08', attempt: '1' },
+        { cycleId: '2026-09', attempt: '3' },
+      ],
+      sealedAt: '2026-09-01T09:00:00Z',
+      summaryFingerprint: 'ff',
+    });
+    expect(mandate.cycleAttempts).toEqual([
+      { cycleId: '2026-08', attempt: 1 },
+      { cycleId: '2026-09', attempt: 3 },
+    ]);
   });
 
   it('reads an omitted or null Optional as null', () => {

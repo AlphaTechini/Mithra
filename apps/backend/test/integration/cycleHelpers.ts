@@ -3,6 +3,7 @@ import type { SealStatus } from '@mithra/shared';
 import { ActivityLog } from '../../src/activity/log';
 import type { Config } from '../../src/config/env';
 import { createCycleModule, type CycleModule, type CycleModuleDeps } from '../../src/cycle';
+import { lastDayOfCycleMonth } from '../../src/cycle/period';
 import { computeProRata, unitsAt } from '../../src/cycle/prorata';
 import { fingerprint } from '../../src/cycle/fingerprint';
 import type { DatabaseHandle } from '../../src/db';
@@ -37,7 +38,6 @@ import {
   TEST_HOLDING,
   TEST_PREAPPROVAL,
   TRANSFER_INSTRUCTION_INTERFACE,
-  daysAgo,
   defaultTerms,
   isoDate,
   localnetConfig,
@@ -71,8 +71,8 @@ export type HolderName = Extract<CycleParty, `holder${string}`>;
 export interface HolderSpec {
   name: HolderName;
   units: number;
-  /** Days ago the units became effective. */
-  daysAgo: number;
+  /** Days before the record date of September 2026 (`RECORD_DATE`) that the units became effective. */
+  daysBefore: number;
   /** True: the holder pre-approved transfers (one-step payment). False: a pending transfer. */
   preapproval: boolean;
 }
@@ -356,7 +356,7 @@ export async function createCycleWorld(
           registerCid,
           holder: parties[spec.name],
           units: spec.units,
-          effectiveDate: isoDate(daysAgo(spec.daysAgo)),
+          effectiveDate: isoDate(daysBeforeRecordDate(spec.daysBefore)),
           seeded: false,
         }),
       ],
@@ -389,7 +389,7 @@ export async function issueUnits(
   world: CycleWorld,
   holder: HolderName,
   units: number,
-  daysAgoEffective: number,
+  daysBefore: number,
 ): Promise<void> {
   const [org, register] = await Promise.all([
     world.ledger.reader.organization(),
@@ -404,7 +404,7 @@ export async function issueUnits(
         registerCid: register.contractId,
         holder: world.parties[holder],
         units,
-        effectiveDate: isoDate(daysAgo(daysAgoEffective)),
+        effectiveDate: isoDate(daysBeforeRecordDate(daysBefore)),
         seeded: false,
       }),
     ],
@@ -582,24 +582,23 @@ export function makeModule(
 
 /**
  * A `Mandate_Propose` input for a cycle, built outside the engine (a second, stray proposal for
- * the same cycle). Amounts come from the same pure function the engine uses.
+ * the same cycle). The record date is the cycle's last day, which is what the ledger accepts, and
+ * amounts come from the same pure function the engine uses.
  */
 export async function strayProposalInput(
   world: CycleWorld,
-  options: { cycleId: string; total: string; recordDate: string; attempt: number },
+  options: { cycleId: string; total: string; attempt: number },
 ): Promise<ProposalInput> {
   const register = await world.ledger.reader.register();
   if (!register) throw new Error('no register');
-  const payouts = computeProRata(
-    options.total,
-    unitsAt(options.recordDate, register.payload.changes),
-  );
+  const recordDate = lastDayOfCycleMonth(options.cycleId);
+  const payouts = computeProRata(options.total, unitsAt(recordDate, register.payload.changes));
   return {
     cycleId: options.cycleId,
     cycleLabel: `Cycle ${options.cycleId}`,
     attempt: options.attempt,
     total: options.total,
-    recordDate: options.recordDate,
+    recordDate,
     trigger: 'TriggerManual',
     triggerDetail: 'Stray proposal made outside the engine',
     payouts,
@@ -613,7 +612,19 @@ export async function strayProposalInput(
   };
 }
 
-export { isoDate, daysAgo };
+/**
+ * The record date of the cycle the tests pay: the last day of September 2026. The ledger accepts
+ * only the canonical record date of a cycle that has ended, so the tests fix the dates and place
+ * unit changes relative to it, not to the day the tests run.
+ */
+export const RECORD_DATE = '2026-09-30';
+
+/** `RECORD_DATE` minus `days` days. */
+export function daysBeforeRecordDate(days: number): Date {
+  return new Date(Date.parse(`${RECORD_DATE}T00:00:00Z`) - days * 24 * 60 * 60 * 1000);
+}
+
+export { isoDate };
 
 /**
  * Submits `Mandate_AgentExecute` for a proposal directly on the ledger, bypassing the engine's

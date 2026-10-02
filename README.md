@@ -37,7 +37,7 @@ AI can prepare payments, but a fund cannot let it hold the keys. And on Canton a
    |  governed action: MandateChangeProposal  -> Org_ApplySeal
    v
  Mandate  (cap, approvers, threshold, schedule; no choice changes it: L6)
-   |-- Mandate_Propose            (agent)    -> DecisionRecord + Proposal
+   |-- Mandate_Propose            (agent)    -> DecisionRecord + Proposal (+ Mandate recreated with the attempt)
    |-- Proposal_Approve           (approver) -> approvals counted on the ledger (L4, L5)
    '-- Mandate_AgentExecute       (agent)    -> one CIP-56 transfer per payee (checks L1, L2, L3)
                                               + Payment per payee + DistributionOutcome
