@@ -1,7 +1,7 @@
 You are the implementer for fix list CR3 (CodeRabbit review of the backend features: agent tools, audit, holders, MainNet, routes) in the Mithra repository at /home/user/Mithra, branch `ccr-a1ba735a-c2ycnx`.
 Fix each item below, with a test for each. Do not commit or push. Nobody else edits the repository while you work. Do not add dependencies.
 
-The review ran on a snapshot taken before fix lists CR1 and CR2 (`docs/briefs/CR1.md`, `docs/briefs/CR2.md`). **Verify every item against the current code first**; if one no longer applies, say so in your report instead of changing code. (CodeRabbit's tenth finding, parallel integration suites resetting a shared database, was handled in CR2 fix 17.)
+The review ran on a snapshot taken before fix lists CR1 and CR2 (`docs/briefs/CR1.md`, `docs/briefs/CR2.md`). **Verify every item against the current code first**; if one no longer applies, say so in your report instead of changing code. (CodeRabbit's tenth finding, parallel integration suites resetting a shared database, does not apply: `vitest.integration.config.ts` already sets `fileParallelism: false`. CR2 fix 17 found and fixed the real cause of the intermittent CI failure.)
 
 Context: `specs.md` (A3, A6: the model never chooses an amount), `docs/ledger-model.md`, `docs/decisions.md`, `apps/backend/src/wiring/backend.ts`. Services: Docker, PostgreSQL, the Canton sandbox at `localhost:7575` (`scripts/sandbox.sh start` if it is not running; start `dockerd` and `pg_ctlcluster 16 main start` if needed).
 
