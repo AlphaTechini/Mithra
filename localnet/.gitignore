@@ -1,0 +1,6 @@
+# Downloaded Splice bundle and extracted LocalNet files.
+.cache/
+# DecMan keys and databases.
+.data/
+# Bring-up state and the generated localnet.env.
+.state/

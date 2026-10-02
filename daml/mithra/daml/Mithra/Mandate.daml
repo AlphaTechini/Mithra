@@ -1,0 +1,277 @@
+module Mithra.Mandate where
+
+import DA.Action (foldlA)
+import DA.List (dedup)
+import qualified DA.TextMap as TextMap
+import Splice.Api.Token.HoldingV1 (Holding)
+import Splice.Api.Token.MetadataV1 (Metadata(..))
+import Splice.Api.Token.TransferInstructionV1
+import Mithra.Decision
+import Mithra.Payment
+import Mithra.Proposal
+import Mithra.Types
+import Mithra.Units
+
+-- | The treasurer's signed request for new terms. Only `Org_ApplySeal`, run with the
+-- treasury's authority, turns it into a Mandate (L6, N8).
+template MandateSealRequest
+  with
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    terms : MandateTerms
+    agentExecutes : Bool
+    summary : Text
+    summaryFingerprint : Text
+    requestedAt : Time
+  where
+    signatory treasurer
+    observer treasury, agent
+    ensure termsValid agent terms
+
+    choice SealRequest_Consume : MandateSealRequest
+      controller treasury
+      do pure this
+
+    choice SealRequest_Withdraw : ()
+      controller treasurer
+      do pure ()
+
+-- | Everything the agent supplies when it proposes a distribution. The verdict is not
+-- part of it: the Mandate computes that.
+data ProposalInput = ProposalInput with
+    cycleId : Text
+    cycleLabel : Text
+    attempt : Int           -- 1 for the first proposal of a cycle, then 2, 3, ... after a cancel or reject
+    total : Decimal
+    recordDate : Date
+    trigger : Trigger
+    triggerDetail : Text
+    payouts : [Payout]
+    registerCid : ContractId UnitRegister
+    inputFingerprints : [Fingerprint]
+    checks : [CheckResult]
+    memo : Text
+    memoSource : Text
+    modelFingerprints : [Fingerprint]
+    seeded : Bool
+  deriving (Eq, Show)
+
+-- | The sealed terms the agent works inside. There is no choice that changes terms (L6).
+template Mandate
+  with
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    version : Int
+    terms : MandateTerms
+    agentExecutes : Bool
+    executedCycles : [Text]
+    sealedAt : Time
+    summaryFingerprint : Text
+  where
+    signatory treasury, treasurer
+    observer agent, terms.approvers
+    ensure termsValid agent terms && version >= 1
+
+    -- | The agent proposes a distribution. Creates the decision record and the proposal
+    -- together, so a proposal never exists without its record (L10).
+    nonconsuming choice Mandate_Propose : (ContractId Proposal, ContractId DecisionRecord)
+      with
+        input : ProposalInput
+      controller agent
+      do
+        assertMsg ("A distribution for " <> input.cycleLabel <> " has already been executed")
+          (input.cycleId `notElem` executedCycles)
+        assertMsg "Total must be greater than zero" (input.total > 0.0)
+        assertMsg "Attempt numbers start at 1" (input.attempt >= 1)
+        assertMsg "Every check must come from the deterministic rules or from the AI"
+          (all (\c -> c.source == "deterministic" || c.source == "ai") input.checks)
+        assertMsg "AI checks are advisory and cannot be blocking"
+          (all (\c -> c.source /= "ai" || not c.blocking) input.checks)
+        register <- fetch input.registerCid
+        assertMsg "The unit register belongs to a different treasury" (register.treasury == treasury)
+        expected <- case proRata input.total (unitsAt input.recordDate register.changes) of
+          Right ps -> pure ps
+          Left err -> abort err
+        assertMsg "Payees and amounts must equal the pro-rata split of the units held on the record date"
+          (input.payouts == expected)
+        let overCap = input.total > terms.cap
+            blockingFailure = any (\c -> c.blocking && not c.passed) input.checks
+            verdict = if overCap || blockingFailure then NeedsApproval else AutoExecute
+            suffix = "/" <> input.cycleId <> "/" <> show input.attempt
+        now <- getTime
+        decisionRecordCid <- create DecisionRecord with
+          recordId = "decision" <> suffix
+          treasury
+          treasurer
+          agent
+          approvers = terms.approvers
+          cycleId = input.cycleId
+          cycleLabel = input.cycleLabel
+          trigger = input.trigger
+          triggerDetail = input.triggerDetail
+          recordDate = input.recordDate
+          total = input.total
+          payouts = input.payouts
+          inputFingerprints = input.inputFingerprints
+          checks = input.checks
+          memo = input.memo
+          memoSource = input.memoSource
+          modelFingerprints = input.modelFingerprints
+          verdict
+          mandateVersion = version
+          cap = terms.cap
+          createdAt = now
+          seeded = input.seeded
+        proposalCid <- create Proposal with
+          treasury
+          treasurer
+          agent
+          proposalId = "proposal" <> suffix
+          cycleId = input.cycleId
+          cycleLabel = input.cycleLabel
+          recordDate = input.recordDate
+          total = input.total
+          payouts = input.payouts
+          verdict
+          approvers = terms.approvers
+          approvalThreshold = terms.approvalThreshold
+          approvals = []
+          decisionRecordCid
+          decisionRecordId = "decision" <> suffix
+          mandateVersion = version
+          createdAt = now
+          seeded = input.seeded
+        pure (proposalCid, decisionRecordCid)
+
+    -- | The agent executes a proposal: payments go out through the token standard
+    -- inside this choice, so the cap and the approval threshold are ledger rules (L1, L4).
+    choice Mandate_AgentExecute : (ContractId Mandate, ContractId DistributionOutcome)
+      with
+        proposalCid : ContractId Proposal
+        legs : [TransferLeg]
+        inputHoldingCids : [ContractId Holding]
+        executeBefore : Time
+      controller agent
+      do
+        assertMsg "This Mandate does not let the agent execute payouts; the treasurer signs them" agentExecutes
+        executeDistribution this agent proposalCid legs inputHoldingCids executeBefore
+
+    -- | The treasury itself signs a ledger payout. Not used by the backend: on MainNet payouts the money
+    -- moves outside this ledger (see `Mandate_AuthorizeExternalPayout`).
+    choice Mandate_TreasuryExecute : (ContractId Mandate, ContractId DistributionOutcome)
+      with
+        proposalCid : ContractId Proposal
+        legs : [TransferLeg]
+        inputHoldingCids : [ContractId Holding]
+        executeBefore : Time
+      controller treasury
+      do executeDistribution this treasury proposalCid legs inputHoldingCids executeBefore
+
+    -- | MainNet payouts. Mithra's records live on this ledger but the money moves on Canton
+    -- MainNet, in transfers the treasurer signs in Grofty Wallet, so no token-standard transfer
+    -- happens here. This choice applies the same rules as `executeDistribution` (cap, approval
+    -- threshold, one payout per cycle), marks the cycle executed and creates one `Payment` per
+    -- payee in status `PendingExternal`, carrying the payee's MainNet party id. The agent then
+    -- records each transfer with `Payment_RecordExternal`.
+    -- `receivers` pairs each payee with their MainNet party id, in payout order.
+    choice Mandate_AuthorizeExternalPayout : (ContractId Mandate, ContractId DistributionOutcome)
+      with
+        proposalCid : ContractId Proposal
+        receivers : [(Party, Text)]
+      controller agent
+      do
+        proposal <- fetch proposalCid
+        checkExecutable this proposal
+        assertMsg "Receivers must line up one-to-one with the proposal payouts, same holders in the same order"
+          (map fst receivers == map (.holder) proposal.payouts)
+        assertMsg "Every payee needs a MainNet party id" (all (\(_, r) -> r /= "") receivers)
+        outcomeCid <- exercise proposalCid Proposal_MarkExecuted with
+          settlements =
+            [ Settlement with
+                holder
+                status = PendingExternal
+                transferInstructionCid = None
+                externalReceiver = Some receiver
+            | (holder, receiver) <- receivers ]
+          actor = agent
+        mandateCid <- create this with executedCycles = executedCycles ++ [proposal.cycleId]
+        pure (mandateCid, outcomeCid)
+
+    -- | Replaced by a newer Mandate; hands over the executed cycles.
+    choice Mandate_Supersede : [Text]
+      controller treasury
+      do pure executedCycles
+
+-- | The rules every payout must pass, whichever way the money moves: the proposal is this
+-- treasury's and this agent's, the cycle has not been paid (L3), and the cap (L1) or the approval
+-- threshold (L4) is met against the Mandate's current terms. Shared by `executeDistribution`
+-- (ledger transfers) and `Mandate_AuthorizeExternalPayout` (MainNet transfers).
+checkExecutable : Mandate -> Proposal -> Update ()
+checkExecutable m proposal = do
+  let asset = m.terms.asset
+      amountText x = showAmount x <> " " <> asset.id
+  assertMsg "The proposal belongs to a different treasury" (proposal.treasury == m.treasury)
+  assertMsg "The proposal belongs to a different agent" (proposal.agent == m.agent)
+  assertMsg ("A distribution for " <> proposal.cycleLabel <> " has already been executed")
+    (proposal.cycleId `notElem` m.executedCycles)
+  case proposal.verdict of
+    AutoExecute ->
+      assertMsg
+        ("Total " <> amountText proposal.total <> " is above the auto-execute cap of "
+          <> amountText m.terms.cap)
+        (proposal.total <= m.terms.cap)
+    NeedsApproval -> do
+      let valid = dedup [a.approver | a <- proposal.approvals, a.approver `elem` m.terms.approvers]
+      assertMsg
+        ("This distribution needs " <> show m.terms.approvalThreshold <> " approval(s) from the Mandate's approvers and has "
+          <> show (length valid))
+        (length valid >= m.terms.approvalThreshold)
+
+executeDistribution
+  : Mandate -> Party -> ContractId Proposal -> [TransferLeg] -> [ContractId Holding] -> Time
+  -> Update (ContractId Mandate, ContractId DistributionOutcome)
+executeDistribution m actor proposalCid legs inputHoldingCids executeBefore = do
+  proposal <- fetch proposalCid
+  let asset = m.terms.asset
+      amountText x = showAmount x <> " " <> asset.id
+  checkExecutable m proposal
+  assertMsg "Legs must line up one-to-one with the proposal payouts, same holders in the same order"
+    (map (.holder) legs == map (.holder) proposal.payouts)
+  now <- getTime
+  assertMsg "executeBefore must be in the future" (executeBefore > now)
+  (_, settlements) <- foldlA
+    (\(inputs, done) (payout, leg) -> do
+      result <- exercise leg.factoryCid TransferFactory_Transfer with
+        expectedAdmin = asset.admin
+        transfer = Transfer with
+          sender = m.treasury
+          receiver = payout.holder
+          amount = payout.amount
+          instrumentId = asset
+          requestedAt = now
+          executeBefore
+          inputHoldingCids = inputs
+          meta = Metadata with
+            values = TextMap.fromList
+              [("splice.lfdecentralizedtrust.org/reason", "Mithra distribution " <> proposal.cycleLabel)]
+        extraArgs = leg.extraArgs
+      settlement <- case result.output of
+        TransferInstructionResult_Completed _ ->
+          pure Settlement with
+            holder = payout.holder; status = Paid; transferInstructionCid = None; externalReceiver = None
+        TransferInstructionResult_Pending instructionCid ->
+          pure Settlement with
+            holder = payout.holder
+            status = AwaitingAcceptance
+            transferInstructionCid = Some instructionCid
+            externalReceiver = None
+        TransferInstructionResult_Failed ->
+          abort ("The transfer of " <> amountText payout.amount <> " failed")
+      pure (result.senderChangeCids, done ++ [settlement]))
+    (inputHoldingCids, [])
+    (zip proposal.payouts legs)
+  outcomeCid <- exercise proposalCid Proposal_MarkExecuted with settlements; actor
+  mandateCid <- create m with executedCycles = m.executedCycles ++ [proposal.cycleId]
+  pure (mandateCid, outcomeCid)

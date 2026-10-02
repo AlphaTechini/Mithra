@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  # The Daml Script tests (L1 to L11, payments, audit, governance). The runner has Docker and no dpm,
+  # so scripts/daml.sh uses its Docker fallback (the digitalasset/daml-sdk image).
+  daml:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/daml.sh test
+
+  # The backend integration tests and the Playwright happy path, both against a real Canton sandbox
+  # (scripts/sandbox.sh, Docker) and PostgreSQL 16. The tests read their databases from
+  # DATABASE_URL_TEST (mithra_test; agent.test.ts defaults to mithra_test_m5 and is the one that
+  # would share it if the variable were set, so it is left unset), DATABASE_URL_TEST_M4, _M4B, _M9,
+  # _M10 and _MW. The defaults point at localhost:5432 with mithra/mithra, which is this service;
+  # the e2e server uses the _MW database.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mithra
+          POSTGRES_PASSWORD: mithra
+          POSTGRES_DB: mithra
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mithra"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGPASSWORD: mithra
+      DATABASE_URL_TEST_M4: postgres://mithra:mithra@localhost:5432/mithra_test_m4
+      DATABASE_URL_TEST_M4B: postgres://mithra:mithra@localhost:5432/mithra_test_m4b
+      DATABASE_URL_TEST_M9: postgres://mithra:mithra@localhost:5432/mithra_test_m9
+      DATABASE_URL_TEST_M10: postgres://mithra:mithra@localhost:5432/mithra_test_m10
+      DATABASE_URL_TEST_MW: postgres://mithra:mithra@localhost:5432/mithra_test_mw
+      E2E_DATABASE_URL: postgres://mithra:mithra@localhost:5432/mithra_test_mw
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Create the test databases
+        run: |
+          for db in mithra_test mithra_test_m4 mithra_test_m4b mithra_test_m5 mithra_test_m9 mithra_test_m10 mithra_test_mw; do
+            psql -h localhost -U mithra -d mithra -c "CREATE DATABASE $db"
+          done
+
+      # Builds the DARs (Docker) when they are missing, starts the sandbox on :7575 and waits until it
+      # accepts party allocation (about a minute).
+      - name: Start the Canton sandbox
+        run: scripts/sandbox.sh start
+
+      - name: Backend integration tests
+        working-directory: apps/backend
+        run: npx vitest run --config vitest.integration.config.ts
+
+      # The browser for Playwright 1.56.1 (the config uses the pre-installed one in /opt/pw-browsers
+      # when there is one; here it is Playwright's own).
+      - name: Install Chromium for Playwright
+        run: pnpm exec playwright install --with-deps chromium
+
+      # global-setup builds the web app, starts the full-stack test server on a free port and stops it.
+      - name: Playwright happy path
+        run: pnpm e2e
+
+      - name: Keep the e2e screenshots, traces and server log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e
+          path: |
+            e2e/screenshots
+            e2e/test-results
+            e2e/server.log
+          if-no-files-found: ignore
+
+      - name: Sandbox log
+        if: failure()
+        run: docker logs mithra-sandbox --tail 200

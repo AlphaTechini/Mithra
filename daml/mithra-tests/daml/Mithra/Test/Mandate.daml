@@ -1,0 +1,293 @@
+-- | L1 (cap), L3 (one distribution per cycle), L6 (only the treasurer changes terms),
+-- A5 (checks and flags).
+module Mithra.Test.Mandate where
+
+import Daml.Script
+import DA.Date
+import DA.Foldable (forA_)
+import Mithra.Decision
+import Mithra.Mandate
+import Mithra.Org
+import Mithra.Proposal
+import Mithra.Types
+import Mithra.Units
+import Mithra.Test.Setup
+
+-- L1 -------------------------------------------------------------------------
+
+-- | A total equal to the cap executes in one step.
+test_l1_total_equals_cap_executes : Script ()
+test_l1_total_equals_cap_executes = do
+  fx <- setup
+  (proposalCid, recordCid) <- proposeTotal fx "2026-09" 5000.0
+  p <- proposalOf fx proposalCid
+  assertMsg "total = cap is auto-execute" (p.verdict == AutoExecute)
+  d <- decisionOf fx recordCid
+  assertMsg "the decision record says the same" (d.verdict == AutoExecute && d.cap == 5000.0)
+  before <- treasuryBalance fx
+  (mandateCid, outcomeCid) <- execute fx proposalCid
+  after <- treasuryBalance fx
+  assertMsg "the treasury paid exactly the total" (before - after == 5000.0)
+  a <- holderBalance fx.holderA
+  b <- holderBalance fx.holderB
+  c <- holderBalance fx.holderC
+  assertMsg "holders received 500 / 1,500 / 3,000" ((a, b, c) == (500.0, 1500.0, 3000.0))
+  o <- outcomeOf fx outcomeCid
+  assertMsg "outcome is Executed" (o.kind == Executed)
+  m <- mandateOf fx mandateCid
+  assertMsg "the cycle is recorded on the Mandate" (m.executedCycles == ["2026-09"])
+
+-- | One unit of Decimal above the cap needs approval, and the agent cannot execute it.
+test_l1_cap_plus_epsilon_needs_approval : Script ()
+test_l1_cap_plus_epsilon_needs_approval = do
+  fx <- setup
+  (proposalCid, recordCid) <- proposeTotal fx "2026-09" 5000.0000000001
+  p <- proposalOf fx proposalCid
+  assertMsg "cap + 1e-10 needs approval" (p.verdict == NeedsApproval)
+  d <- decisionOf fx recordCid
+  assertMsg "the decision record says so" (d.verdict == NeedsApproval)
+  before <- treasuryBalance fx
+  cmd <- executeCmd fx fx.mandateCid proposalCid
+  failsWith "needs 2 approval(s)" (asAgent fx) cmd
+  after <- treasuryBalance fx
+  assertMsg "nothing was paid" (before == after)
+  m <- mandateOf fx fx.mandateCid
+  assertMsg "the cycle is still open" (m.executedCycles == [])
+
+-- | Lowering the cap after a proposal blocks an auto-execute proposal above the new cap.
+test_l1_cap_lowered_after_proposal_blocks_execution : Script ()
+test_l1_cap_lowered_after_proposal_blocks_execution = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  fx1 <- reseal fx (fx.terms with cap = 4000.0)
+  cmd <- executeCmd fx1 fx1.mandateCid proposalCid
+  failsWith "above the auto-execute cap of 4,000 CC" (asAgent fx1) cmd
+  -- the proposal cannot be rescued by approvals either: it was not an approval proposal
+  failsWith "needs no approval" (actAs fx.approver1) (approveCmd proposalCid fx.approver1)
+  balance <- treasuryBalance fx1
+  assertMsg "nothing was paid" (balance == 1000000.0)
+  -- the stale proposal can be cancelled and a new one proposed within the new cap
+  _ <- submit fx.treasurer $ exerciseCmd proposalCid Proposal_Cancel
+  (smaller, _) <- proposeTotal fx1 "2026-09" 4000.0
+  _ <- execute fx1 smaller
+  pure ()
+
+-- | The error message shown to people spells out the numbers.
+test_l1_message_shows_amounts : Script ()
+test_l1_message_shows_amounts = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  fx1 <- reseal fx (fx.terms with cap = 1234.5)
+  cmd <- executeCmd fx1 fx1.mandateCid proposalCid
+  failsWith "Total 5,000 CC is above the auto-execute cap of 1,234.5 CC" (asAgent fx1) cmd
+
+-- L3 -------------------------------------------------------------------------
+
+-- | At most one executed distribution per cycle, on both the propose and the execute path.
+test_l3_second_execution_same_cycle_fails : Script ()
+test_l3_second_execution_same_cycle_fails = do
+  fx <- setup
+  input <- inputFor fx "2026-09" 1000.0
+  (first, _) <- propose fx input
+  (second, _) <- propose fx (input with attempt = 2)
+  (mandateCid, _) <- execute fx first
+  let fx1 = afterExecute fx mandateCid
+  -- execute path: the second proposal was made before the first executed
+  cmd <- executeCmd fx1 fx1.mandateCid second
+  failsWith "has already been executed" (asAgent fx1) cmd
+  -- propose path
+  failsWith "has already been executed" (asAgent fx1) (proposeCmd fx1 (input with attempt = 3))
+  -- a different cycle is unaffected
+  _ <- distribute fx1 "2026-10" 1000.0
+  balance <- treasuryBalance fx1
+  assertMsg "both cycles paid 1,000" (balance == 998000.0)
+
+-- L6 -------------------------------------------------------------------------
+
+-- | Nobody but the treasury can turn a treasurer-signed request into a Mandate, and the
+-- agent cannot create or change anything that carries the treasurer's signature.
+test_l6_agent_cannot_change_mandate : Script ()
+test_l6_agent_cannot_change_mandate = do
+  fx <- setup
+  let lower = fx.terms with cap = 1000000.0
+      forgedMandate = Mandate with
+        treasury = fx.treasury
+        treasurer = fx.treasurer
+        agent = fx.agent
+        version = 2
+        terms = lower
+        agentExecutes = True
+        executedCycles = []
+        sealedAt = today
+        summaryFingerprint = "forged"
+  -- the agent cannot create a Mandate
+  failsWith notAuthorized (actAs fx.agent) (createCmd forgedMandate)
+  -- nor the treasurer alone: the treasury's authority is needed too
+  failsWith notAuthorized (actAs fx.treasurer) (createCmd forgedMandate)
+  -- the agent cannot create a seal request in the treasurer's name
+  let forgedRequest = MandateSealRequest with
+        treasury = fx.treasury
+        treasurer = fx.treasurer
+        agent = fx.agent
+        terms = lower
+        agentExecutes = True
+        summary = "raise the cap"
+        summaryFingerprint = "forged"
+        requestedAt = today
+  failsWith notAuthorized (actAs fx.agent) (createCmd forgedRequest)
+  -- a request signed by the agent itself is not accepted as the treasurer's
+  agentRequest <- submit fx.agent $ createCmd (forgedRequest with treasurer = fx.agent)
+  failsWith notAuthorized (actAs fx.agent)
+    (exerciseCmd fx.orgCid Org_ApplySeal with sealRequestCid = agentRequest; currentMandateCid = Some fx.mandateCid)
+  -- even with a genuine request, the agent cannot apply it, and neither can the treasurer
+  genuine <- sealRequest fx lower True
+  failsWith notAuthorized (actAs fx.agent)
+    (exerciseCmd fx.orgCid Org_ApplySeal with sealRequestCid = genuine; currentMandateCid = Some fx.mandateCid)
+  failsWith notAuthorized (actAs fx.treasurer)
+    (exerciseCmd fx.orgCid Org_ApplySeal with sealRequestCid = genuine; currentMandateCid = Some fx.mandateCid)
+  -- the agent cannot supersede the Mandate or touch the organization
+  failsWith notAuthorized (actAs fx.agent) (exerciseCmd fx.mandateCid Mandate_Supersede)
+  -- nothing changed
+  m <- mandateOf fx fx.mandateCid
+  assertMsg "the cap is unchanged" (m.terms.cap == 5000.0 && m.version == 1)
+  -- invalid terms cannot even be requested
+  let badThreshold = fx.terms with approvalThreshold = 3
+      agentApprover = fx.terms with approvers = [fx.approver1, fx.agent]
+      negativeCap = fx.terms with cap = -1.0
+  forA_ [badThreshold, agentApprover, negativeCap] $ \t ->
+    submitMustFail fx.treasurer $ createCmd MandateSealRequest with
+      treasury = fx.treasury; treasurer = fx.treasurer; agent = fx.agent; terms = t
+      agentExecutes = True; summary = "invalid"; summaryFingerprint = "00"; requestedAt = today
+
+-- | A treasurer-signed request, applied by the treasury, replaces the Mandate and
+-- carries the executed cycles over.
+test_l6_treasurer_signed_reseal_succeeds : Script ()
+test_l6_treasurer_signed_reseal_succeeds = do
+  fx <- setup
+  (fx1, _) <- distribute fx "2026-09" 1000.0
+  let newTerms = fx.terms with
+        cap = 8000.0
+        approvers = [fx.approver1]
+        approvalThreshold = 1
+  req <- sealRequest fx1 newTerms True
+  -- the current Mandate must be named once one exists
+  failsWith "current Mandate must be given"
+    (actAs fx.treasury) (exerciseCmd fx1.orgCid Org_ApplySeal with sealRequestCid = req; currentMandateCid = None)
+  (org2, mandate2) <- submit fx.treasury $ exerciseCmd fx1.orgCid Org_ApplySeal with
+    sealRequestCid = req
+    currentMandateCid = Some fx1.mandateCid
+  m <- mandateOf fx1 mandate2
+  assertMsg "version is incremented" (m.version == 2)
+  assertMsg "executed cycles carry over" (m.executedCycles == ["2026-09"])
+  assertMsg "new terms are in force" (m.terms.cap == 8000.0 && m.terms.approvers == [fx.approver1])
+  Some org <- queryContractId fx.treasury org2
+  assertMsg "the organization follows" (org.mandateVersion == 2 && org.approvers == [fx.approver1] && org.approvalThreshold == 1)
+  mandates <- query @Mandate fx.treasury
+  assertMsg "exactly one active Mandate" (length mandates == 1)
+  -- the old request is consumed and the old Mandate is gone
+  submitMustFail fx.treasury
+    (exerciseCmd org2 Org_ApplySeal with sealRequestCid = req; currentMandateCid = Some mandate2)
+  -- the executed cycle still cannot be distributed again
+  input <- inputFor (fx1 with mandateCid = mandate2) "2026-09" 1000.0
+  failsWith "has already been executed" (asAgent fx1) (exerciseCmd mandate2 Mandate_Propose with input)
+
+-- A5 -------------------------------------------------------------------------
+
+-- | A failed blocking check forces approval even when the total is under the cap.
+test_a5_blocking_flag_forces_approval_under_cap : Script ()
+test_a5_blocking_flag_forces_approval_under_cap = do
+  fx <- setup
+  input <- inputFor fx "2026-09" 1000.0
+  let spike = CheckResult with
+        code = "unit_spike"
+        label = "Unit change in the last 30 days"
+        passed = False
+        blocking = True
+        actual = "C: +400% in 30 days"
+        limit = "25%"
+        source = "deterministic"
+  (proposalCid, recordCid) <- propose fx (input with checks = input.checks ++ [spike])
+  p <- proposalOf fx proposalCid
+  assertMsg "under the cap but flagged: needs approval" (p.verdict == NeedsApproval)
+  d <- decisionOf fx recordCid
+  assertMsg "the failed check is kept as given" (spike `elem` d.checks)
+  cmd <- executeCmd fx fx.mandateCid proposalCid
+  failsWith "needs 2 approval(s)" (asAgent fx) cmd
+  approved <- approveBoth fx proposalCid
+  (_, outcomeCid) <- execute fx approved
+  o <- outcomeOf fx outcomeCid
+  assertMsg "executed after the approvals" (o.kind == Executed && length o.approvals == 2)
+
+-- | An advisory flag (not blocking) does not stop auto-execution.
+test_a5_advisory_flag_does_not_block : Script ()
+test_a5_advisory_flag_does_not_block = do
+  fx <- setup
+  input <- inputFor fx "2026-09" 1000.0
+  let aiFlag = CheckResult with
+        code = "ai_advisory"
+        label = "The memo mentions a one-off item"
+        passed = False
+        blocking = False
+        actual = "possible one-off"
+        limit = "-"
+        source = "ai"
+      softDeviation = CheckResult with
+        code = "deviation"
+        label = "Deviation from trailing average"
+        passed = False
+        blocking = False
+        actual = "+60%"
+        limit = "50%"
+        source = "deterministic"
+  (proposalCid, _) <- propose fx (input with checks = input.checks ++ [aiFlag, softDeviation])
+  p <- proposalOf fx proposalCid
+  assertMsg "advisory failures keep auto-execute" (p.verdict == AutoExecute)
+  (_, outcomeCid) <- execute fx proposalCid
+  o <- outcomeOf fx outcomeCid
+  assertMsg "executed" (o.kind == Executed)
+
+-- | The AI can add flags but cannot make one that blocks, and checks must name their source.
+test_a5_ai_check_cannot_be_blocking : Script ()
+test_a5_ai_check_cannot_be_blocking = do
+  fx <- setup
+  input <- inputFor fx "2026-09" 1000.0
+  let aiBlocking = CheckResult with
+        code = "ai_advisory"; label = "x"; passed = False; blocking = True
+        actual = "x"; limit = "x"; source = "ai"
+      unknownSource = CheckResult with
+        code = "cap"; label = "x"; passed = True; blocking = False
+        actual = "x"; limit = "x"; source = "operator"
+  failsWith "AI checks are advisory" (asAgent fx) (proposeCmd fx (input with checks = [aiBlocking]))
+  failsWith "deterministic rules or from the AI" (asAgent fx) (proposeCmd fx (input with checks = [unknownSource]))
+
+-- | The agent supplies checks, never the verdict: a passing "cap" check does not lift
+-- the cap.
+test_a6_exceeding_cap_never_executes_without_approval : Script ()
+test_a6_exceeding_cap_never_executes_without_approval = do
+  fx <- setup
+  input <- inputFor fx "2026-09" 9000.0
+  -- the agent claims the cap check passed
+  (proposalCid, _) <- propose fx (input with checks = [passingCheck "cap" "Within cap"])
+  p <- proposalOf fx proposalCid
+  assertMsg "9,000 is above the 5,000 cap" (p.verdict == NeedsApproval)
+  cmd <- executeCmd fx fx.mandateCid proposalCid
+  failsWith "needs 2 approval(s)" (asAgent fx) cmd
+  approved <- approveBoth fx proposalCid
+  (_, outcomeCid) <- execute fx approved
+  o <- outcomeOf fx outcomeCid
+  assertMsg "executes once approved" (o.kind == Executed)
+
+-- | Other propose rules: positive total, attempt numbering, and a register of the right treasury.
+test_propose_input_rules : Script ()
+test_propose_input_rules = do
+  fx <- setup
+  input <- inputFor fx "2026-09" 1000.0
+  failsWith "Total must be greater than zero" (asAgent fx) (proposeCmd fx (input with total = 0.0))
+  failsWith "Attempt numbers start at 1" (asAgent fx) (proposeCmd fx (input with attempt = 0))
+  -- a register created for another treasury is not accepted
+  other <- allocatePartyByHint (PartyIdHint "otherTreasury")
+  otherRegister <- submit other $ createCmd UnitRegister with
+    treasury = other; treasurer = fx.treasurer; agent = fx.agent; changes = []
+  failsWith "different treasury" (asAgent fx) (proposeCmd fx (input with registerCid = otherRegister))
+  -- the holder-less case: no units on the record date
+  failsWith "No fund unit holders" (asAgent fx) (proposeCmd fx (input with recordDate = date 2025 Jan 1))

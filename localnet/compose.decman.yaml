@@ -1,0 +1,79 @@
+# Three BitSafe Decentralization Manager instances, one per LocalNet participant.
+#
+# Used with the topology files (never run it by hand, scripts/localnet-up.sh does):
+#   docker compose --project-directory localnet --env-file localnet/versions.env \
+#     --env-file localnet/nodes.env -f localnet/compose.decman.yaml up -d
+#
+# Mapping: dm-a -> app-provider (node A), dm-b -> app-user (node B), dm-c -> sv (node C).
+# Inside the LocalNet docker network the three participants all live in the `canton` container.
+name: mithra-decman
+
+x-decman: &decman
+  image: ${DECMAN_IMAGE:?set DECMAN_IMAGE in localnet/versions.env}
+  restart: unless-stopped
+  networks: [localnet]
+
+x-decman-env: &decman-env
+  DECPM_DIR: /app
+  DECPM_HOST: 0.0.0.0
+  DECPM_CANTON_ADMIN_HOST: canton
+  DECPM_CANTON_LEDGER_HOST: canton
+  DECPM_CANTON_SYNCHRONIZER: global
+  DECPM_CANTON_NETWORK: devnet
+  # LocalNet only: DecMan mints HS256 "unsafe" tokens (sub ledger-api-user, aud https://canton.network.global).
+  DECPM_INSECURE: 'true'
+  DECPM_TOPOLOGY_PROPAGATION_DELAY_SECS: '3'
+  DECPM_PEER_WAIT_POLL_DELAY_MS: '500'
+  DECPM_LOG_FORMAT: text
+
+services:
+  dm-a:
+    <<: *decman
+    container_name: ${NODE_A_DECMAN_CONTAINER:?}
+    environment:
+      <<: *decman-env
+      DECPM_PORT: ${NODE_A_DECMAN_PORT:?}
+      DECPM_NOISE_PORT: ${NODE_A_DECMAN_NOISE_PORT:?}
+      DECPM_PUBLIC_ADDRESS: ${NODE_A_DECMAN_CONTAINER:?}
+      DECPM_CANTON_ADMIN_PORT: ${NODE_A_ADMIN_PORT:?}
+      DECPM_CANTON_LEDGER_PORT: ${NODE_A_LEDGER_PORT:?}
+    ports:
+      - '127.0.0.1:${NODE_A_DECMAN_PORT}:${NODE_A_DECMAN_PORT}'
+    volumes:
+      - ./.data/dm-a:/app/data
+
+  dm-b:
+    <<: *decman
+    container_name: ${NODE_B_DECMAN_CONTAINER:?}
+    environment:
+      <<: *decman-env
+      DECPM_PORT: ${NODE_B_DECMAN_PORT:?}
+      DECPM_NOISE_PORT: ${NODE_B_DECMAN_NOISE_PORT:?}
+      DECPM_PUBLIC_ADDRESS: ${NODE_B_DECMAN_CONTAINER:?}
+      DECPM_CANTON_ADMIN_PORT: ${NODE_B_ADMIN_PORT:?}
+      DECPM_CANTON_LEDGER_PORT: ${NODE_B_LEDGER_PORT:?}
+    ports:
+      - '127.0.0.1:${NODE_B_DECMAN_PORT}:${NODE_B_DECMAN_PORT}'
+    volumes:
+      - ./.data/dm-b:/app/data
+
+  dm-c:
+    <<: *decman
+    container_name: ${NODE_C_DECMAN_CONTAINER:?}
+    environment:
+      <<: *decman-env
+      DECPM_PORT: ${NODE_C_DECMAN_PORT:?}
+      DECPM_NOISE_PORT: ${NODE_C_DECMAN_NOISE_PORT:?}
+      DECPM_PUBLIC_ADDRESS: ${NODE_C_DECMAN_CONTAINER:?}
+      DECPM_CANTON_ADMIN_PORT: ${NODE_C_ADMIN_PORT:?}
+      DECPM_CANTON_LEDGER_PORT: ${NODE_C_LEDGER_PORT:?}
+    ports:
+      - '127.0.0.1:${NODE_C_DECMAN_PORT}:${NODE_C_DECMAN_PORT}'
+    volumes:
+      - ./.data/dm-c:/app/data
+
+networks:
+  localnet:
+    # Created by the Splice LocalNet compose project (its network is named ${DOCKER_NETWORK:-localnet}).
+    external: true
+    name: ${DOCKER_NETWORK:-localnet}

@@ -1,0 +1,170 @@
+module Mithra.Proposal where
+
+import Mithra.Decision
+import Mithra.Payment
+import Mithra.Types
+
+-- | A distribution waiting to execute. Created only by `Mandate_Propose`.
+template Proposal
+  with
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    proposalId : Text      -- "proposal/<cycleId>/<n>"
+    cycleId : Text
+    cycleLabel : Text
+    recordDate : Date
+    total : Decimal
+    payouts : [Payout]
+    verdict : Verdict
+    approvers : [Party]
+    approvalThreshold : Int
+    approvals : [ApprovalEntry]
+    decisionRecordCid : ContractId DecisionRecord
+    decisionRecordId : Text
+    mandateVersion : Int
+    createdAt : Time
+    seeded : Bool
+  where
+    signatory treasury, agent
+    observer treasurer, approvers
+    ensure total > 0.0 && not (null payouts)
+
+    choice Proposal_Approve : (ContractId Proposal, ContractId Approval)
+      with
+        approver : Party
+        note : Text
+      controller approver
+      do
+        assertMsg "Only approvers named in the Mandate can approve a proposal" (approver `elem` approvers)
+        assertMsg "This approver has already approved this proposal"
+          (approver `notElem` map (.approver) approvals)
+        assertMsg "This proposal is within the Mandate cap and needs no approval" (verdict == NeedsApproval)
+        now <- getTime
+        approvalCid <- create Approval with
+          approver
+          treasury
+          treasurer
+          agent
+          proposalId
+          cycleId
+          decisionRecordId
+          at = now
+          note
+        proposalCid <- create this with
+          approvals = approvals ++ [ApprovalEntry with approver; at = now; note]
+        pure (proposalCid, approvalCid)
+
+    choice Proposal_Reject : ContractId DistributionOutcome
+      with
+        approver : Party
+        reason : Text
+      controller approver
+      do
+        assertMsg "Only approvers named in the Mandate can reject a proposal" (approver `elem` approvers)
+        assertMsg "A rejection needs a reason" (reason /= "")
+        now <- getTime
+        create DistributionOutcome with
+          recordId = outcomeIdFor cycleId decisionRecordId
+          treasury
+          treasurer
+          agent
+          approvers
+          decisionRecordId
+          cycleId
+          cycleLabel
+          kind = Rejected
+          approvals
+          payments = []
+          actor = approver
+          reason = Some reason
+          at = now
+          seeded
+
+    -- | L11: the treasurer cancels a pending proposal.
+    choice Proposal_Cancel : ContractId DistributionOutcome
+      controller treasurer
+      do
+        now <- getTime
+        create DistributionOutcome with
+          recordId = outcomeIdFor cycleId decisionRecordId
+          treasury
+          treasurer
+          agent
+          approvers
+          decisionRecordId
+          cycleId
+          cycleLabel
+          kind = Cancelled
+          approvals
+          payments = []
+          actor = treasurer
+          reason = None
+          at = now
+          seeded
+
+    -- | Called by the Mandate after the transfers. Creates the payments and the outcome
+    -- here because this choice carries both the treasury's and the agent's authority, so
+    -- the same body works when the treasurer executes (MainNet) and when the agent does.
+    choice Proposal_MarkExecuted : ContractId DistributionOutcome
+      with
+        settlements : [Settlement]
+        actor : Party
+      controller treasury
+      do
+        assertMsg "Settlements must line up one-to-one with the proposal payouts"
+          (map (.holder) settlements == map (.holder) payouts)
+        now <- getTime
+        refs <- forA (zip payouts settlements) $ \(p, s) -> do
+          paymentCid <- create Payment with
+            treasury
+            agent
+            holder = p.holder
+            cycleId
+            cycleLabel
+            units = p.units
+            amount = p.amount
+            status = s.status
+            transferInstructionCid = s.transferInstructionCid
+            executedAt = now
+            seeded
+            externalReceiver = s.externalReceiver
+            externalTxRef = None
+          pure PaymentRef with
+            holder = p.holder
+            amount = p.amount
+            paymentCid
+            status = s.status
+            transferInstructionCid = s.transferInstructionCid
+        create DistributionOutcome with
+          recordId = outcomeIdFor cycleId decisionRecordId
+          treasury
+          treasurer
+          agent
+          approvers
+          decisionRecordId
+          cycleId
+          cycleLabel
+          kind = Executed
+          approvals
+          payments = refs
+          actor
+          reason = None
+          at = now
+          seeded
+
+-- | An approver's signed decision on a proposal.
+template Approval
+  with
+    approver : Party
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    proposalId : Text
+    cycleId : Text
+    decisionRecordId : Text
+    at : Time
+    note : Text
+  where
+    signatory approver
+    observer treasury, treasurer, agent
