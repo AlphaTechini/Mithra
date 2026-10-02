@@ -1,0 +1,212 @@
+/*
+ * Mithra design tokens (userflow.md section 1).
+ *
+ * Palette hues: Porcelain #F4F6F8, Night ink #151A2D, Lapis #1F3A6E, Verdigris #2E7D6A,
+ * Garnet #A23A4E, plus the seal colour below. The seal tokens are referenced by Seal.svelte only;
+ * a test (saffron-usage.test.ts) fails if anything else uses them.
+ *
+ * Contrast ratios (WCAG 2.x, computed from the hex values) are noted per pair. Thresholds:
+ * 4.5:1 for body text, 3:1 for large text and UI components or graphics.
+ *
+ * LIGHT
+ *   text on bg                 #151A2D on #F4F6F8   15.92
+ *   text on surface            #151A2D on #FFFFFF   17.25
+ *   text on sunken             #151A2D on #E9EDF2   14.67
+ *   muted on bg                #4A5268 on #F4F6F8    7.18
+ *   muted on surface           #4A5268 on #FFFFFF    7.78
+ *   muted on sunken            #4A5268 on #E9EDF2    6.62
+ *   primary/link on bg         #1F3A6E on #F4F6F8   10.26
+ *   primary/link on surface    #1F3A6E on #FFFFFF   11.12
+ *   on-primary on primary      #FFFFFF on #1F3A6E   11.12
+ *   on-primary on primary-hov  #FFFFFF on #172C54   13.77
+ *   primary on selected        #1F3A6E on #E2E8F4    9.04
+ *   focus ring on surface      #1F3A6E on #FFFFFF   11.12 (needs 3)
+ *   border-strong on surface   #6B7488 on #FFFFFF    4.69 (needs 3, form controls)
+ *   border-strong on bg        #6B7488 on #F4F6F8    4.33
+ *   border-strong on sunken    #6B7488 on #E9EDF2    3.99
+ *   verdigris graphic on surf  #2E7D6A on #FFFFFF    4.93
+ *   success text on success-bg #1F5E4F on #E3F1EC    6.51
+ *   success text on surface    #1F5E4F on #FFFFFF    7.58
+ *   garnet graphic on surface  #A23A4E on #FFFFFF    6.46
+ *   danger text on danger-bg   #8A2F41 on #F7E8EB    6.90
+ *   danger text on surface     #8A2F41 on #FFFFFF    8.19
+ *   seal ink on seal           #151A2D on seal       7.06
+ *   --color-border is a decorative divider only (1.39 on white); nothing relies on it alone.
+ *   Seal against the light page is only 2.26:1, so seal segments carry an ink or strong-border
+ *   outline and the signature count is always also given as text.
+ *
+ * DARK
+ *   text on bg                 #F4F6F8 on #151A2D   15.92
+ *   text on surface            #F4F6F8 on #1D2440   14.06
+ *   text on sunken             #F4F6F8 on #101424   16.89
+ *   muted on bg                #A6AEC4 on #151A2D    7.78
+ *   muted on surface           #A6AEC4 on #1D2440    6.87
+ *   muted on sunken            #A6AEC4 on #101424    8.25
+ *   primary/link on bg         #9DB4E8 on #151A2D    8.32
+ *   primary/link on surface    #9DB4E8 on #1D2440    7.35
+ *   on-primary on primary      #151A2D on #9DB4E8    8.32
+ *   on-primary on primary-hov  #151A2D on #B8C9F0   10.39
+ *   primary on selected        #9DB4E8 on #283457    5.89
+ *   focus ring on bg           #9DB4E8 on #151A2D    8.32
+ *   border-strong on surface   #7C86A3 on #1D2440    4.20
+ *   border-strong on bg        #7C86A3 on #151A2D    4.76
+ *   border-strong on sunken    #7C86A3 on #101424    5.05
+ *   success text on success-bg #7FD3BA on #183A36    7.03
+ *   success text on surface    #7FD3BA on #1D2440    8.65
+ *   danger text on danger-bg   #F0A3B2 on #3A2230    7.29
+ *   danger text on surface     #F0A3B2 on #1D2440    7.68
+ *   seal on surface            seal on #1D2440       6.23
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Brand hues, theme independent. */
+  --hue-porcelain: #f4f6f8;
+  --hue-night-ink: #151a2d;
+  --hue-lapis: #1f3a6e;
+  --hue-verdigris: #2e7d6a;
+  --hue-garnet: #a23a4e;
+
+  /* Seal (Seal.svelte only). */
+  --color-seal: #d99a1e;
+  --color-seal-ink: #151a2d;
+
+  /* Surfaces and text. */
+  --color-bg: #f4f6f8;
+  --color-surface: #ffffff;
+  --color-surface-sunken: #e9edf2;
+  --color-text: #151a2d;
+  --color-text-muted: #4a5268;
+  --color-border: #d5dbe4;
+  --color-border-strong: #6b7488;
+  --color-inverse-bg: #151a2d;
+  --color-inverse-text: #f4f6f8;
+
+  /* Actions and selection. */
+  --color-primary: #1f3a6e;
+  --color-primary-hover: #172c54;
+  --color-on-primary: #ffffff;
+  --color-link: #1f3a6e;
+  --color-selected-bg: #e2e8f4;
+  --color-focus: #1f3a6e;
+
+  /* Status. Each status has a graphic colour, a text colour and a tint, and always an icon and a word. */
+  --color-success: #2e7d6a;
+  --color-success-text: #1f5e4f;
+  --color-success-bg: #e3f1ec;
+  --color-danger: #a23a4e;
+  --color-danger-text: #8a2f41;
+  --color-danger-bg: #f7e8eb;
+  --color-info-text: #1f3a6e;
+  --color-info-bg: #e2e8f4;
+  --color-neutral-text: #4a5268;
+  --color-neutral-bg: #e9edf2;
+
+  --color-scrim: rgb(21 26 45 / 0.45);
+
+  /* Type. */
+  --font-sans: 'Public Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --text-13: 0.8125rem;
+  --text-15: 0.9375rem;
+  --text-18: 1.125rem;
+  --text-24: 1.5rem;
+  --text-32: 2rem;
+  --text-44: 2.75rem;
+  --leading-body: 1.55;
+  --leading-tight: 1.2;
+  --measure: 70ch;
+
+  /* Spacing (4 px base). */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  /* Radii and shadows (subtle). */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+  --shadow-sm: 0 1px 2px rgb(21 26 45 / 0.06);
+  --shadow-md: 0 4px 16px rgb(21 26 45 / 0.1);
+  --shadow-panel: -8px 0 24px rgb(21 26 45 / 0.12);
+
+  --strip-height: 2rem;
+  --bottom-bar-height: 4rem;
+  --motion-quick: 160ms;
+  --motion-settle: 360ms;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --color-bg: #151a2d;
+    --color-surface: #1d2440;
+    --color-surface-sunken: #101424;
+    --color-text: #f4f6f8;
+    --color-text-muted: #a6aec4;
+    --color-border: #2f3858;
+    --color-border-strong: #7c86a3;
+    --color-inverse-bg: #f4f6f8;
+    --color-inverse-text: #151a2d;
+    --color-primary: #9db4e8;
+    --color-primary-hover: #b8c9f0;
+    --color-on-primary: #151a2d;
+    --color-link: #9db4e8;
+    --color-selected-bg: #283457;
+    --color-focus: #9db4e8;
+    --color-success: #5dbfa4;
+    --color-success-text: #7fd3ba;
+    --color-success-bg: #183a36;
+    --color-danger: #e58a9d;
+    --color-danger-text: #f0a3b2;
+    --color-danger-bg: #3a2230;
+    --color-info-text: #9db4e8;
+    --color-info-bg: #283457;
+    --color-neutral-text: #a6aec4;
+    --color-neutral-bg: #101424;
+    --color-scrim: rgb(0 0 0 / 0.6);
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+    --shadow-md: 0 4px 16px rgb(0 0 0 / 0.5);
+    --shadow-panel: -8px 0 24px rgb(0 0 0 / 0.5);
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --color-bg: #151a2d;
+  --color-surface: #1d2440;
+  --color-surface-sunken: #101424;
+  --color-text: #f4f6f8;
+  --color-text-muted: #a6aec4;
+  --color-border: #2f3858;
+  --color-border-strong: #7c86a3;
+  --color-inverse-bg: #f4f6f8;
+  --color-inverse-text: #151a2d;
+  --color-primary: #9db4e8;
+  --color-primary-hover: #b8c9f0;
+  --color-on-primary: #151a2d;
+  --color-link: #9db4e8;
+  --color-selected-bg: #283457;
+  --color-focus: #9db4e8;
+  --color-success: #5dbfa4;
+  --color-success-text: #7fd3ba;
+  --color-success-bg: #183a36;
+  --color-danger: #e58a9d;
+  --color-danger-text: #f0a3b2;
+  --color-danger-bg: #3a2230;
+  --color-info-text: #9db4e8;
+  --color-info-bg: #283457;
+  --color-neutral-text: #a6aec4;
+  --color-neutral-bg: #101424;
+  --color-scrim: rgb(0 0 0 / 0.6);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-md: 0 4px 16px rgb(0 0 0 / 0.5);
+  --shadow-panel: -8px 0 24px rgb(0 0 0 / 0.5);
+}
