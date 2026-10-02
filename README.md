@@ -173,8 +173,8 @@ Honest list. Details and the owner's checklists are in [docs/verification.md](do
 - **LocalNet test mode** signs for every demo party on the server behind one shared password. It is a demo, not an authentication system, and the "Acting as" list shows the demo party names to everyone (except on holder screens, which link to the launch page to switch instead).
 - **One asset:** CC. The design goes through the token standard (CIP-56) so USDCx can follow, but it is not built.
 - **Only the treasury is decentralized**; the other parties are ordinary parties on node A. Namespace changes are not demonstrated.
-- **Videos and the submission** (S3, S4, S6) and the named BitSafe technical owner in `docs/bitsafe.md` are the owner's.
+- **Videos and the submission** (S3, S4, S6) are the owner's.
 
 ## License
 
-No license has been chosen for Mithra's own code yet. The vendored DARs in `daml/dars` are Apache-2.0, from BitSafe's decentralization-manager and the Splice release (provenance and checksums in [daml/dars/README.md](daml/dars/README.md)).
+Mithra's own code has no license file (all rights reserved). The vendored DARs in `daml/dars` are Apache-2.0, from BitSafe's decentralization-manager and the Splice release (provenance and checksums in [daml/dars/README.md](daml/dars/README.md)).

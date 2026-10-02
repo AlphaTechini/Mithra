@@ -2,7 +2,7 @@
 
 Evidence for the BitSafe challenge (contribution pool path, LocalNet; specs.md N7, N8, S5). What is claimed, how to reproduce it, what has been run, and what is still open.
 
-Technical owner: <name, contact>
+Technical owner: Rehoboth (rehobothokoibu@gmail.com, Telegram [@cyberpunkweb3](https://t.me/cyberpunkweb3))
 
 ## What BitSafe's Decentralization Manager does in Mithra
 
