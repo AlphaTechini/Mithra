@@ -18,7 +18,7 @@ describe('infrastructureSummary', () => {
 
 /** A ledger client whose nodes answer from a table keyed by port. */
 function clientFor(
-  nodes: Record<string, { version: boolean; parties: string[] }>,
+  nodes: Record<string, { version: boolean; parties: string[]; synchronizers?: number }>,
   calls: string[],
 ) {
   const fetchStub: typeof fetch = (input) => {
@@ -29,6 +29,17 @@ function clientFor(
     const node = nodes[url.port];
     if (!node?.version) return Promise.reject(new TypeError('connection refused'));
     if (url.pathname === '/v2/version') return Promise.resolve(Response.json({ version: '3.5.8' }));
+    if (url.pathname === '/v2/state/connected-synchronizers') {
+      const count = node.synchronizers ?? 1;
+      return Promise.resolve(
+        Response.json({
+          connectedSynchronizers: Array.from({ length: count }, (_, i) => ({
+            synchronizerAlias: `global${i}`,
+            synchronizerId: `global::1220${i}`,
+          })),
+        }),
+      );
+    }
     return Promise.resolve(
       Response.json({ partyDetails: node.parties.map((party) => ({ party, isLocal: true })) }),
     );
@@ -67,6 +78,36 @@ describe('createInfrastructureChecker', () => {
       ],
       summary: 'Still running on 2 of 3 nodes',
     });
+  });
+
+  it('counts a node that answers /v2/version but is disconnected from every synchronizer as offline', async () => {
+    const client = clientFor(
+      {
+        '3975': { version: true, parties: [treasury] },
+        '2975': { version: true, parties: [treasury], synchronizers: 0 },
+        '4975': { version: true, parties: [treasury] },
+      },
+      [],
+    );
+    const result = await createInfrastructureChecker({ config, client }).get();
+    expect(result.nodes.map((n) => n.online)).toEqual([true, false, true]);
+    expect(result.summary).toBe('Still running on 2 of 3 nodes');
+  });
+
+  it('is below threshold when two nodes are disconnected', async () => {
+    const client = clientFor(
+      {
+        '3975': { version: true, parties: [treasury] },
+        '2975': { version: true, parties: [treasury], synchronizers: 0 },
+        '4975': { version: true, parties: [treasury], synchronizers: 0 },
+      },
+      [],
+    );
+    const result = await createInfrastructureChecker({ config, client }).get();
+    expect(result.nodes.map((n) => n.online)).toEqual([true, false, false]);
+    expect(result.summary).toBe(
+      'Below threshold: 1 of 3 nodes online. Payments and approvals wait until a second node is back.',
+    );
   });
 
   it('does not count the treasury as hosted on a node that does not list it', async () => {

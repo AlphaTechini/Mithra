@@ -8,6 +8,7 @@ scripts/localnet-env.sh             # merge the generated settings into .env (ke
 scripts/localnet-status.sh          # nodes, synchronizers, DecMan, treasury hosting
 scripts/localnet-node.sh b offline  # BitSafe demo: node B stops confirming
 scripts/localnet-node.sh b online
+scripts/bitsafe-demo.sh             # BitSafe evidence run (writes docs/bitsafe-evidence/<timestamp>.md)
 scripts/localnet-down.sh            # stop (keeps data); add --reset to wipe everything
 scripts/localnet-up.sh --dry-run    # print every HTTP request, call no Docker
 ```
@@ -71,7 +72,9 @@ All demo parties live on node A, so taking node B offline for the BitSafe demo n
 
 ## Taking a node offline (BitSafe demo)
 
-All three participants run in one container, so `docker stop` would stop them all. `scripts/localnet-node.sh b offline` runs a Canton console script that disconnects node B's participant from the synchronizer; it stays up but stops confirming. With B offline, A and C still reach the hosting threshold of 2, so Mithra cycles keep working; with two nodes offline, transactions that need the treasury time out. `online` reconnects it. Node A (hosts the agent and all demo parties) and node C (hosts the DSO and the synchronizer, so CC transfers stop everywhere) are refused. The console command names are marked "verify on owner's machine" in `console/node-offline.sc`; `scripts/localnet-node.sh console` opens the stock console to check them.
+All three participants run in one container, so `docker stop` would stop them all. `scripts/localnet-node.sh b offline` runs a Canton console script that disconnects node B's participant from the synchronizer; it stays up but stops confirming. With B offline, A and C still reach the hosting threshold of 2, so Mithra cycles keep working; with two nodes offline, transactions that need the treasury time out. `online` reconnects it. Node A (hosts the agent and all demo parties) and node C (hosts the DSO and the synchronizer, so CC transfers stop everywhere) are refused. The one exception is `scripts/localnet-node.sh c offline --allow-c`, accepted only when `scripts/bitsafe-demo.sh` sets `MITHRA_ALLOW_C_OFFLINE=bitsafe-demo` for its below-threshold step; it prints a loud warning that CC transfers stop until `scripts/localnet-node.sh c online`.
+
+`scripts/bitsafe-demo.sh` runs the whole BitSafe evidence (one node offline and a cycle still pays, below the hosting threshold, a governed Mandate change below and at its confirmation threshold) against the running backend and writes a report to `docs/bitsafe-evidence/`; see [docs/bitsafe.md](../docs/bitsafe.md) and [docs/verification.md](../docs/verification.md). The console command names are marked "verify on owner's machine" in `console/node-offline.sc`; `scripts/localnet-node.sh console` opens the stock console to check them.
 
 ## Reset and troubleshooting
 

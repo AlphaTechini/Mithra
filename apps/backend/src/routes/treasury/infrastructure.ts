@@ -3,14 +3,14 @@ import type { Config } from '../../config/env';
 import type { LedgerClient } from '../../ledger';
 import { ordinalWord } from './format';
 
-/** One node answers within this time or it counts as offline. */
+/** Each node request (version, synchronizers) must answer within this time or the node counts as offline. */
 export const NODE_TIMEOUT_MS = 2000;
 /** The infrastructure answer is reused for this long. */
 export const INFRASTRUCTURE_TTL_MS = 30_000;
 
 /**
- * The line under the node list (userflow 12). `online` counts nodes that answered; the treasury
- * keeps working while at least `threshold` of them are up.
+ * The line under the node list (userflow 12). `online` counts nodes that are up and connected to
+ * a synchronizer; the treasury keeps working while at least `threshold` of them are.
  */
 export function infrastructureSummary(online: number, total: number, threshold: number): string {
   if (online >= total) return `Running on ${online} of ${total} nodes`;
@@ -57,15 +57,20 @@ export function createInfrastructureChecker(deps: InfrastructureDeps): Infrastru
           timeoutMs: NODE_TIMEOUT_MS,
           retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
         });
-        const [version, parties] = await Promise.allSettled([
+        const [version, synchronizers, parties] = await Promise.allSettled([
           client.version(),
+          client.connectedSynchronizers(),
           client.listParties(),
         ]);
+        // A node counts as online only when its JSON API answers AND it is connected to at least one
+        // synchronizer: a participant disconnected from the synchronizer (how
+        // scripts/localnet-node.sh takes a node offline) still answers /v2/version but cannot confirm.
+        const connected = synchronizers.status === 'fulfilled' && synchronizers.value.length > 0;
         return {
           id: node.id,
           name: node.name,
           operator: node.operator,
-          online: version.status === 'fulfilled',
+          online: version.status === 'fulfilled' && connected,
           hostsTreasury:
             parties.status === 'fulfilled' && parties.value.some((p) => p.party === treasuryParty),
         };

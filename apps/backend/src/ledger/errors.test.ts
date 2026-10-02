@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { LedgerError, cleanCause, ledgerErrorFromResponse, ledgerUnreachable } from './errors';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  LedgerError,
+  NODES_DID_NOT_CONFIRM_MESSAGE,
+  NODE_CONFIRMATION_ERROR_IDS,
+  cleanCause,
+  isNodeConfirmationFailure,
+  ledgerErrorFromResponse,
+  ledgerUnreachable,
+  setNodeConfirmationLogger,
+} from './errors';
 
 describe('cleanCause', () => {
   it('keeps the Daml assertion message', () => {
@@ -97,5 +106,112 @@ describe('ledgerUnreachable', () => {
   it('distinguishes a timeout', () => {
     const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
     expect(ledgerUnreachable('http://x', timeout).code).toBe('LEDGER_TIMEOUT');
+  });
+});
+
+describe('treasury nodes did not confirm (BitSafe, N8)', () => {
+  const MESSAGE =
+    "The treasury's nodes did not confirm in time. At least 2 of its 3 nodes must be online; check Settings › Infrastructure, then try again.";
+
+  const logged: string[] = [];
+  beforeEach(() => {
+    logged.length = 0;
+    setNodeConfirmationLogger((line) => logged.push(line));
+  });
+  afterEach(() => {
+    setNodeConfirmationLogger((line) => process.stderr.write(`${line}\n`));
+  });
+
+  it('logs the raw error once so the id list can be corrected', () => {
+    ledgerErrorFromResponse(503, {
+      code: 'MEDIATOR_SAYS_TX_TIMED_OUT',
+      cause: 'Rejected transaction as the mediator did not receive sufficient confirmations',
+      errorCategory: 4,
+    });
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain('[mithra-ledger] treasury nodes did not confirm:');
+    expect(logged[0]).toContain('MEDIATOR_SAYS_TX_TIMED_OUT');
+    expect(logged[0]).toContain('did not receive sufficient confirmations');
+    ledgerErrorFromResponse(400, { code: 'DAML_FAILURE', cause: 'Total above the cap' });
+    expect(logged).toHaveLength(1);
+  });
+
+  it('uses the documented message', () => {
+    expect(NODES_DID_NOT_CONFIRM_MESSAGE).toBe(MESSAGE);
+  });
+
+  it.each(NODE_CONFIRMATION_ERROR_IDS)('maps %s in the code to a retryable error', (id) => {
+    const error = ledgerErrorFromResponse(503, {
+      code: id,
+      cause: 'Some Canton text',
+      errorCategory: 4,
+      definiteAnswer: false,
+    });
+    expect(error).toMatchObject({
+      code: id,
+      message: MESSAGE,
+      retryable: true,
+      status: 503,
+      category: 4,
+      rawCause: 'Some Canton text',
+    });
+  });
+
+  it('finds the id in the cause, ignoring case', () => {
+    const error = ledgerErrorFromResponse(400, {
+      code: 'SOME_WRAPPER',
+      cause: 'Request failed: mediator_says_tx_timed_out (rejected by mediator)',
+      errorCategory: 9,
+      definiteAnswer: true,
+    });
+    expect(error.message).toBe(MESSAGE);
+    expect(error.retryable).toBe(true);
+  });
+
+  it('maps topology errors only when they name the treasury', () => {
+    const treasury = ledgerErrorFromResponse(400, {
+      code: 'PARTY_NOT_KNOWN_ON_LEDGER',
+      cause: 'Parties not known on ledger: mithra-treasury::1220abcd',
+    });
+    expect(treasury.message).toBe(MESSAGE);
+    expect(treasury.retryable).toBe(true);
+    const other = ledgerErrorFromResponse(400, {
+      code: 'PARTY_NOT_KNOWN_ON_LEDGER',
+      cause: 'Parties not known on ledger: someone-else::1220abcd',
+    });
+    expect(other.message).toBe('Parties not known on ledger: someone-else::1220abcd');
+    expect(other.retryable).toBe(false);
+  });
+
+  it('leaves unrelated errors alone', () => {
+    expect(isNodeConfirmationFailure('DAML_FAILURE', 'Total above the cap')).toBe(false);
+    expect(isNodeConfirmationFailure('CONTRACT_NOT_FOUND', undefined)).toBe(false);
+    expect(
+      ledgerErrorFromResponse(400, { code: 'DAML_FAILURE', cause: 'Total above the cap' }).message,
+    ).toBe('Total above the cap');
+  });
+
+  it('reports a submit that times out, but not other timeouts', () => {
+    const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+    const submit = ledgerUnreachable(
+      'http://x',
+      timeout,
+      '/v2/commands/submit-and-wait-for-transaction',
+    );
+    expect(submit).toMatchObject({
+      code: 'LEDGER_TIMEOUT',
+      message: MESSAGE,
+      retryable: true,
+      status: 0,
+    });
+    const read = ledgerUnreachable('http://x', timeout, '/v2/state/active-contracts');
+    expect(read.message).toContain('did not answer in time');
+    // A refused connection on submit is not a missing confirmation.
+    const refused = ledgerUnreachable(
+      'http://x',
+      new TypeError('fetch failed'),
+      '/v2/commands/submit-and-wait-for-transaction',
+    );
+    expect(refused.code).toBe('LEDGER_UNREACHABLE');
   });
 });

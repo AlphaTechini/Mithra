@@ -136,9 +136,49 @@ What to look for afterwards:
 
 To be written with the backend milestone: start the backend against `.env`, sign in as the demo treasurer, run a cycle, approve, execute, and what each screen shows.
 
-## BitSafe evidence
+## BitSafe evidence (owner's machine)
 
-To be written: the node-offline demo end to end (cycle with node B offline), the DecMan confirmation of a Mandate change on two of three nodes, screenshots or logs to keep.
+`scripts/bitsafe-demo.sh` runs the whole N8 demonstration against the running LocalNet and backend and writes a timestamped report to `docs/bitsafe-evidence/`. It was written without a LocalNet (images cannot be pulled in the build environment): `bash -n`, `shellcheck`, `--dry-run` and a run against stub services were checked, the real run is yours. What it proves and the node, operator and threshold list: [docs/bitsafe.md](bitsafe.md).
+
+### Before you run it
+
+- LocalNet up and the backend running against it: `scripts/localnet-up.sh`, `scripts/localnet-env.sh`, then the backend and its database as in the README. `LOCALNET_DEMO_PASSWORD` is in your `.env` (the script reads the environment first, then `.env`).
+- The demo history seeded (`pnpm seed:localnet`): the script needs the organization and the sealed Mandate, and the seeded balance for the payouts.
+- Start the backend with its output also in a file, for example `pnpm --filter @mithra/backend dev 2>&1 | tee /tmp/backend.log` (or `node apps/backend/dist/index.js 2>&1 | tee ...` for the built backend), and pass `--backend-log /tmp/backend.log`. Below the hosting threshold the backend writes one line starting `[mithra-ledger] treasury nodes did not confirm:` with the raw Canton error; the report copies it, and it is how the unverified error id list in `apps/backend/src/ledger/errors.ts` gets corrected.
+- **It uses up two cycle ids and pays real test CC for one of them.** Step 2 pays a cycle (default: the previous month, 400 CC); step 3 proposes another (the month before, cancelled afterwards unless `--keep`). Both months are the ones the live demo (`docs/demo-script.md`) uses for August and September, so run the evidence on a LocalNet you will reset afterwards (`scripts/localnet-down.sh --reset`, bring-up, seed) or pass `--cycle YYYY-MM` and `--below-cycle YYYY-MM` with months that have not run and whose record date is already past and after the units' effective date (2026-05-01).
+- Step 3 takes node C offline, which stops all CC transfers until it is back. Nothing else should be running against that LocalNet. The script brings nodes B and C back when it ends, also after an error or Ctrl+C; if the machine itself dies, run `scripts/localnet-node.sh c online` and `scripts/localnet-node.sh b online`.
+
+### Commands
+
+```bash
+scripts/bitsafe-demo.sh --dry-run                       # every request it would make, nothing is sent
+scripts/bitsafe-demo.sh --backend-log /tmp/backend.log  # the real run, about 10 to 25 minutes
+scripts/bitsafe-demo.sh --cycle 2026-09 --below-cycle 2026-08 --total 400   # explicit cycles
+git add docs/bitsafe-evidence/ && git commit -m "BitSafe evidence: LocalNet run"
+```
+
+Options: `--keep` leaves the step 3 proposal and the step 4 cap change in place; `--url` or `MITHRA_URL` points at another backend (default `http://localhost:8787`). Wait times can be changed with `BITSAFE_INFRA_WAIT`, `BITSAFE_CYCLE_WAIT`, `BITSAFE_BELOW_WAIT`, `BITSAFE_SEAL_OBSERVE`, `BITSAFE_SEAL_WAIT` (seconds). The exit code is 0 only when every claim passed.
+
+### What each step should print
+
+| Step | What happens | Lines to expect |
+|---|---|---|
+| 1 Baseline | Records `scripts/localnet-status.sh`, `GET /api/infrastructure`, and `GET /decentralized-parties` on each DecMan; asks each node's ledger API whether it hosts the treasury | `✓ B2 ... 3 of 3 nodes`, `✓ B1 ... hosted on A, B, C; threshold 2` |
+| 2 One node offline | `scripts/localnet-node.sh b offline`; the panel says "Still running on 2 of 3 nodes"; runs a cycle within the cap and waits for `paid-automatically` or `awaiting-acceptance` (Holder D has no auto-receive, so `awaiting-acceptance` is normal); records the payout update ids; brings B back | `✓ O1`, `✓ O2 ... payout update ids: ...` |
+| 3 Below threshold | B and C offline (`localnet-node.sh c offline --allow-c`, allowed only from this script); the panel says "Below threshold: 1 of 3 nodes online"; runs a new cycle whose total is above the cap; it must not complete and should end `failed` with the message "The treasury's nodes did not confirm in time. At least 2 of its 3 nodes must be online; check Settings › Infrastructure, then try again."; brings C and B back, retries the same cycle (a failed cycle starts a new attempt), which now proposes (`awaiting-approval`); cancels it unless `--keep` | `✓ T1`, `✓ T2`, `T3`, `✓ T4` |
+| 4 Governed action | B offline; drafts a Mandate change (cap 4,000; 4,500 when the cap is already 4,000) and seals it; watches the seal for 60 s: it must stay `awaiting-nodes` with 1 of 2 confirmations and the Mandate version and cap must not change; B back online: the seal reaches `sealed`, the Mandate has the next version and the new cap; a second seal restores the original cap | `✓ G1`, `✓ G2`, `✓ R1` |
+
+Expect step 3 to take the longest: the backend's ledger client waits and retries before it gives up on a submission that cannot get its confirmations (several minutes).
+
+### If a claim fails
+
+- **T3 fails with a different message.** Expected until the Canton error id is confirmed: the report shows the message the app showed (the raw Canton text, since it was not mapped) and, with `--backend-log`, the `[mithra-ledger]` line. Add the real id to `NODE_CONFIRMATION_ERROR_IDS` in `apps/backend/src/ledger/errors.ts`, add it to the unit test, run again. Two limits to know: a submit that times out in the HTTP client is only mapped when `apps/backend/src/ledger/client.ts` passes the request path to `ledgerUnreachable`, and `apps/backend/src/http/errors.ts` answers retryable ledger errors on API routes with its own generic text (cycle failures, which this script checks, show the mapped message).
+- **O1 or T1 never matches.** The panel's answer is cached for 30 s and each node check has a 2 s timeout; the script waits 90 s. A node that still shows online after `localnet-node.sh ... offline` means the console command did not disconnect it: check `scripts/localnet-node.sh console` (items 18 and 19 of the table above).
+- **G1 fails because confirmations are 0.** Node A's DecMan did not confirm: check `docker logs dm-a` and the response shapes (item 13 above).
+- **A step needs a different cycle.** "Cycle ... already ran": pass `--cycle` or `--below-cycle`.
+
+Item 20 of the table above is what this section answers: taking node B offline leaves the treasury working on A and C.
+
 
 ## MainNet
 

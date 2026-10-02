@@ -42,6 +42,79 @@ const RETRYABLE_CODES = new Set([
   'SYNCHRONIZER_NOT_CONNECTED',
 ]);
 
+/**
+ * What people read when the treasury's nodes cannot confirm a transaction (BitSafe, N8): fewer than
+ * the hosting threshold of the treasury's nodes are online. The numbers are the LocalNet setup
+ * (2 of 3); the Infrastructure screen shows the live count.
+ */
+export const NODES_DID_NOT_CONFIRM_MESSAGE =
+  "The treasury's nodes did not confirm in time. At least 2 of its 3 nodes must be online; check Settings › Infrastructure, then try again.";
+
+/**
+ * Canton error ids that mean "not enough confirming nodes", "timed out waiting for confirmations"
+ * or "the participant is not connected". Matched as a case-insensitive substring of the response's
+ * `code` or `cause`.
+ *
+ * NOT VERIFIED against Canton 3.5: the ids come from the Canton error code reference as best
+ * known, and the reference was not reachable when this was written. `scripts/bitsafe-demo.sh`
+ * records the actual error the ledger returns while the treasury is below its hosting threshold
+ * (docs/bitsafe-evidence/); correct this list from that record.
+ */
+export const NODE_CONFIRMATION_ERROR_IDS: readonly string[] = [
+  // The mediator did not receive enough confirmation responses before the deadline.
+  'MEDIATOR_SAYS_TX_TIMED_OUT',
+  // The participant's own verdict wait ran out.
+  'LOCAL_VERDICT_TIMEOUT',
+  // The participant the command went to is not connected to a synchronizer.
+  'NOT_CONNECTED_TO_ANY_SYNCHRONIZER',
+  'NO_SYNCHRONIZER_FOR_SUBMISSION',
+  // The command was not completed before its deadline.
+  'SUBMISSION_TIMEOUT',
+];
+
+/**
+ * Topology errors that also point at the treasury's hosting nodes, but only when the error names the
+ * treasury party (a mistyped party id raises the same ids). Matched like `NODE_CONFIRMATION_ERROR_IDS`,
+ * plus a case-insensitive "treasury" in the same text (the party id hint is `mithra-treasury`).
+ * Same caveat: not verified against Canton 3.5.
+ */
+export const TREASURY_TOPOLOGY_ERROR_IDS: readonly string[] = [
+  'PARTY_NOT_KNOWN_ON_LEDGER',
+  'NO_SYNCHRONIZER_ON_WHICH_ALL_SUBMITTERS_CAN_SUBMIT',
+  'UNKNOWN_INFORMEES',
+];
+
+/**
+ * Where the raw ledger error behind a "treasury nodes did not confirm" message goes. The message for
+ * people hides the Canton error id, and the id list above is unverified, so each mapped error is
+ * written as one line to stderr (the backend's console): `scripts/bitsafe-demo.sh --backend-log FILE`
+ * copies those lines into its report. Tests replace or silence it.
+ */
+let nodeConfirmationLogger: ((line: string) => void) | undefined = (line) => {
+  process.stderr.write(`${line}\n`);
+};
+
+export function setNodeConfirmationLogger(logger: ((line: string) => void) | undefined): void {
+  nodeConfirmationLogger = logger;
+}
+
+function logNodeConfirmationFailure(detail: Record<string, unknown>): void {
+  nodeConfirmationLogger?.(
+    `[mithra-ledger] treasury nodes did not confirm: ${JSON.stringify(detail)}`,
+  );
+}
+
+/** True when the error text says the treasury's nodes could not confirm (see the lists above). */
+export function isNodeConfirmationFailure(code: string, cause: string | undefined): boolean {
+  const text = `${code} ${cause ?? ''}`.toLowerCase();
+  const has = (ids: readonly string[]): boolean =>
+    ids.some((id) => text.includes(id.toLowerCase()));
+  return (
+    has(NODE_CONFIRMATION_ERROR_IDS) ||
+    (has(TREASURY_TOPOLOGY_ERROR_IDS) && text.includes('treasury'))
+  );
+}
+
 const USER_FAILURE_PREFIX =
   /^(?:Interpretation error: )?Error: User failure: UNHANDLED_EXCEPTION\/[\w.]+:[\w]+(?:@[0-9a-f]+)?(?: \(error category \d+\))?:\s*/;
 
@@ -78,6 +151,17 @@ export function ledgerErrorFromResponse(status: number, body: unknown): LedgerEr
     const cause = typeof raw.cause === 'string' ? raw.cause : undefined;
     const category = typeof raw.errorCategory === 'number' ? raw.errorCategory : undefined;
     const definite = raw.definiteAnswer === true;
+    if (isNodeConfirmationFailure(code, cause)) {
+      logNodeConfirmationFailure({ code, status, category, cause });
+      return new LedgerError({
+        code,
+        message: NODES_DID_NOT_CONFIRM_MESSAGE,
+        retryable: true,
+        status,
+        category,
+        rawCause: cause,
+      });
+    }
     const retryable =
       !definite &&
       ((category !== undefined && RETRYABLE_CATEGORIES.has(category)) ||
@@ -101,10 +185,29 @@ export function ledgerErrorFromResponse(status: number, body: unknown): LedgerEr
   });
 }
 
-/** Wraps a failure to reach the ledger at all (connection refused, timeout, DNS). */
-export function ledgerUnreachable(url: string, cause: unknown): LedgerError {
+/**
+ * Wraps a failure to reach the ledger at all (connection refused, timeout, DNS). `path` is the
+ * request path when the caller knows it: a command submission (`/v2/commands/...`) that times out
+ * is reported as the treasury's nodes not confirming, because that is what a missing confirmation
+ * looks like from the client (BitSafe, N8). Other timeouts keep the generic message.
+ */
+export function ledgerUnreachable(url: string, cause: unknown, path?: string): LedgerError {
   const isTimeout =
     cause instanceof Error && (cause.name === 'TimeoutError' || cause.name === 'AbortError');
+  if (isTimeout && path !== undefined && path.startsWith('/v2/commands/')) {
+    logNodeConfirmationFailure({
+      code: 'LEDGER_TIMEOUT',
+      status: 0,
+      cause: `no answer from ${url}${path} in time`,
+    });
+    return new LedgerError({
+      code: 'LEDGER_TIMEOUT',
+      message: NODES_DID_NOT_CONFIRM_MESSAGE,
+      retryable: true,
+      status: 0,
+      cause,
+    });
+  }
   return new LedgerError({
     code: isTimeout ? 'LEDGER_TIMEOUT' : 'LEDGER_UNREACHABLE',
     message: isTimeout

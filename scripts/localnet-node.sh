@@ -2,11 +2,15 @@
 # Take one LocalNet node offline and bring it back (the BitSafe demo: the treasury keeps working on 2 of 3 nodes).
 #   scripts/localnet-node.sh b offline
 #   scripts/localnet-node.sh b online
+#   scripts/localnet-node.sh c offline --allow-c   only for scripts/bitsafe-demo.sh (below-threshold demo, see below)
 #   scripts/localnet-node.sh console     open the stock interactive Canton console (to look up command names)
 # All three participants run in one container, so this disconnects the participant from its synchronizers
 # through the Canton console (localnet/console/node-offline.sc and node-online.sc) instead of stopping it.
 # Node A and node C cannot be taken offline: A hosts the agent and every demo party, C hosts the DSO and the
-# synchronizer. Needs a running LocalNet (scripts/localnet-up.sh).
+# synchronizer. The one exception is node C with --allow-c, for the below-threshold step of
+# scripts/bitsafe-demo.sh: that script sets MITHRA_ALLOW_C_OFFLINE=bitsafe-demo, and without it --allow-c is
+# refused. While C is offline CC transfers stop for everybody (C hosts the DSO); bring C back with
+# `scripts/localnet-node.sh c online`. Needs a running LocalNet (scripts/localnet-up.sh).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,8 +29,16 @@ fi
 need_cmd jq "Install jq."
 load_config
 
-NODE="${1:-}"
-ACTION="${2:-}"
+ALLOW_C=0
+POSITIONAL=()
+for arg in "$@"; do
+  case "$arg" in
+    --allow-c) ALLOW_C=1 ;;
+    *) POSITIONAL+=("$arg") ;;
+  esac
+done
+NODE="${POSITIONAL[0]:-}"
+ACTION="${POSITIONAL[1]:-}"
 
 if [ "$NODE" = "console" ]; then
   need_cmd docker "Install Docker."
@@ -51,9 +63,16 @@ esac
 LABEL="$(node_label "$NODE")"
 PARTICIPANT="$(node_get "$NODE" PARTICIPANT)"
 
-if [ "$ACTION" = "offline" ]; then
+if [ "$ALLOW_C" = "1" ]; then
+  if [ "$NODE" != "c" ] || [ "$ACTION" != "offline" ]; then die "--allow-c only applies to: scripts/localnet-node.sh c offline --allow-c"; fi
+  [ "${MITHRA_ALLOW_C_OFFLINE:-}" = "bitsafe-demo" ] ||
+    die "refusing --allow-c: taking node C offline is only allowed from scripts/bitsafe-demo.sh (it stops CC transfers for everybody)."
+  printf '\n!!! WARNING: taking node C offline. C hosts the DSO and the synchronizer, so ALL Canton Coin transfers stop\n!!! (payouts, funding, auto-receive) until you run: scripts/localnet-node.sh c online\n\n' >&2
+fi
+
+if [ "$ACTION" = "offline" ] && [ "$ALLOW_C" != "1" ]; then
   case "$NODE" in
-    c) die "refusing to take node C offline: it hosts the DSO and the synchronizer (the LocalNet sv), so taking it offline stops all CC transfers, not just the treasury. For the BitSafe demo take node B offline." ;;
+    c) die "refusing to take node C offline: it hosts the DSO and the synchronizer (the LocalNet sv), so taking it offline stops all CC transfers, not just the treasury. For the BitSafe demo take node B offline. (scripts/bitsafe-demo.sh takes C offline itself for the below-threshold step, using --allow-c.)" ;;
     a) die "refusing to take node A offline: it hosts the agent, the operator and every demo party, so the app itself would stop. For the BitSafe demo take node B offline." ;;
   esac
 fi
