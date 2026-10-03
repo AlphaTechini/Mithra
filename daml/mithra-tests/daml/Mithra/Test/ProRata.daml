@@ -1,0 +1,225 @@
+-- | L2: payees and amounts are the pro-rata split of the units held on the record date.
+module Mithra.Test.ProRata where
+
+import Daml.Script
+import DA.Date
+import DA.Foldable (forA_)
+import DA.List (sortOn)
+import DA.Optional (fromSome)
+import Mithra.Org
+import Mithra.Units
+import Mithra.Types
+import Mithra.Test.Setup
+
+data Vector = Vector with
+    name : Text
+    total : Decimal
+    holdings : [(Text, Int)]
+    changes : [(Text, Int, Date)]      -- when present, `holdings` is what `unitsAt` must derive
+    recordDate : Optional Date
+    expected : Optional [(Text, Decimal)]  -- None: the split must be rejected
+  deriving (Eq, Show)
+
+-- Mirrors daml/test-vectors/prorata.json, which the backend runs with decimal.js.
+vectors : [Vector]
+vectors =
+  [ Vector with
+      name = "equal split with residual"
+      total = 100.0
+      holdings = [("A", 1), ("B", 1), ("C", 1)]
+      changes = []
+      recordDate = None
+      expected = Some [("A", 33.3333333334), ("B", 33.3333333333), ("C", 33.3333333333)]
+  , Vector with
+      name = "single holder"
+      total = 5000.0
+      holdings = [("A", 10)]
+      changes = []
+      recordDate = None
+      expected = Some [("A", 5000.0)]
+  , Vector with
+      name = "large total"
+      total = 123456789.1234567891
+      holdings = [("A", 3), ("B", 5), ("C", 7)]
+      changes = []
+      recordDate = None
+      expected = Some [("A", 24691357.8246913578), ("B", 41152263.041152263), ("C", 57613168.2576131683)]
+  , Vector with
+      name = "many holders"
+      total = 1000.0
+      holdings = [("A", 1), ("B", 2), ("C", 3), ("D", 4), ("E", 5), ("F", 6), ("G", 7), ("H", 8)]
+      changes = []
+      recordDate = None
+      expected = Some [("A", 27.7777777777), ("B", 55.5555555555), ("C", 83.3333333333), ("D", 111.1111111111), ("E", 138.8888888888), ("F", 166.6666666666), ("G", 194.4444444444), ("H", 222.2222222226)]
+  , Vector with
+      name = "units issued after the record date are excluded"
+      total = 1000.0
+      holdings = [("A", 100), ("B", 300)]
+      changes = [("A", 100, (date 2026 Jan 1)), ("B", 300, (date 2026 Jan 1)), ("B", 50, (date 2026 Oct 1)), ("C", 600, (date 2026 Oct 15))]
+      recordDate = Some (date 2026 Sep 30)
+      expected = Some [("A", 250.0), ("B", 750.0)]
+  , Vector with
+      name = "ties for the largest holder go to the first in sort order"
+      total = 10.0
+      holdings = [("A", 1), ("B", 3), ("C", 3)]
+      changes = []
+      recordDate = None
+      expected = Some [("A", 1.4285714285), ("B", 4.2857142858), ("C", 4.2857142857)]
+  , Vector with
+      name = "very unequal units"
+      total = 100.0
+      holdings = [("A", 1000000), ("B", 1)]
+      changes = []
+      recordDate = None
+      expected = Some [("A", 99.9999000001), ("B", 0.0000999999)]
+  , Vector with
+      name = "every holder gets the smallest amount"
+      total = 0.0000000003
+      holdings = [("A", 1), ("B", 1), ("C", 1)]
+      changes = []
+      recordDate = None
+      expected = Some [("A", 0.0000000001), ("B", 0.0000000001), ("C", 0.0000000001)]
+  , Vector with
+      name = "repeating fraction with three holders"
+      total = 0.1
+      holdings = [("A", 1), ("B", 1), ("C", 1)]
+      changes = []
+      recordDate = None
+      expected = Some [("A", 0.0333333334), ("B", 0.0333333333), ("C", 0.0333333333)]
+  , Vector with
+      name = "large total and large units"
+      total = 999999999999.9999999999
+      holdings = [("A", 123456789), ("B", 987654321)]
+      changes = []
+      recordDate = None
+      expected = Some [("A", 111111110211.111110211), ("B", 888888889788.8888897889)]
+  , Vector with
+      name = "total below holders times 1e-10 is rejected"
+      total = 0.0000000001
+      holdings = [("A", 1), ("B", 1)]
+      changes = []
+      recordDate = None
+      expected = None
+  , Vector with
+      name = "small holder would get less than 1e-10 is rejected"
+      total = 0.0000000002
+      holdings = [("A", 1), ("B", 1000)]
+      changes = []
+      recordDate = None
+      expected = None
+  ]
+
+test_prorata_vectors : Script ()
+test_prorata_vectors = do
+  parties <- forA ["A", "B", "C", "D", "E", "F", "G", "H"] $ \l -> do
+    p <- allocatePartyByHint (PartyIdHint l)
+    pure (l, p)
+  let party l = fromSome (lookup l parties)
+      label p = fst (fromSome (find (\(_, q) -> q == p) parties))
+  forA_ vectors $ \v -> do
+    let holdings = [(party l, u) | (l, u) <- v.holdings]
+    case v.recordDate of
+      None -> pure ()
+      Some rd -> do
+        let changes =
+              [ UnitChange with holder = party l; delta = d; effectiveDate = eff; recordedAt = today; seeded = False
+              | (l, d, eff) <- v.changes ]
+        assertMsg (v.name <> ": unitsAt must derive the holdings") (unitsAt rd changes == holdings)
+    case (proRata v.total holdings, v.expected) of
+      (Left _, None) -> pure ()
+      (Right payouts, Some expected) -> do
+        assertMsg (v.name <> ": amounts") ([(label p.holder, p.amount) | p <- payouts] == expected)
+        assertMsg (v.name <> ": payouts are in holder order") (map (.holder) payouts == map fst (sortOn (partyToText . fst) holdings))
+        assertMsg (v.name <> ": the amounts add up to the total") (sum (map (.amount) payouts) == v.total)
+        assertMsg (v.name <> ": units are carried on the payouts") (map (.units) payouts == map snd holdings)
+      (Left err, Some _) -> abort (v.name <> ": expected a split but got: " <> err)
+      (Right _, None) -> abort (v.name <> ": expected the split to be rejected")
+  pure ()
+
+test_amount_format : Script ()
+test_amount_format = do
+  assertMsg "thousands" (showAmount 5000.0 == "5,000")
+  assertMsg "fraction" (showAmount 5000.0000000001 == "5,000.0000000001")
+  assertMsg "small" (showAmount 0.5 == "0.5")
+  assertMsg "millions" (showAmount 1234567.25 == "1,234,567.25")
+  assertMsg "three digits" (showAmount 999.0 == "999")
+  assertMsg "zero" (showAmount 0.0 == "0")
+
+-- | L2: a payee who did not hold units on the record date is rejected.
+test_l2_non_holder_payee_fails : Script ()
+test_l2_non_holder_payee_fails = do
+  fx <- setup
+  input <- inputFor fx "2026-09" 5000.0
+  let extra = Payout with holder = fx.outsider; units = 1; amount = 0.0000000001
+      withExtra = input with payouts = input.payouts ++ [extra]
+  proposeFailsWith "must equal the pro-rata split" fx withExtra
+  let swapped = input with
+        payouts = [if p.holder == fx.holderC then p with holder = fx.outsider else p | p <- input.payouts]
+  proposeFailsWith "must equal the pro-rata split" fx swapped
+  -- the correct split is accepted
+  (_, record) <- propose fx input
+  Some d <- queryContractId fx.agent record
+  assertMsg "three payees" (length d.payouts == 3)
+
+-- | L2: changing one amount (even by the smallest unit) is rejected.
+test_l2_altered_amount_fails : Script ()
+test_l2_altered_amount_fails = do
+  fx <- setup
+  input <- inputFor fx "2026-09" 5000.0
+  let bump p = p with amount = p.amount + 0.0000000001
+      shift = case input.payouts of
+        (a :: b :: rest) -> (a with amount = a.amount - 0.0000000001) :: (b with amount = b.amount + 0.0000000001) :: rest
+        ps -> ps
+  proposeFailsWith "must equal the pro-rata split" fx (input with payouts = map bump input.payouts)
+  proposeFailsWith "must equal the pro-rata split" fx (input with payouts = shift)
+  -- a different total with the old amounts no longer matches the split
+  proposeFailsWith "must equal the pro-rata split" fx (input with total = 5000.0000000001)
+  _ <- propose fx input
+  pure ()
+
+-- | L2: units that take effect after the record date do not count.
+test_l2_units_after_record_date_excluded : Script ()
+test_l2_units_after_record_date_excluded = do
+  fx <- setup
+  -- A gets 100 more units, but only from 2026-10-01, the day after the record date.
+  (register1, _) <- submit fx.treasurer $ exerciseCmd fx.orgCid Org_IssueUnits with
+    registerCid = fx.registerCid; holder = fx.holderA; units = 100; effectiveDate = date 2026 Oct 1; seeded = False
+  let fx1 = fx with registerCid = register1
+  input <- inputFor fx1 "2026-09" 1000.0
+  assertMsg "A is still 100 units" ([p.units | p <- input.payouts, p.holder == fx.holderA] == [100])
+  (_, record) <- propose fx1 input
+  Some d <- queryContractId fx.agent record
+  assertMsg "A's share excludes the new units" ([p.amount | p <- d.payouts, p.holder == fx.holderA] == [100.0])
+  -- a split that counts the new units is rejected
+  let counted = computeProRata 1000.0 [(fx.holderA, 200), (fx.holderB, 300), (fx.holderC, 600)]
+  input2 <- inputFor fx1 "2026-09" 1000.0
+  proposeFailsWith "must equal the pro-rata split" fx1 (input2 with payouts = counted)
+  -- on a later record date they do count
+  Some register <- queryContractId fx.agent register1
+  assertMsg "A is 200 units from 2026-10-01"
+    (unitsAt (date 2026 Oct 1) register.changes == [(fx.holderA, 200), (fx.holderB, 300), (fx.holderC, 600)])
+
+-- | Issuing units: only the treasurer, only positive units, never in the future, and the
+-- holder's FundUnit stays between treasury and holder.
+test_units_issue_rules : Script ()
+test_units_issue_rules = do
+  fx <- setup
+  let issue holder units effectiveDate = exerciseCmd fx.orgCid Org_IssueUnits with
+        registerCid = fx.registerCid; holder; units; effectiveDate; seeded = False
+  failsWith "greater than zero" (actAs fx.treasurer) (issue fx.holderA 0 (date 2026 Sep 1))
+  failsWith "greater than zero" (actAs fx.treasurer) (issue fx.holderA (-5) (date 2026 Sep 1))
+  failsWith "cannot take effect in the future" (actAs fx.treasurer) (issue fx.holderA 10 (date 2026 Oct 2))
+  failsWith notAuthorized (actAs fx.agent) (issue fx.holderA 10 (date 2026 Sep 1))
+  failsWith notVisible (actAs fx.holderA) (issue fx.holderA 10 (date 2026 Sep 1))
+  changes <- registerChanges fx
+  assertMsg "the register still has the three original changes" (length changes == 3)
+  (register1, unitCid) <- submit fx.treasurer (issue fx.holderA 10 (date 2026 Oct 1))
+  Some unit <- queryContractId fx.holderA unitCid
+  assertMsg "the holder's FundUnit is not accepted yet" (unit.units == 10 && not unit.accepted && unit.orgName == "Acme Fund")
+  fx1 <- pure (fx with registerCid = register1)
+  changes1 <- registerChanges fx1
+  assertMsg "the register has the new change" (length changes1 == 4)
+  -- accepting is the holder's alone, and only once
+  accepted <- submit fx.holderA $ exerciseCmd unitCid FundUnit_Accept
+  failsWith "already accepted" (actAs fx.holderA) (exerciseCmd accepted FundUnit_Accept)
+  failsWith notVisible (actAs fx.holderB) (exerciseCmd accepted FundUnit_Accept)

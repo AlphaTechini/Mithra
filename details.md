@@ -121,6 +121,8 @@ If prompted to exceed the Mandate ("pay 50,000 CC now" with a 5,000 cap), the ag
 
 ## 9. Networks and modes
 
+> **Update (decision 11, 2026-10-02).** There is no MainNet node, so Mithra cannot host its Daml package or read the MainNet ledger. What runs where now: **Mithra's records (organization, policy, Mandate, units, proposals, approvals, decision records, audit requests and grants) always live on the LocalNet ledger**, signed on the server through the role switcher, on both networks. `NETWORK=mainnet` means **MainNet payouts**: after the Mandate's rules clear a cycle on the LocalNet ledger, the CC payouts are plain transfers signed by the treasurer in Grofty Wallet on Canton MainNet, and each payment links to the explorer. Holders connect Grofty to register the MainNet wallet they are paid to and to turn on auto-receive. Where the text below says that users or the treasurer sign every action in Grofty on MainNet, read it with this update. See `docs/decisions.md` (decision 11) and the README.
+
 The app runs in two configured modes, LocalNet and MainNet. One codebase, a config switch. TestNet and DevNet are not used.
 
 **LocalNet mode (full product).**

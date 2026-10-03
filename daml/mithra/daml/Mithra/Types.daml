@@ -1,0 +1,216 @@
+module Mithra.Types where
+
+import DA.Date (Month, fromGregorian, monthDayCount, toGregorian)
+import DA.Foldable (maximum)
+import DA.List (dedup, head, sortOn)
+import qualified DA.Text as T
+import Splice.Api.Token.HoldingV1 (InstrumentId)
+import Splice.Api.Token.MetadataV1 (ExtraArgs)
+import Splice.Api.Token.TransferInstructionV1 (TransferFactory)
+
+data Verdict = AutoExecute | NeedsApproval deriving (Eq, Show)
+
+data Trigger = TriggerSchedule | TriggerPrompt | TriggerManual deriving (Eq, Show)
+
+data Fingerprint = Fingerprint with
+    label : Text
+    sha256 : Text
+  deriving (Eq, Show)
+
+data CheckResult = CheckResult with
+    code : Text        -- "cap", "balance", "non_holder", "duplicate_cycle", "deviation", "unit_spike", "prompt_amount", "ai_advisory"
+    label : Text
+    passed : Bool
+    blocking : Bool    -- a failed blocking check forces NeedsApproval
+    actual : Text      -- shown to people, e.g. "1,200 CC vs 3-cycle average 410 CC, +193%"
+    limit : Text
+    source : Text      -- "deterministic" | "ai"
+  deriving (Eq, Show)
+
+data Payout = Payout with
+    holder : Party
+    units : Int
+    amount : Decimal
+  deriving (Eq, Show)
+
+data UnitChange = UnitChange with
+    holder : Party
+    delta : Int
+    effectiveDate : Date
+    recordedAt : Time
+    seeded : Bool
+  deriving (Eq, Show)
+
+data MandateTerms = MandateTerms with
+    cap : Decimal                -- auto-execute cap
+    approvers : [Party]
+    approvalThreshold : Int
+    asset : InstrumentId         -- CC on the configured network; USDCx later without redesign
+    scheduleCron : Text          -- e.g. "0 9 1 * *"
+    scheduleTimezone : Text      -- "UTC"
+    -- "last_day_of_previous_month" is the last day of the month before the payment date, that is the cycle's own month
+    recordDateRule : Text        -- "last_day_of_previous_month" | "day_before_payment"
+    fixedAmount : Optional Decimal
+    deviationPct : Decimal       -- flag if total deviates more than this % from trailing average
+    trailingCycles : Int
+    unitChangePct : Decimal      -- flag if a holder's units changed more than this % ...
+    unitChangeWindowDays : Int   -- ... in this many days before the record date
+    feeBuffer : Decimal
+  deriving (Eq, Show)
+
+data ApprovalEntry = ApprovalEntry with
+    approver : Party
+    at : Time
+    note : Text
+  deriving (Eq, Show)
+
+-- | `PendingExternal`: the payout was authorized on this ledger but the money moves outside it
+-- (MainNet, signed in Grofty Wallet); the agent records the result with `Payment_RecordExternal`.
+data PaymentStatus = Paid | AwaitingAcceptance | PendingExternal deriving (Eq, Show)
+
+data TransferLeg = TransferLeg with
+    holder : Party
+    factoryCid : ContractId TransferFactory
+    extraArgs : ExtraArgs
+  deriving (Eq, Show)
+
+data ScopeItem = ScopeItem with
+    recordId : Text
+    kind : Text
+    reason : Text
+  deriving (Eq, Show)
+
+-- | Whether the terms can be sealed into a Mandate. `agent` is the Mandate's agent party.
+termsValid : Party -> MandateTerms -> Bool
+termsValid agent t =
+  t.cap >= 0.0
+    && length t.approvers == length (dedup t.approvers)
+    && t.approvalThreshold >= 1
+    && t.approvalThreshold <= length t.approvers
+    && agent `notElem` t.approvers
+    && t.scheduleCron /= ""
+    && t.scheduleTimezone /= ""
+    && optional True (> 0.0) t.fixedAmount
+    && t.deviationPct >= 0.0
+    && t.trailingCycles >= 0
+    && t.unitChangePct >= 0.0
+    && t.unitChangeWindowDays >= 0
+    && t.feeBuffer >= 0.0
+
+-- | Units held on `recordDate`: for every holder the sum of `delta` over the changes
+-- effective on or before that date. Only holders with a positive sum are listed,
+-- sorted by `partyToText` ascending.
+unitsAt : Date -> [UnitChange] -> [(Party, Int)]
+unitsAt recordDate changes =
+  let eligible = filter (\c -> c.effectiveDate <= recordDate) changes
+      holders = sortOn partyToText (dedup (map (.holder) eligible))
+      unitsOf h = sum [c.delta | c <- eligible, c.holder == h]
+  in [(h, u) | h <- holders, let u = unitsOf h, u > 0]
+
+-- | Round `n / d` down to 10 decimal places (the scale of `Decimal`).
+-- Correct whatever rounding mode Decimal division uses: if the rounded quotient
+-- multiplied back is above `n`, it was rounded up, so step down one unit.
+floor10 : Decimal -> Decimal -> Decimal
+floor10 n d =
+  let q = n / d
+  in if q * d > n then q - 0.0000000001 else q
+
+-- | Pro-rata split with the documented rounding rule (docs/ledger-model.md).
+-- Left when no valid split exists: no holders, total not positive, or a holder would
+-- receive less than 0.0000000001.
+proRata : Decimal -> [(Party, Int)] -> Either Text [Payout]
+proRata total holdings
+  | total <= 0.0 = Left "Total must be greater than zero"
+  | null holdings = Left "No fund unit holders on the record date"
+  | any (\(_, u) -> u <= 0) holdings = Left "Every holder must hold a positive number of units"
+  | otherwise =
+      let sorted = sortOn (\(p, _) -> partyToText p) holdings
+          totalUnits = intToDecimal (sum (map snd sorted))
+          shares = map (\(_, u) -> floor10 (total * intToDecimal u) totalUnits) sorted
+          residual = total - sum shares
+          indexes = [0 .. length sorted - 1]
+          maxUnits = maximum (map snd sorted)
+          firstMax = head [i | (i, (_, u)) <- zip indexes sorted, u == maxUnits]
+          amountFor i s = if i == firstMax then s + residual else s
+          payouts =
+            [ Payout with holder = h; units = u; amount = amountFor i s
+            | (i, (h, u), s) <- zip3 indexes sorted shares ]
+      in if any (\p -> p.amount < 0.0000000001) payouts
+           then Left "Total is too small to give every holder at least 0.0000000001"
+           else Right payouts
+
+computeProRata : Decimal -> [(Party, Int)] -> [Payout]
+computeProRata total holdings = either error identity (proRata total holdings)
+
+-- | Amount for messages shown to people: thousands separators, no trailing zeros.
+showAmount : Decimal -> Text
+showAmount d =
+  let s = show d
+      neg = T.isPrefixOf "-" s
+      body = if neg then T.drop 1 s else s
+      (whole, frac) = case T.splitOn "." body of
+        [w, f] -> (w, f)
+        _ -> (body, "")
+      fracTrimmed = T.implode (reverse (dropWhile (== "0") (reverse (T.explode frac))))
+      grouped = T.implode (reverse (groupDigits 0 (reverse (T.explode whole))))
+  in (if neg then "-" else "") <> grouped <> (if fracTrimmed == "" then "" else "." <> fracTrimmed)
+
+-- | Takes digits least significant first and puts a comma before every third one.
+groupDigits : Int -> [Text] -> [Text]
+groupDigits _ [] = []
+groupDigits n (c :: cs)
+  | n > 0 && n % 3 == 0 = "," :: c :: groupDigits (n + 1) cs
+  | otherwise = c :: groupDigits (n + 1) cs
+
+-- | The month a cycle id names, or None unless the id is canonical: `YYYY-MM` with a four digit
+-- year from 0001 and a two digit month from 01 to 12.
+cycleMonthOf : Text -> Optional (Int, Month)
+cycleMonthOf cycleId = case T.splitOn "-" cycleId of
+  [y, m] ->
+    if T.length y == 4 && T.length m == 2 && all isDigit (T.explode (y <> m))
+      then case (T.parseInt y, T.parseInt m) of
+        (Some year, Some month) | year >= 1 && month >= 1 && month <= 12 -> Some (year, toEnum (month - 1))
+        _ -> None
+      else None
+  _ -> None
+  where
+    isDigit c = c `elem` ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+
+-- | The canonical cycle id, `YYYY-MM`, of the month containing `d`.
+cycleIdOfDate : Date -> Text
+cycleIdOfDate d =
+  let (y, m, _) = toGregorian d
+  in padZeros 4 (show y) <> "-" <> padZeros 2 (show (fromEnum m + 1))
+  where
+    padZeros n t = T.implode (replicate (n - T.length t) "0") <> t
+
+-- | Whether `cycleId` is a canonical `YYYY-MM`.
+isCycleId : Text -> Bool
+isCycleId cycleId = case cycleMonthOf cycleId of
+  Some (y, m) -> cycleIdOfDate (fromGregorian (y, m, 1)) == cycleId
+  None -> False
+
+-- | The last day of the month a cycle id names, or None for a cycle id that is not canonical.
+lastDayOfCycle : Text -> Optional Date
+lastDayOfCycle cycleId = case cycleMonthOf cycleId of
+  Some (y, m) -> Some (fromGregorian (y, m, monthDayCount y m))
+  None -> None
+
+-- | Nothing when `recordDate` follows `rule` for the cycle `cycleId`, otherwise why not.
+--   * "last_day_of_previous_month": the last day of the month before the payment date, that is
+--     the last day of the cycle's own month;
+--   * "day_before_payment": any day inside the cycle's month (the backend takes the day before the
+--     payment date and keeps it inside the month).
+recordDateProblem : Text -> Text -> Date -> Optional Text
+recordDateProblem rule cycleId recordDate = case (lastDayOfCycle cycleId, cycleMonthOf cycleId) of
+  (Some lastDay, Some (y, m)) ->
+    let (ry, rm, _) = toGregorian recordDate
+        inMonth = ry == y && rm == m
+    in if rule == "last_day_of_previous_month" then
+         (if recordDate == lastDay then None
+          else Some ("The record date must be the last day of " <> cycleId <> " (" <> show lastDay <> ")"))
+       else if rule == "day_before_payment" then
+         (if inMonth then None
+          else Some ("The record date must fall inside " <> cycleId))
+       else Some ("Unknown record date rule " <> rule)
+  _ -> Some ("The cycle id must be YYYY-MM, like 2026-09, not " <> cycleId)

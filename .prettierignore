@@ -1,0 +1,15 @@
+node_modules
+dist
+build
+.svelte-kit
+coverage
+playwright-report
+test-results
+.daml
+daml
+pnpm-lock.yaml
+docs
+details.md
+specs.md
+userflow.md
+prompts

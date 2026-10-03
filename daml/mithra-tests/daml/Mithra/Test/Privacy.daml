@@ -1,0 +1,136 @@
+-- | L7 (holders see only their own units and payments) and L10 (every proposal has a
+-- decision record, and no proposal or record can be made any other way).
+module Mithra.Test.Privacy where
+
+import Daml.Script
+import DA.List (head)
+import DA.Time
+import Mithra.Decision
+import Mithra.Mandate
+import Mithra.Payment
+import Mithra.Proposal
+import Mithra.Types
+import Mithra.Units
+import Mithra.Org
+import Mithra.Test.Setup
+
+-- | Two holders are paid. Holder A's view has A's units and payment, and nothing about
+-- B, nothing about the register, the Mandate, proposals, decision records or outcomes.
+test_l7_holder_sees_only_own : Script ()
+test_l7_holder_sees_only_own = do
+  fx <- setup
+  (fx1, _) <- distribute fx "2026-09" 5000.0
+  -- a pending proposal for the next cycle, so there is something to leak
+  (_, _) <- proposeTotal fx1 "2026-08" 6000.0
+  units <- query @FundUnit fx.holderA
+  assertMsg "A sees exactly their own FundUnit"
+    (map (\(_, u) -> (u.holder, u.units)) units == [(fx.holderA, 100)])
+  payments <- query @Payment fx.holderA
+  assertMsg "A sees exactly their own Payment"
+    (map (\(_, p) -> (p.holder, p.amount)) payments == [(fx.holderA, 500.0)])
+  registers <- query @UnitRegister fx.holderA
+  decisions <- query @DecisionRecord fx.holderA
+  proposals <- query @Proposal fx.holderA
+  outcomes <- query @DistributionOutcome fx.holderA
+  mandates <- query @Mandate fx.holderA
+  orgs <- query @Organization fx.holderA
+  approvals <- query @Approval fx.holderA
+  assertMsg "A sees none of the fund's records"
+    (null registers && null decisions && null proposals && null outcomes && null mandates && null orgs && null approvals)
+  -- B's view is the mirror image
+  unitsB <- query @FundUnit fx.holderB
+  paymentsB <- query @Payment fx.holderB
+  assertMsg "B sees exactly their own"
+    (map (\(_, u) -> u.holder) unitsB == [fx.holderB] && map (\(_, p) -> (p.holder, p.amount)) paymentsB == [(fx.holderB, 1500.0)])
+  -- the treasury side sees all three holders' payments
+  all <- query @Payment fx.treasury
+  assertMsg "the treasury sees every payment" (length all == 3)
+  -- a holder can accept their units, which changes nothing for anyone else
+  _ <- submit fx.holderA $ exerciseCmd (fst (head units)) FundUnit_Accept
+  unitsA2 <- query @FundUnit fx.holderA
+  assertMsg "accepted" (map (\(_, u) -> u.accepted) unitsA2 == [True])
+  unitsB2 <- query @FundUnit fx.holderB
+  assertMsg "B's units are not accepted" (map (\(_, u) -> u.accepted) unitsB2 == [False])
+  failsWith notVisible (actAs fx.holderA) (exerciseCmd (fst (head unitsB)) FundUnit_Accept)
+
+-- L10 ------------------------------------------------------------------------
+
+-- | Proposing creates the decision record in the same transaction, with everything filled
+-- in. After execution, the outcome holds the approvals and the payment references.
+test_l10_decision_record_created_with_proposal : Script ()
+test_l10_decision_record_created_with_proposal = do
+  fx <- setup
+  input <- inputFor fx "2026-09" 6000.0
+  let fingerprints =
+        [ Fingerprint "register" "aa11", Fingerprint "history" "bb22" ]
+      models = [Fingerprint "prompt" "cc33", Fingerprint "response" "dd44"]
+      aiFlag = CheckResult with
+        code = "ai_advisory"; label = "Memo review"; passed = False; blocking = False
+        actual = "possible one-off"; limit = "-"; source = "ai"
+      checks = [passingCheck "balance" "Treasury balance covers the total", aiFlag]
+      richInput = input with
+        trigger = TriggerPrompt
+        triggerDetail = "Treasurer asked: pay 6,000 CC for September"
+        inputFingerprints = fingerprints
+        checks
+        memo = "September income of 6,000 CC, split by units."
+        memoSource = "ai"
+        modelFingerprints = models
+  (proposalCid, recordCid) <- propose fx richInput
+  d <- decisionOf fx recordCid
+  assertMsg "record id" (d.recordId == "decision/2026-09/1")
+  assertMsg "trigger" (d.trigger == TriggerPrompt && d.triggerDetail == "Treasurer asked: pay 6,000 CC for September")
+  assertMsg "fingerprints" (d.inputFingerprints == fingerprints && d.modelFingerprints == models)
+  assertMsg "checks with results" (d.checks == checks)
+  assertMsg "memo" (d.memo == "September income of 6,000 CC, split by units." && d.memoSource == "ai")
+  assertMsg "verdict, cap and Mandate version" (d.verdict == NeedsApproval && d.cap == 5000.0 && d.mandateVersion == 1)
+  assertMsg "total, payouts and record date" (d.total == 6000.0 && d.payouts == richInput.payouts && d.recordDate == testRecordDate)
+  p <- proposalOf fx proposalCid
+  assertMsg "the proposal points at the record" (p.decisionRecordCid == recordCid && p.decisionRecordId == d.recordId)
+  assertMsg "proposal id" (p.proposalId == "proposal/2026-09/1")
+  -- approvals and payment references arrive with the outcome
+  approved <- approveBoth fx proposalCid
+  (_, outcomeCid) <- execute fx approved
+  o <- outcomeOf fx outcomeCid
+  assertMsg "outcome id and link" (o.recordId == "outcome/2026-09/1" && o.decisionRecordId == d.recordId)
+  assertMsg "approvals" (map (.approver) o.approvals == [fx.approver1, fx.approver2])
+  payments <- query @Payment fx.agent
+  assertMsg "one payment reference per payee, pointing at the real payments"
+    (map (.holder) o.payments == map (.holder) d.payouts
+      && all (\r -> any (\(cid, pay) -> cid == r.paymentCid && pay.holder == r.holder && pay.amount == r.amount) payments) o.payments)
+  assertMsg "payment references are paid" (all (\r -> r.status == Paid && r.transferInstructionCid == None) o.payments)
+  -- the decision record is still there
+  _ <- decisionOf fx recordCid
+  pure ()
+
+-- | Nobody can create a Proposal or a DecisionRecord directly, and execution needs a real
+-- Proposal, so an execution without a decision record cannot happen.
+test_l10_proposal_cannot_be_created_directly : Script ()
+test_l10_proposal_cannot_be_created_directly = do
+  fx <- setup
+  (proposalCid, recordCid) <- proposeTotal fx "2026-09" 1000.0
+  p <- proposalOf fx proposalCid
+  d <- decisionOf fx recordCid
+  -- forged copies, with a different cycle so they would not be mistaken for the real ones
+  let forgedProposal = p with cycleId = "2026-10"; proposalId = "proposal/2026-10/1"
+      forgedRecord = d with cycleId = "2026-10"; recordId = "decision/2026-10/1"
+  failsWith notAuthorized (actAs fx.agent) (createCmd forgedProposal)
+  failsWith notAuthorized (actAs fx.treasurer) (createCmd forgedProposal)
+  failsWith notAuthorized (actAs fx.treasury) (createCmd forgedProposal)
+  failsWith notAuthorized (actAs fx.agent) (createCmd forgedRecord)
+  failsWith notAuthorized (actAs fx.treasurer) (createCmd forgedRecord)
+  failsWith notAuthorized (actAs fx.treasury) (createCmd forgedRecord)
+  -- nor can they be archived by one signatory alone
+  failsWith notAuthorized (actAs fx.agent) (archiveCmd recordCid)
+  -- the Mandate executes only a Proposal: another contract id in its place fails
+  holdings <- treasuryHoldings fx
+  now <- getTime
+  mandateNow <- liveMandateCid fx
+  submitMustFail (asAgent fx) $ exerciseCmd mandateNow Mandate_AgentExecute with
+    proposalCid = coerceContractId recordCid
+    legs = []
+    inputHoldingCids = holdings
+    executeBefore = addRelTime now (days 1)
+  decisions <- query @DecisionRecord fx.treasury
+  proposals <- query @Proposal fx.treasury
+  assertMsg "still exactly one of each" (length decisions == 1 && length proposals == 1)

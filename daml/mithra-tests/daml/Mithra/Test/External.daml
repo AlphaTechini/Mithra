@@ -1,0 +1,233 @@
+-- | MainNet payouts: Mithra's records live on this ledger, the money moves on Canton MainNet in
+-- transfers the treasurer signs in Grofty Wallet. `Mandate_AuthorizeExternalPayout` applies the
+-- same rules as the ledger payout (L1, L3, L4) and `Payment_RecordExternal` records the result.
+module Mithra.Test.External where
+
+import Daml.Script
+import DA.List (sort)
+import DA.Stack (HasCallStack)
+import Mithra.Decision
+import Mithra.Mandate
+import Mithra.Payment
+import Mithra.Proposal
+import Mithra.Types
+import Mithra.Test.Setup
+
+-- | Each payee's MainNet party id, in payout order.
+receiversFor : [Payout] -> [(Party, Text)]
+receiversFor payouts = [(p.holder, "mainnet-" <> partyToText p.holder <> "::1220abcd") | p <- payouts]
+
+-- | `Mandate_AuthorizeExternalPayout` on the active Mandate.
+authorizeCmdFor : Fixture -> ContractId Proposal -> [(Party, Text)]
+  -> Script (Commands (ContractId Mandate, ContractId DistributionOutcome))
+authorizeCmdFor fx proposalCid receivers = do
+  mandateCid <- liveMandateCid fx
+  pure (exerciseCmd mandateCid Mandate_AuthorizeExternalPayout with proposalCid; receivers)
+
+-- | Authorizes with the correct receivers for the proposal's payouts.
+authorize : Fixture -> ContractId Proposal -> Script (ContractId Mandate, ContractId DistributionOutcome)
+authorize fx proposalCid = do
+  p <- proposalOf fx proposalCid
+  cmd <- authorizeCmdFor fx proposalCid (receiversFor p.payouts)
+  submit (asAgent fx) cmd
+
+-- | The authorization must be refused, with a failure that mentions `expected`.
+authorizeFailsWith : HasCallStack => Text -> Fixture -> ContractId Proposal -> [(Party, Text)] -> Script ()
+authorizeFailsWith expected fx proposalCid receivers = do
+  cmd <- authorizeCmdFor fx proposalCid receivers
+  failsWith expected (asAgent fx) cmd
+
+paymentsOf : Party -> Script [(ContractId Payment, Payment)]
+paymentsOf party = query @Payment party
+
+recordCmd : ContractId Payment -> Text -> PaymentStatus -> Commands (ContractId Payment)
+recordCmd paymentCid txRef status = exerciseCmd paymentCid Payment_RecordExternal with txRef; status
+
+-- | Authorizing creates one PendingExternal payment per payee with their MainNet party, the
+-- Executed outcome and the executed cycle, and moves no money on this ledger.
+test_external_authorize_creates_pending_payments : Script ()
+test_external_authorize_creates_pending_payments = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  p <- proposalOf fx proposalCid
+  before <- treasuryBalance fx
+  (mandateCid, outcomeCid) <- authorize fx proposalCid
+  after <- treasuryBalance fx
+  assertMsg "no token transfer happened on this ledger" (before == after)
+  a <- holderBalance fx.holderA
+  b <- holderBalance fx.holderB
+  c <- holderBalance fx.holderC
+  assertMsg "holders hold nothing on this ledger" ((a, b, c) == (0.0, 0.0, 0.0))
+  m <- mandateOf fx mandateCid
+  assertMsg "the cycle is recorded as executed" (m.executedCycles == ["2026-09"])
+  o <- outcomeOf fx outcomeCid
+  assertMsg "the outcome is Executed by the agent" (o.kind == Executed && o.actor == fx.agent)
+  assertMsg "every payment reference is pending, with no transfer instruction"
+    (length o.payments == 3 && all (\r -> r.status == PendingExternal && r.transferInstructionCid == None) o.payments)
+  payments <- query @Payment fx.agent
+  assertMsg "three PendingExternal payments, one per payee, with the right amounts"
+    (length payments == 3 && all (\(_, pay) -> pay.status == PendingExternal && pay.externalTxRef == None) payments)
+  assertMsg "each payment carries the payee's MainNet party id"
+    (sort (map (\(_, pay) -> (pay.holder, pay.externalReceiver)) payments)
+      == sort [(h, Some r) | (h, r) <- receiversFor p.payouts])
+  assertMsg "amounts follow the pro-rata split"
+    (sort (map (\(_, pay) -> pay.amount) payments) == [500.0, 1500.0, 3000.0])
+
+-- | L1: a total equal to the cap is authorized; one epsilon above needs approvals first.
+test_external_l1_cap_epsilon_blocked : Script ()
+test_external_l1_cap_epsilon_blocked = do
+  fx <- setup
+  (atCap, _) <- proposeTotal fx "2026-09" 5000.0
+  (mandateCid, _) <- authorize fx atCap
+  let fx1 = afterExecute fx mandateCid
+  (over, _) <- proposeTotal fx1 "2026-08" 5000.0000000001
+  p <- proposalOf fx1 over
+  assertMsg "one epsilon above the cap needs approval" (p.verdict == NeedsApproval)
+  authorizeFailsWith "needs 2 approval(s)" fx1 over (receiversFor p.payouts)
+
+-- | L1: the cap is checked against the Mandate's current terms, not those the proposal saw.
+test_external_l1_cap_uses_current_terms : Script ()
+test_external_l1_cap_uses_current_terms = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 3000.0
+  p <- proposalOf fx proposalCid
+  fx1 <- reseal fx (fx.terms with cap = 2000.0)
+  authorizeFailsWith "above the auto-execute cap of 2,000 CC" fx1 proposalCid (receiversFor p.payouts)
+
+-- | L3: at most one executed distribution per cycle, also on the external path.
+test_external_l3_second_authorize_fails : Script ()
+test_external_l3_second_authorize_fails = do
+  fx <- setup
+  input <- inputFor fx "2026-09" 1000.0
+  (first, _) <- propose fx input
+  (second, _) <- propose fx (input with attempt = 2)
+  p <- proposalOf fx second
+  (mandateCid, _) <- authorize fx first
+  authorizeFailsWith "has already been executed" fx second (receiversFor p.payouts)
+  -- and a ledger payout of the same cycle is refused too
+  cmd <- executeCmd fx second
+  failsWith "has already been executed" (asAgent fx) cmd
+
+-- | L4: a flagged distribution needs the threshold of distinct approvers (1 of 2 fails, 2 of 2 works).
+test_external_l4_threshold : Script ()
+test_external_l4_threshold = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 6000.0
+  p0 <- proposalOf fx proposalCid
+  authorizeFailsWith "needs 2 approval(s)" fx proposalCid (receiversFor p0.payouts)
+  one <- approve proposalCid fx.approver1
+  p1 <- proposalOf fx one
+  authorizeFailsWith "has 1" fx one (receiversFor p1.payouts)
+  two <- approve one fx.approver2
+  p2 <- proposalOf fx two
+  cmd <- authorizeCmdFor fx two (receiversFor p2.payouts)
+  (_, outcomeCid) <- submit (asAgent fx) cmd
+  o <- outcomeOf fx outcomeCid
+  assertMsg "executed after both approvals, with both approvals on the record"
+    (o.kind == Executed && length o.approvals == 2)
+
+-- | The receivers must be exactly the payouts' holders in order, each with a MainNet party id.
+test_external_receivers_mismatch_fails : Script ()
+test_external_receivers_mismatch_fails = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  p <- proposalOf fx proposalCid
+  let good = receiversFor p.payouts
+      mismatch = "line up one-to-one"
+      run = authorizeFailsWith mismatch fx proposalCid
+  run (reverse good)
+  run (take 2 good)
+  run []
+  run (good ++ [(fx.outsider, "outsider::1220")])
+  run [(if h == fx.holderA then fx.outsider else h, r) | (h, r) <- good]
+  authorizeFailsWith "needs a MainNet party id" fx proposalCid
+    [(h, if h == fx.holderB then "" else r) | (h, r) <- good]
+  -- nothing was recorded by the failed attempts
+  payments <- query @Payment fx.agent
+  assertMsg "no payment exists" (null payments)
+  _ <- authorize fx proposalCid
+  pure ()
+
+-- | Only the agent authorizes and records; the treasury, the treasurer, approvers and holders cannot.
+test_external_only_agent_authorizes_and_records : Script ()
+test_external_only_agent_authorizes_and_records = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  p <- proposalOf fx proposalCid
+  cmd <- authorizeCmdFor fx proposalCid (receiversFor p.payouts)
+  failsWith notAuthorized (actAs fx.treasury) cmd
+  failsWith notAuthorized (actAs fx.treasurer) cmd
+  failsWith notVisible (actAs fx.holderA) cmd
+  (_, _) <- authorize fx proposalCid
+  [(paymentCid, _)] <- query @Payment fx.holderA
+  failsWith notAuthorized (actAs fx.holderA) (recordCmd paymentCid "update-a" Paid)
+  failsWith notAuthorized (actAs fx.treasury) (recordCmd paymentCid "update-a" Paid)
+  failsWith notVisible (actAs fx.treasurer) (recordCmd paymentCid "update-a" Paid)   -- not a stakeholder of Payment
+  _ <- submit fx.agent (recordCmd paymentCid "update-a" Paid)
+  pure ()
+
+-- | L7: a holder sees only their own payment, including its MainNet party and transaction.
+test_external_l7_holder_sees_only_own : Script ()
+test_external_l7_holder_sees_only_own = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  p <- proposalOf fx proposalCid
+  _ <- authorize fx proposalCid
+  [(paymentCid, _)] <- query @Payment fx.holderB
+  _ <- submit fx.agent (recordCmd paymentCid "update-b" Paid)
+  paymentsB <- query @Payment fx.holderB
+  assertMsg "B sees exactly their own recorded payment"
+    (map (\(_, pay) -> (pay.holder, pay.amount, pay.status, pay.externalTxRef)) paymentsB
+      == [(fx.holderB, 1500.0, Paid, Some "update-b")])
+  paymentsA <- query @Payment fx.holderA
+  assertMsg "A sees only A's pending payment"
+    (map (\(_, pay) -> (pay.holder, pay.status)) paymentsA == [(fx.holderA, PendingExternal)])
+  assertMsg "A's payment names A's MainNet party only"
+    (map (\(_, pay) -> pay.externalReceiver) paymentsA
+      == [lookup fx.holderA (receiversFor p.payouts)])
+  outcomes <- query @DistributionOutcome fx.holderA
+  proposals <- query @Proposal fx.holderA
+  assertMsg "A sees no outcome or proposal" (null outcomes && null proposals)
+
+-- | Recording: PendingExternal -> Paid; PendingExternal -> AwaitingAcceptance -> Paid; never from Paid.
+test_external_record_transitions : Script ()
+test_external_record_transitions = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  _ <- authorize fx proposalCid
+  [(cidA, _)] <- query @Payment fx.holderA
+  [(cidC, _)] <- query @Payment fx.holderC
+  -- the new status must be Paid or AwaitingAcceptance, and the reference cannot be empty
+  failsWith "recorded as Paid or AwaitingAcceptance" (actAs fx.agent) (recordCmd cidA "update-a" PendingExternal)
+  failsWith "must not be empty" (actAs fx.agent) (recordCmd cidA "" Paid)
+  -- A: paid at once
+  paidA <- submit fx.agent (recordCmd cidA "update-a" Paid)
+  Some a <- queryContractId fx.agent paidA
+  assertMsg "A is Paid with the reference and keeps the receiver"
+    (a.status == Paid && a.externalTxRef == Some "update-a" && a.externalReceiver /= None && a.amount == 500.0)
+  -- recording from Paid fails
+  failsWith "pending or awaiting acceptance" (actAs fx.agent) (recordCmd paidA "update-a2" Paid)
+  failsWith "pending or awaiting acceptance" (actAs fx.agent) (recordCmd paidA "update-a2" AwaitingAcceptance)
+  -- C: the transfer is made but the payee must accept; later it is accepted
+  waitingC <- submit fx.agent (recordCmd cidC "update-c" AwaitingAcceptance)
+  Some c1 <- queryContractId fx.agent waitingC
+  assertMsg "C awaits acceptance" (c1.status == AwaitingAcceptance && c1.externalTxRef == Some "update-c")
+  paidC <- submit fx.agent (recordCmd waitingC "update-c" Paid)
+  Some c2 <- queryContractId fx.agent paidC
+  assertMsg "C is Paid after the payee accepted" (c2.status == Paid && c2.externalTxRef == Some "update-c")
+  failsWith "pending or awaiting acceptance" (actAs fx.agent) (recordCmd paidC "update-c" Paid)
+
+-- | A payment made through the ledger has no external receiver: it cannot be recorded as external,
+-- whether Paid or awaiting acceptance.
+test_external_ledger_payment_cannot_be_recorded : Script ()
+test_external_ledger_payment_cannot_be_recorded = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 5000.0
+  cmd <- executeCmdFor fx proposalCid [fx.holderC]
+  _ <- submit (asAgent fx) cmd
+  [(paidA, a)] <- query @Payment fx.holderA
+  [(waitingC, c)] <- query @Payment fx.holderC
+  assertMsg "ledger payments carry no external fields"
+    (a.externalReceiver == None && a.externalTxRef == None && c.status == AwaitingAcceptance)
+  failsWith "pending or awaiting acceptance" (actAs fx.agent) (recordCmd paidA "x" Paid)
+  failsWith "needs an external receiver" (actAs fx.agent) (recordCmd waitingC "x" Paid)

@@ -1,0 +1,7 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# esbuild (used by tsup and Vite) verifies its platform binary in a postinstall script.
+onlyBuiltDependencies:
+  - esbuild

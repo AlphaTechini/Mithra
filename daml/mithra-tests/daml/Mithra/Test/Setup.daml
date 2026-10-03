@@ -1,0 +1,328 @@
+-- | Shared fixture: parties, a test token registry with funds for the treasury, a
+-- charter, an organization, a sealed Mandate and three holders with units.
+module Mithra.Test.Setup where
+
+import Daml.Script
+import DA.Date
+import DA.Time
+import DA.Optional (fromSome)
+import DA.Stack (HasCallStack)
+import qualified DA.Text as T
+import Splice.Api.Token.HoldingV1
+import Splice.Api.Token.TransferInstructionV1
+import Mithra.Charter
+import Mithra.Decision
+import Mithra.Mandate
+import Mithra.Org
+import Mithra.Proposal
+import Mithra.Types
+import Mithra.Units
+import Mithra.Test.Registry
+
+data Fixture = Fixture with
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    operator : Party
+    approver1 : Party
+    approver2 : Party
+    holderA : Party
+    holderB : Party
+    holderC : Party
+    auditor : Party
+    outsider : Party
+    registryAdmin : Party
+    asset : InstrumentId
+    terms : MandateTerms
+    factoryCid : ContractId TransferFactory
+    preapprovals : [(Party, ContractId TestPreapproval)]
+    orgCid : ContractId Organization
+    registerCid : ContractId UnitRegister
+    mandateCid : ContractId Mandate
+
+-- | Fixed "today" for every test.
+today : Time
+today = time (date 2026 Oct 1) 9 0 0
+
+testRecordDate : Date
+testRecordDate = date 2026 Sep 30
+
+-- | Units: A 100, B 300, C 600, so a total of 5,000 splits 500 / 1,500 / 3,000.
+setup : Script Fixture
+setup = do
+  setTime today
+  registryAdmin <- allocatePartyByHint (PartyIdHint "registryAdmin")
+  treasury <- allocatePartyByHint (PartyIdHint "treasury")
+  treasurer <- allocatePartyByHint (PartyIdHint "treasurer")
+  agent <- allocatePartyByHint (PartyIdHint "agent")
+  operator <- allocatePartyByHint (PartyIdHint "operator")
+  approver1 <- allocatePartyByHint (PartyIdHint "approver1")
+  approver2 <- allocatePartyByHint (PartyIdHint "approver2")
+  holderA <- allocatePartyByHint (PartyIdHint "holderA")
+  holderB <- allocatePartyByHint (PartyIdHint "holderB")
+  holderC <- allocatePartyByHint (PartyIdHint "holderC")
+  auditor <- allocatePartyByHint (PartyIdHint "auditor")
+  outsider <- allocatePartyByHint (PartyIdHint "outsider")
+  let asset = testInstrument registryAdmin
+  _ <- mintTo registryAdmin treasury 1000000.0
+  factory <- submit registryAdmin $ createCmd TestTransferFactory with
+    admin = registryAdmin
+    observers = [treasury, treasurer, agent]
+  preapprovals <- forA [holderA, holderB, holderC] $ \h -> do
+    p <- preapprovalFor registryAdmin h [treasury, treasurer, agent]
+    pure (h, p)
+  let terms = defaultTerms asset [approver1, approver2]
+  charterCid <- submit treasury $ createCmd TreasuryCharter with
+    treasury; treasurer; agent; operator
+  (org0, register0) <- submit treasurer $ exerciseCmd charterCid Charter_CreateOrganization with
+    name = "Acme Fund"
+    asset
+    approvers = terms.approvers
+    approvalThreshold = terms.approvalThreshold
+  sealCid <- sealRequestFor treasury treasurer agent terms True
+  (org1, mandate1) <- submit treasury $ exerciseCmd org0 Org_ApplySeal with
+    sealRequestCid = sealCid
+    currentMandateCid = None
+  (register1, _) <- submit treasurer $ exerciseCmd org1 Org_IssueUnits with
+    registerCid = register0; holder = holderA; units = 100; effectiveDate = date 2026 Jan 15; seeded = False
+  (register2, _) <- submit treasurer $ exerciseCmd org1 Org_IssueUnits with
+    registerCid = register1; holder = holderB; units = 300; effectiveDate = date 2026 Jan 15; seeded = False
+  (register3, _) <- submit treasurer $ exerciseCmd org1 Org_IssueUnits with
+    registerCid = register2; holder = holderC; units = 600; effectiveDate = date 2026 Feb 1; seeded = False
+  pure Fixture with
+    treasury; treasurer; agent; operator; approver1; approver2
+    holderA; holderB; holderC; auditor; outsider; registryAdmin
+    asset; terms
+    factoryCid = toInterfaceContractId factory
+    preapprovals
+    orgCid = org1
+    registerCid = register3
+    mandateCid = mandate1
+
+defaultTerms : InstrumentId -> [Party] -> MandateTerms
+defaultTerms asset approvers = MandateTerms with
+  cap = 5000.0
+  approvers
+  approvalThreshold = 2
+  asset
+  scheduleCron = "0 9 1 * *"
+  scheduleTimezone = "UTC"
+  recordDateRule = "last_day_of_previous_month"
+  fixedAmount = None
+  deviationPct = 50.0
+  trailingCycles = 3
+  unitChangePct = 25.0
+  unitChangeWindowDays = 30
+  feeBuffer = 1.0
+
+-- | The agent submits, and can read what the treasury sees (the participant hosts both).
+asAgent : Fixture -> SubmitOptions
+asAgent fx = actAs fx.agent <> readAs fx.treasury
+
+-- | The treasurer signs a request for new terms.
+sealRequest : Fixture -> MandateTerms -> Bool -> Script (ContractId MandateSealRequest)
+sealRequest fx = sealRequestFor fx.treasury fx.treasurer fx.agent
+
+sealRequestFor : Party -> Party -> Party -> MandateTerms -> Bool -> Script (ContractId MandateSealRequest)
+sealRequestFor treasury treasurer agent terms agentExecutes = submit treasurer $ createCmd MandateSealRequest with
+  treasury
+  treasurer
+  agent
+  terms
+  agentExecutes
+  summary = "Test terms"
+  summaryFingerprint = "00"
+  requestedAt = today
+
+-- | Seals `terms` as the treasury (as the governed action would on LocalNet).
+reseal : Fixture -> MandateTerms -> Script Fixture
+reseal fx terms = do
+  req <- sealRequest fx terms True
+  current <- liveMandateCid fx
+  (org, mandate) <- submit fx.treasury $ exerciseCmd fx.orgCid Org_ApplySeal with
+    sealRequestCid = req
+    currentMandateCid = Some current
+  pure fx with orgCid = org; mandateCid = mandate; terms
+
+registerChanges : Fixture -> Script [UnitChange]
+registerChanges fx = do
+  Some r <- queryContractId fx.agent fx.registerCid
+  pure r.changes
+
+treasuryHoldings : Fixture -> Script [ContractId Holding]
+treasuryHoldings fx = do
+  hs <- query @TestHolding fx.treasury
+  pure [toInterfaceContractId cid | (cid, h) <- hs, h.owner == fx.treasury]
+
+treasuryBalance : Fixture -> Script Decimal
+treasuryBalance fx = do
+  hs <- query @TestHolding fx.treasury
+  pure (sum [h.amount | (_, h) <- hs, h.owner == fx.treasury])
+
+holderBalance : Party -> Script Decimal
+holderBalance holder = do
+  hs <- query @TestHolding holder
+  pure (sum [h.amount | (_, h) <- hs, h.owner == holder])
+
+-- | The record date the Mandate's rule gives for `cycleId`: the last day of that month.
+recordDateOfCycle : Text -> Date
+recordDateOfCycle cycleId = fromSome (lastDayOfCycle cycleId)
+
+-- | A proposal input for `total` in cycle `cycleId` with the correct record date, the correct
+-- pro-rata payouts, the next attempt number for the cycle and one passing deterministic check.
+inputFor : Fixture -> Text -> Decimal -> Script ProposalInput
+inputFor fx cycleId total = do
+  changes <- registerChanges fx
+  m <- liveMandate fx
+  let recordDate = recordDateOfCycle cycleId
+  pure ProposalInput with
+    cycleId
+    cycleLabel = "Cycle " <> cycleId
+    attempt = lastAttemptOf cycleId m.cycleAttempts + 1
+    total
+    recordDate
+    trigger = TriggerSchedule
+    triggerDetail = "Monthly schedule 0 9 1 * *"
+    payouts = computeProRata total (unitsAt recordDate changes)
+    registerCid = fx.registerCid
+    inputFingerprints = [Fingerprint with label = "register"; sha256 = "ab12"]
+    checks = [passingCheck "cap" "Within the auto-execute cap"]
+    memo = "Distribute the month's income pro rata."
+    memoSource = "template"
+    modelFingerprints = []
+    seeded = False
+
+passingCheck : Text -> Text -> CheckResult
+passingCheck code label = CheckResult with
+  code; label; passed = True; blocking = True; actual = "ok"; limit = "ok"; source = "deterministic"
+
+-- | The one active Mandate. Proposing and executing both replace it, so tests look it up
+-- instead of holding on to the contract id they sealed it with.
+liveMandateCid : Fixture -> Script (ContractId Mandate)
+liveMandateCid fx = do
+  ms <- query @Mandate fx.treasury
+  case ms of
+    [(cid, _)] -> pure cid
+    _ -> abort ("Expected exactly one active Mandate, found " <> show (length ms))
+
+liveMandate : Fixture -> Script Mandate
+liveMandate fx = do
+  cid <- liveMandateCid fx
+  mandateOf fx cid
+
+-- | `Mandate_Propose` on the active Mandate.
+proposeCmd : Fixture -> ProposalInput -> Script (Commands ProposeResult)
+proposeCmd fx input = do
+  cid <- liveMandateCid fx
+  pure (exerciseCmd cid Mandate_Propose with input)
+
+-- | Proposes on the active Mandate; the Mandate is replaced by one that records the attempt.
+propose : Fixture -> ProposalInput -> Script (ContractId Proposal, ContractId DecisionRecord)
+propose fx input = do
+  cmd <- proposeCmd fx input
+  r <- submit (asAgent fx) cmd
+  pure (r.proposalCid, r.decisionRecordCid)
+
+-- | The proposal must be refused, with a failure that mentions `expected`.
+proposeFailsWith : HasCallStack => Text -> Fixture -> ProposalInput -> Script ()
+proposeFailsWith expected fx input = do
+  cmd <- proposeCmd fx input
+  failsWith expected (asAgent fx) cmd
+
+-- | Propose `total` for `cycleId` with correct payouts.
+proposeTotal : Fixture -> Text -> Decimal -> Script (ContractId Proposal, ContractId DecisionRecord)
+proposeTotal fx cycleId total = do
+  input <- inputFor fx cycleId total
+  propose fx input
+
+approveCmd : ContractId Proposal -> Party -> Commands (ContractId Proposal, ContractId Approval)
+approveCmd proposalCid approver = exerciseCmd proposalCid Proposal_Approve with approver; note = "Looks right"
+
+approve : ContractId Proposal -> Party -> Script (ContractId Proposal)
+approve proposalCid approver = fst <$> submit approver (approveCmd proposalCid approver)
+
+-- | Legs for the proposal's payees; holders in `pending` have no preapproval, so their
+-- transfer stays pending until they accept.
+legsFor : Fixture -> [Payout] -> [Party] -> [TransferLeg]
+legsFor fx payouts pending =
+  [ legFor fx.factoryCid p.holder (if p.holder `elem` pending then None else lookup p.holder fx.preapprovals)
+  | p <- payouts ]
+
+executeCmdFor : Fixture -> ContractId Proposal -> [Party]
+  -> Script (Commands (ContractId Mandate, ContractId DistributionOutcome))
+executeCmdFor fx proposalCid pending = do
+  Some proposal <- queryContractId fx.agent proposalCid
+  holdings <- treasuryHoldings fx
+  mandateCid <- liveMandateCid fx
+  now <- getTime
+  pure $ exerciseCmd mandateCid Mandate_AgentExecute with
+    proposalCid
+    legs = legsFor fx proposal.payouts pending
+    inputHoldingCids = holdings
+    executeBefore = addRelTime now (days 1)
+
+executeCmd : Fixture -> ContractId Proposal
+  -> Script (Commands (ContractId Mandate, ContractId DistributionOutcome))
+executeCmd fx proposalCid = executeCmdFor fx proposalCid []
+
+-- | The agent executes against the active Mandate.
+execute : Fixture -> ContractId Proposal -> Script (ContractId Mandate, ContractId DistributionOutcome)
+execute fx proposalCid = do
+  cmd <- executeCmd fx proposalCid
+  submit (asAgent fx) cmd
+
+-- | The submission must fail, and the failure must mention `expected`. A bare
+-- "it failed" would also pass for the wrong reason (a typo, a missing observer).
+failsWith : HasCallStack => Text -> SubmitOptions -> Commands a -> Script ()
+failsWith expected opts cmds = do
+  result <- trySubmit opts cmds
+  case result of
+    Right _ -> abort ("Expected the submission to fail with: " <> expected)
+    Left e -> assertMsg
+      ("Expected a failure mentioning \"" <> expected <> "\" but got: " <> show e)
+      (expected `T.isInfixOf` show e)
+
+-- | What a failed authorization looks like.
+notAuthorized : Text
+notAuthorized = "Authorization failure"
+
+-- | What it looks like when a party cannot see a contract it tries to use.
+notVisible : Text
+notVisible = "Could not find contract"
+
+mandateOf : Fixture -> ContractId Mandate -> Script Mandate
+mandateOf fx cid = do
+  Some m <- queryContractId fx.agent cid
+  pure m
+
+proposalOf : Fixture -> ContractId Proposal -> Script Proposal
+proposalOf fx cid = do
+  Some p <- queryContractId fx.agent cid
+  pure p
+
+decisionOf : Fixture -> ContractId DecisionRecord -> Script DecisionRecord
+decisionOf fx cid = do
+  Some d <- queryContractId fx.agent cid
+  pure d
+
+outcomeOf : Fixture -> ContractId DistributionOutcome -> Script DistributionOutcome
+outcomeOf fx cid = do
+  Some o <- queryContractId fx.agent cid
+  pure o
+
+-- | The fixture after an execution: the Mandate is a new contract.
+afterExecute : Fixture -> ContractId Mandate -> Fixture
+afterExecute fx mandateCid = fx with mandateCid
+
+-- | Propose and execute `total` for `cycleId` (no approvals), returning the outcome.
+distribute : Fixture -> Text -> Decimal -> Script (Fixture, ContractId DistributionOutcome)
+distribute fx cycleId total = do
+  (proposalCid, _) <- proposeTotal fx cycleId total
+  (mandateCid, outcomeCid) <- execute fx proposalCid
+  pure (afterExecute fx mandateCid, outcomeCid)
+
+-- | Both approvers approve.
+approveBoth : Fixture -> ContractId Proposal -> Script (ContractId Proposal)
+approveBoth fx proposalCid = do
+  p1 <- approve proposalCid fx.approver1
+  approve p1 fx.approver2

@@ -1,0 +1,173 @@
+-- | L4 (threshold), L5 (one approval each, approvers only), A7 (the agent cannot approve),
+-- L11 (the treasurer cancels a pending proposal).
+module Mithra.Test.Approvals where
+
+import Daml.Script
+import Mithra.Decision
+import Mithra.Proposal
+import Mithra.Test.Setup
+
+-- L4 -------------------------------------------------------------------------
+
+-- | One of two approvals is not enough.
+test_l4_one_of_two_fails : Script ()
+test_l4_one_of_two_fails = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 6000.0
+  approved <- approve proposalCid fx.approver1
+  cmd <- executeCmd fx approved
+  failsWith "needs 2 approval(s) from the Mandate's approvers and has 1" (asAgent fx) cmd
+  balance <- treasuryBalance fx
+  assertMsg "nothing was paid" (balance == 1000000.0)
+  m <- liveMandate fx
+  assertMsg "the cycle is still open" (m.executedCycles == [])
+
+-- | Two of two execute, and the outcome carries both approvals.
+test_l4_two_of_two_executes : Script ()
+test_l4_two_of_two_executes = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 6000.0
+  approved <- approveBoth fx proposalCid
+  (mandateCid, outcomeCid) <- execute fx approved
+  balance <- treasuryBalance fx
+  assertMsg "the treasury paid 6,000" (balance == 994000.0)
+  o <- outcomeOf fx outcomeCid
+  assertMsg "outcome is Executed with both approvals"
+    (o.kind == Executed && map (.approver) o.approvals == [fx.approver1, fx.approver2])
+  m <- mandateOf fx mandateCid
+  assertMsg "cycle recorded" (m.executedCycles == ["2026-09"])
+
+-- | Approvals are counted against the Mandate in force at execution: an approver who was
+-- removed by a new Mandate no longer counts.
+test_l4_removed_approver_does_not_count : Script ()
+test_l4_removed_approver_does_not_count = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 6000.0
+  approved <- approveBoth fx proposalCid
+  -- approver2 is replaced by the outsider; the threshold stays 2
+  fx1 <- reseal fx (fx.terms with approvers = [fx.approver1, fx.outsider])
+  cmd <- executeCmd fx1 approved
+  failsWith "needs 2 approval(s) from the Mandate's approvers and has 1" (asAgent fx1) cmd
+
+-- L5 -------------------------------------------------------------------------
+
+-- | The same approver cannot approve twice.
+test_l5_duplicate_approval_fails : Script ()
+test_l5_duplicate_approval_fails = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 6000.0
+  approved <- approve proposalCid fx.approver1
+  failsWith "already approved" (actAs fx.approver1) (approveCmd approved fx.approver1)
+  p <- proposalOf fx approved
+  assertMsg "still one approval" (map (.approver) p.approvals == [fx.approver1])
+  -- and the other approver still can
+  second <- approve approved fx.approver2
+  p2 <- proposalOf fx second
+  assertMsg "two approvals" (length p2.approvals == 2)
+
+-- | Only the Mandate's approvers can approve: not an outsider who cannot even see the
+-- proposal, and not a party that can see it but is not an approver.
+test_l5_outsider_approval_fails : Script ()
+test_l5_outsider_approval_fails = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 6000.0
+  failsWith notVisible (actAs fx.outsider) (approveCmd proposalCid fx.outsider)
+  failsWith "Only approvers named in the Mandate" (actAs fx.treasurer) (approveCmd proposalCid fx.treasurer)
+  failsWith notAuthorized (actAs fx.approver2) (approveCmd proposalCid fx.approver1)
+  p <- proposalOf fx proposalCid
+  assertMsg "no approvals were recorded" (null p.approvals)
+
+-- | The agent can neither approve as itself nor approve for an approver.
+test_a7_agent_cannot_approve : Script ()
+test_a7_agent_cannot_approve = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 6000.0
+  failsWith "Only approvers named in the Mandate" (actAs fx.agent) (approveCmd proposalCid fx.agent)
+  failsWith notAuthorized (actAs fx.agent) (approveCmd proposalCid fx.approver1)
+  failsWith notAuthorized (actAs fx.agent)
+    (exerciseCmd proposalCid Proposal_Reject with approver = fx.approver1; reason = "no")
+  -- nor can it forge an Approval, which an approver signs
+  now <- getTime
+  failsWith notAuthorized (actAs fx.agent) $ createCmd Approval with
+    approver = fx.approver1
+    treasury = fx.treasury
+    treasurer = fx.treasurer
+    agent = fx.agent
+    proposalId = "proposal/2026-09/1"
+    cycleId = "2026-09"
+    decisionRecordId = "decision/2026-09/1"
+    at = now
+    note = "forged"
+  p <- proposalOf fx proposalCid
+  assertMsg "no approvals were recorded" (null p.approvals)
+  cmd <- executeCmd fx proposalCid
+  failsWith "needs 2 approval(s)" (asAgent fx) cmd
+
+-- | A proposal inside the cap is not an approval proposal.
+test_l5_approval_not_needed_under_cap : Script ()
+test_l5_approval_not_needed_under_cap = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 1000.0
+  failsWith "needs no approval" (actAs fx.approver1) (approveCmd proposalCid fx.approver1)
+
+-- | An approver can reject with a reason, which ends the proposal; a reason is required.
+test_approvals_reject_needs_reason : Script ()
+test_approvals_reject_needs_reason = do
+  fx <- setup
+  (proposalCid, recordCid) <- proposeTotal fx "2026-09" 6000.0
+  failsWith "needs a reason" (actAs fx.approver1)
+    (exerciseCmd proposalCid Proposal_Reject with approver = fx.approver1; reason = "")
+  failsWith "Only approvers" (actAs fx.treasurer)
+    (exerciseCmd proposalCid Proposal_Reject with approver = fx.treasurer; reason = "no")
+  outcomeCid <- submit fx.approver1 $ exerciseCmd proposalCid Proposal_Reject with
+    approver = fx.approver1; reason = "Amount looks too high"
+  o <- outcomeOf fx outcomeCid
+  assertMsg "outcome is Rejected with the reason"
+    (o.kind == Rejected && o.reason == Some "Amount looks too high" && o.actor == fx.approver1)
+  d <- decisionOf fx recordCid
+  assertMsg "the outcome points at the decision record" (o.decisionRecordId == d.recordId)
+  -- the cycle is still open, so the agent can propose again
+  input <- inputFor fx "2026-09" 4000.0
+  _ <- propose fx (input with attempt = 2)
+  pure ()
+
+-- L11 ------------------------------------------------------------------------
+
+-- | The treasurer cancels a pending proposal, which leaves a Cancelled outcome.
+test_l11_treasurer_cancels_pending : Script ()
+test_l11_treasurer_cancels_pending = do
+  fx <- setup
+  (proposalCid, recordCid) <- proposeTotal fx "2026-09" 6000.0
+  approved <- approve proposalCid fx.approver1
+  outcomeCid <- submit fx.treasurer $ exerciseCmd approved Proposal_Cancel
+  o <- outcomeOf fx outcomeCid
+  assertMsg "outcome is Cancelled and keeps the approvals"
+    (o.kind == Cancelled && o.actor == fx.treasurer && map (.approver) o.approvals == [fx.approver1])
+  proposals <- query @Proposal fx.treasurer
+  assertMsg "the proposal is gone" (null proposals)
+  _ <- decisionOf fx recordCid
+  -- the cycle is still open
+  m <- liveMandate fx
+  assertMsg "the cycle is not executed" (m.executedCycles == [])
+  input <- inputFor fx "2026-09" 6000.0
+  _ <- propose fx (input with attempt = 2)
+  -- a cancelled proposal cannot be approved
+  failsWith notVisible (actAs fx.approver2) (approveCmd approved fx.approver2)
+
+-- | Approvers cannot cancel, and neither can the agent.
+test_l11_approver_cannot_cancel : Script ()
+test_l11_approver_cannot_cancel = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 6000.0
+  failsWith notAuthorized (actAs fx.approver1) (exerciseCmd proposalCid Proposal_Cancel)
+  failsWith notAuthorized (actAs fx.agent) (exerciseCmd proposalCid Proposal_Cancel)
+  proposals <- query @Proposal fx.treasurer
+  assertMsg "the proposal is still pending" (length proposals == 1)
+
+-- | An executed proposal is archived, so it cannot be cancelled.
+test_l11_cannot_cancel_executed : Script ()
+test_l11_cannot_cancel_executed = do
+  fx <- setup
+  (proposalCid, _) <- proposeTotal fx "2026-09" 1000.0
+  _ <- execute fx proposalCid
+  failsWith notVisible (actAs fx.treasurer) (exerciseCmd proposalCid Proposal_Cancel)

@@ -1,0 +1,146 @@
+module Mithra.Audit where
+
+import DA.Foldable (forA_)
+import Mithra.Decision
+import Mithra.Types
+
+-- | A reference to a record the treasurer chooses to share.
+data EvidenceRef
+  = RefDecision (ContractId DecisionRecord)
+  | RefOutcome (ContractId DistributionOutcome)
+  deriving (Eq, Show)
+
+-- | A copy of a shared record, held inside a `SharedRecord`.
+data Evidence
+  = EvDecision DecisionRecord
+  | EvOutcome DistributionOutcome
+  deriving (Eq, Show)
+
+evidenceRecordId : Evidence -> Text
+evidenceRecordId (EvDecision d) = d.recordId
+evidenceRecordId (EvOutcome o) = o.recordId
+
+-- | What an auditor asks to see. The treasurer decides what, if anything, is shared.
+template AuditRequest
+  with
+    auditor : Party
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    requestId : Text
+    question : Text
+    scope : [ScopeItem]
+    excluded : Text
+    requestedAt : Time
+  where
+    signatory auditor
+    observer treasurer, agent
+    ensure not (null scope)
+
+    choice AuditRequest_Withdraw : ()
+      controller auditor
+      do pure ()
+
+    choice AuditRequest_Resolve : AuditRequest
+      controller treasurer
+      do pure this
+
+-- | One shared record. This is the only contract through which an auditor sees a
+-- decision record or an outcome (L8); archiving it ends the visibility (L9).
+-- The treasurer and the agent are observers so that either can close a grant from
+-- their own participant, also on MainNet where neither hosts the treasury party.
+template SharedRecord
+  with
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    auditor : Party
+    grantId : Text
+    recordId : Text
+    evidence : Evidence
+    sharedAt : Time
+    expiresAt : Time
+  where
+    signatory treasury
+    observer auditor, treasurer, agent
+
+    choice SharedRecord_Revoke : ()
+      controller treasury
+      do pure ()
+
+template AccessGrant
+  with
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    auditor : Party
+    grantId : Text
+    requestId : Text
+    question : Text
+    recordIds : [Text]
+    sharedCids : [ContractId SharedRecord]
+    grantedAt : Time
+    expiresAt : Time
+  where
+    signatory treasury, treasurer
+    observer auditor, agent
+
+    -- | L9: after expiry the agent, the treasurer or the auditor can close the grant.
+    choice AccessGrant_CloseExpired : ContractId AccessClosed
+      with
+        closer : Party
+      controller closer
+      do
+        assertMsg "Only the agent, the treasurer or the auditor can close a grant"
+          (closer `elem` [agent, treasurer, auditor])
+        now <- getTime
+        assertMsg "The grant has not expired yet" (now >= expiresAt)
+        closeGrant this closer "expired"
+
+    -- | The treasurer can end access at any time.
+    choice AccessGrant_Revoke : ContractId AccessClosed
+      controller treasurer
+      do closeGrant this treasurer "revoked"
+
+closeGrant : AccessGrant -> Party -> Text -> Update (ContractId AccessClosed)
+closeGrant g closedBy reason = do
+  forA_ g.sharedCids $ \cid -> exercise cid SharedRecord_Revoke
+  now <- getTime
+  create AccessClosed with
+    treasury = g.treasury
+    treasurer = g.treasurer
+    agent = g.agent
+    auditor = g.auditor
+    grantId = g.grantId
+    requestId = g.requestId
+    closedAt = now
+    closedBy
+    reason
+
+template AccessClosed
+  with
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    auditor : Party
+    grantId : Text
+    requestId : Text
+    closedAt : Time
+    closedBy : Party
+    reason : Text
+  where
+    signatory treasury, treasurer
+    observer auditor, agent
+
+template AccessDenied
+  with
+    treasury : Party
+    treasurer : Party
+    agent : Party
+    auditor : Party
+    requestId : Text
+    reason : Text
+    at : Time
+  where
+    signatory treasury, treasurer
+    observer auditor, agent

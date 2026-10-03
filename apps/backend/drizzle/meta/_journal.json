@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1790878849211,
+      "tag": "0000_init",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790881360578,
+      "tag": "0001_m4_cycle_engine",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790945312524,
+      "tag": "0002_m10_mainnet_wallets",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790975210715,
+      "tag": "0003_agent_events_treasury",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790975810292,
+      "tag": "0004_cycle_runs_waiting_for_wallets",
+      "breakpoints": true
+    }
+  ]
+}

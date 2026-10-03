@@ -1,0 +1,392 @@
+import {
+  ScopeDraftSchema,
+  type AgentConversation,
+  type PolicyDraft,
+  type Role,
+  type SendAgentMessageResponse,
+} from '@mithra/shared';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { afterEach, describe, expect, it } from 'vitest';
+import '../../auth/plugin';
+import type { AuditScopeResult } from '../../audit/scope';
+import { ApiError, errorBody } from '../../http/errors';
+import { agentRoutes } from './index';
+
+const ROLES: Record<string, Role[]> = {
+  'treasurer::1': ['treasurer'],
+  'approver::1': ['approver'],
+  'holder::1': ['holder'],
+  'auditor::1': ['auditor'],
+  // 'prospect::1' has no role: a signed-in party who may ask this fund for access.
+};
+
+interface Calls {
+  respond: { partyId: string; roles: readonly Role[]; text: string }[];
+  draft: { prompt: string; party: string }[];
+  scope: string[];
+}
+
+async function build(limit = 20, draftLimit = 10): Promise<{ app: FastifyInstance; calls: Calls }> {
+  const calls: Calls = { respond: [], draft: [], scope: [] };
+  const message = (role: 'user' | 'assistant', text: string) => ({
+    id: String(calls.respond.length),
+    role,
+    text,
+    actions: [],
+    at: '2026-10-01T09:00:00.000Z',
+    degraded: false,
+  });
+  const app = Fastify({ logger: false });
+  app.decorateRequest('session', null);
+  app.decorate('roleResolver', {
+    resolveRoles: (id: string) =>
+      Promise.resolve({ roles: ROLES[id] ?? [], primaryRole: ROLES[id]?.[0] ?? null }),
+    resolveMany: () => Promise.resolve(new Map()),
+  });
+  app.addHook('onRequest', (request, _reply, done) => {
+    const party = request.headers['x-party'];
+    request.session = typeof party === 'string' ? { id: 's', partyId: party } : null;
+    done();
+  });
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ApiError)
+      return reply.code(error.status).send(errorBody(error.code, error.message));
+    return reply.code(500).send(errorBody('internal_error', 'Internal server error'));
+  });
+  agentRoutes(app, {
+    messageLimit: { limit, windowMs: 60_000 },
+    draftLimit: { limit: draftLimit, windowMs: 60_000 },
+    agent: {
+      respond(input): Promise<SendAgentMessageResponse> {
+        calls.respond.push(input);
+        return Promise.resolve({
+          user: message('user', input.text),
+          reply: message('assistant', 'ok'),
+        });
+      },
+      conversation(): Promise<AgentConversation> {
+        return Promise.resolve({
+          messages: [],
+          suggestions: ['Distribute 1,200 CC for September.'],
+        });
+      },
+    },
+    drafter: {
+      draftPolicy(prompt, party): Promise<PolicyDraft> {
+        calls.draft.push({ prompt, party });
+        if (prompt === 'fail') {
+          return Promise.reject(
+            new ApiError(503, 'llm_unavailable', "The agent can't draft right now (x)."),
+          );
+        }
+        return Promise.resolve({
+          draftId: 'd',
+          fields: {} as PolicyDraft['fields'],
+          summary: 's',
+          agentCan: [],
+          agentCannot: [],
+          source: 'agent',
+          updatedAt: '2026-10-01T09:00:00.000Z',
+        });
+      },
+    },
+    scope: {
+      draft(question): Promise<AuditScopeResult> {
+        calls.scope.push(question);
+        return Promise.resolve({
+          items: [{ recordId: 'decision/2026-09/1', kind: 'decision', reason: 'r' }],
+          excluded: 'x',
+          source: question === 'Show Q3 (model)' ? 'ai' : 'rules',
+        });
+      },
+    },
+  });
+  await app.ready();
+  return { app, calls };
+}
+
+let app: FastifyInstance | undefined;
+afterEach(async () => {
+  await app?.close();
+  app = undefined;
+});
+
+const as = (party: string) => ({ 'x-party': party });
+
+describe('agent routes', () => {
+  it('GET /api/agent/messages: treasurer and approver only, signed in', async () => {
+    const built = await build();
+    app = built.app;
+    expect((await app.inject({ method: 'GET', url: '/api/agent/messages' })).statusCode).toBe(401);
+    for (const party of ['holder::1', 'auditor::1']) {
+      const denied = await app.inject({
+        method: 'GET',
+        url: '/api/agent/messages',
+        headers: as(party),
+      });
+      expect(denied.statusCode, party).toBe(403);
+    }
+    for (const party of ['treasurer::1', 'approver::1']) {
+      const ok = await app.inject({
+        method: 'GET',
+        url: '/api/agent/messages',
+        headers: as(party),
+      });
+      expect(ok.statusCode, party).toBe(200);
+      expect(ok.json<AgentConversation>().suggestions).toHaveLength(1);
+    }
+  });
+
+  it("POST /api/agent/messages: validates the body and passes the caller's party and roles", async () => {
+    const built = await build();
+    app = built.app;
+    const bad = await app.inject({
+      method: 'POST',
+      url: '/api/agent/messages',
+      headers: as('treasurer::1'),
+      payload: { text: '   ' },
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json()).toMatchObject({ error: { code: 'invalid_request' } });
+    const tooLong = await app.inject({
+      method: 'POST',
+      url: '/api/agent/messages',
+      headers: as('treasurer::1'),
+      payload: { text: 'x'.repeat(2001) },
+    });
+    expect(tooLong.statusCode).toBe(400);
+    const ok = await app.inject({
+      method: 'POST',
+      url: '/api/agent/messages',
+      headers: as('approver::1'),
+      payload: { text: ' Why was it flagged? ' },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(built.calls.respond).toEqual([
+      { partyId: 'approver::1', roles: ['approver'], text: 'Why was it flagged?' },
+    ]);
+    const holder = await app.inject({
+      method: 'POST',
+      url: '/api/agent/messages',
+      headers: as('holder::1'),
+      payload: { text: 'hi' },
+    });
+    expect(holder.statusCode).toBe(403);
+  });
+
+  it('rate limits messages per party (20 per minute)', async () => {
+    const built = await build(3);
+    app = built.app;
+    const send = (party: string) =>
+      app!.inject({
+        method: 'POST',
+        url: '/api/agent/messages',
+        headers: as(party),
+        payload: { text: 'hi' },
+      });
+    expect((await send('treasurer::1')).statusCode).toBe(200);
+    expect((await send('treasurer::1')).statusCode).toBe(200);
+    expect((await send('treasurer::1')).statusCode).toBe(200);
+    const limited = await send('treasurer::1');
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toMatchObject({ error: { code: 'too_many_requests' } });
+    // Another party has its own allowance.
+    expect((await send('approver::1')).statusCode).toBe(200);
+  });
+
+  it('defaults to 20 messages per minute per party', async () => {
+    const built = await build();
+    app = built.app;
+    let last = 0;
+    for (let i = 0; i < 21; i += 1) {
+      last = (
+        await app.inject({
+          method: 'POST',
+          url: '/api/agent/messages',
+          headers: as('treasurer::1'),
+          payload: { text: 'hi' },
+        })
+      ).statusCode;
+    }
+    expect(last).toBe(429);
+    expect(built.calls.respond).toHaveLength(20);
+  });
+
+  it('rate limits policy drafts per party and answers 429 too_many_requests', async () => {
+    const built = await build(20, 2);
+    app = built.app;
+    const draft = (party: string) =>
+      app!.inject({
+        method: 'POST',
+        url: '/api/policy/draft',
+        headers: as(party),
+        payload: { prompt: 'Pay monthly' },
+      });
+    expect((await draft('treasurer::1')).statusCode).toBe(200);
+    expect((await draft('treasurer::1')).statusCode).toBe(200);
+    const limited = await draft('treasurer::1');
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toMatchObject({ error: { code: 'too_many_requests' } });
+    // The language model was not called for the refused request.
+    expect(built.calls.draft).toHaveLength(2);
+  });
+
+  it('rate limits scope drafts per party, including a party with no role', async () => {
+    const built = await build(20, 2);
+    app = built.app;
+    const draft = (party: string) =>
+      app!.inject({
+        method: 'POST',
+        url: '/api/audit/scope/draft',
+        headers: as(party),
+        payload: { question: 'Show Q3' },
+      });
+    expect((await draft('prospect::1')).statusCode).toBe(200);
+    expect((await draft('prospect::1')).statusCode).toBe(200);
+    const limited = await draft('prospect::1');
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toMatchObject({ error: { code: 'too_many_requests' } });
+    expect(built.calls.scope).toHaveLength(2);
+    // Another party has its own allowance, and the policy route and the messages route are not shared with it.
+    expect((await draft('auditor::1')).statusCode).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/policy/draft',
+          headers: as('prospect::1'),
+          payload: { prompt: 'x' },
+        })
+      ).statusCode,
+    ).toBe(403);
+  });
+
+  it('defaults to 10 drafts per minute per party on each draft route', async () => {
+    const built = await build();
+    app = built.app;
+    let last = 0;
+    for (let i = 0; i < 11; i += 1) {
+      last = (
+        await app.inject({
+          method: 'POST',
+          url: '/api/audit/scope/draft',
+          headers: as('auditor::1'),
+          payload: { question: 'Show Q3' },
+        })
+      ).statusCode;
+    }
+    expect(last).toBe(429);
+    expect(built.calls.scope).toHaveLength(10);
+    last = 0;
+    for (let i = 0; i < 11; i += 1) {
+      last = (
+        await app.inject({
+          method: 'POST',
+          url: '/api/policy/draft',
+          headers: as('treasurer::1'),
+          payload: { prompt: 'Pay monthly' },
+        })
+      ).statusCode;
+    }
+    expect(last).toBe(429);
+    expect(built.calls.draft).toHaveLength(10);
+  });
+
+  it('POST /api/policy/draft: treasurer only; passes the prompt; relays 503 with the reason', async () => {
+    const built = await build();
+    app = built.app;
+    const denied = await app.inject({
+      method: 'POST',
+      url: '/api/policy/draft',
+      headers: as('approver::1'),
+      payload: { prompt: 'x' },
+    });
+    expect(denied.statusCode).toBe(403);
+    const bad = await app.inject({
+      method: 'POST',
+      url: '/api/policy/draft',
+      headers: as('treasurer::1'),
+      payload: { prompt: '' },
+    });
+    expect(bad.statusCode).toBe(400);
+    const ok = await app.inject({
+      method: 'POST',
+      url: '/api/policy/draft',
+      headers: as('treasurer::1'),
+      payload: { prompt: 'Pay monthly' },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(built.calls.draft).toEqual([{ prompt: 'Pay monthly', party: 'treasurer::1' }]);
+    const down = await app.inject({
+      method: 'POST',
+      url: '/api/policy/draft',
+      headers: as('treasurer::1'),
+      payload: { prompt: 'fail' },
+    });
+    expect(down.statusCode).toBe(503);
+    expect(down.json()).toEqual({
+      error: { code: 'llm_unavailable', message: "The agent can't draft right now (x)." },
+    });
+  });
+
+  it('POST /api/audit/scope/draft: auditor, treasurer or a party with no role (a prospective auditor)', async () => {
+    const built = await build();
+    app = built.app;
+    for (const party of ['auditor::1', 'treasurer::1', 'prospect::1']) {
+      const ok = await app.inject({
+        method: 'POST',
+        url: '/api/audit/scope/draft',
+        headers: as(party),
+        payload: { question: 'Show Q3' },
+      });
+      expect(ok.statusCode, party).toBe(200);
+      expect(ok.json()).toEqual({
+        items: [
+          {
+            recordId: 'decision/2026-09/1',
+            kind: 'decision',
+            label: 'Decision record, September 2026',
+            reason: 'r',
+          },
+        ],
+        excluded: 'x',
+        source: 'rules',
+        notice: 'The agent could not use its language model, so the rules drafted this scope.',
+      });
+    }
+    for (const party of ['approver::1', 'holder::1']) {
+      const denied = await app.inject({
+        method: 'POST',
+        url: '/api/audit/scope/draft',
+        headers: as(party),
+        payload: { question: 'Show Q3' },
+      });
+      expect(denied.statusCode, party).toBe(403);
+    }
+    const bad = await app.inject({
+      method: 'POST',
+      url: '/api/audit/scope/draft',
+      headers: as('auditor::1'),
+      payload: {},
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(built.calls.scope).toEqual(['Show Q3', 'Show Q3', 'Show Q3']);
+  });
+
+  it('POST /api/audit/scope/draft answers in the shape the auditor screen reads: labels, and no notice for a model draft', async () => {
+    const built = await build();
+    app = built.app;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/audit/scope/draft',
+      headers: as('auditor::1'),
+      payload: { question: 'Show Q3 (model)' },
+    });
+    expect(res.statusCode).toBe(200);
+    // The same schema the web app parses the response with: label and notice must be there.
+    const draft = ScopeDraftSchema.parse(res.json());
+    expect(draft.notice).toBeNull();
+    expect(draft.items[0]?.label).toBe('Decision record, September 2026');
+    expect(draft.source).toBe('ai');
+  });
+});

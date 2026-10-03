@@ -1,0 +1,177 @@
+-- | N8: governed actions. The treasury is a governance party; the charter and every
+-- Mandate change execute only after the governance threshold of confirmations
+-- (BitSafe's GovernanceRules). The charter rules (one organization per charter) live here too.
+module Mithra.Test.Governance where
+
+import Daml.Script
+import qualified DA.Set as Set
+import DA.Time
+import Governance.Action
+import Governance.Confirmation
+import Governance.ExecutionResult
+import Governance.Rules
+import Mithra.Charter
+import Mithra.Governance
+import Mithra.Mandate
+import Mithra.Org
+import Mithra.Units
+import Mithra.Test.Registry
+import Mithra.Test.Setup
+
+data Committee = Committee with
+    treasury : Party
+    m1 : Party
+    m2 : Party
+    m3 : Party
+    rules : ContractId GovernanceRules
+
+-- | Three node members, threshold 2, the operator as an additional proposer.
+committeeFor : Party -> Party -> Script Committee
+committeeFor treasury operator = do
+  m1 <- allocatePartyByHint (PartyIdHint "node1")
+  m2 <- allocatePartyByHint (PartyIdHint "node2")
+  m3 <- allocatePartyByHint (PartyIdHint "node3")
+  rules <- submit treasury $ createCmd GovernanceRules with
+    governanceParty = treasury
+    members = Set.fromList [m1, m2, m3]
+    threshold = 2
+    actionConfirmationTimeout = hours 1
+    additionalProposers = Some (Set.fromList [operator])
+  pure Committee with treasury; m1; m2; m3; rules
+
+-- | A node member submits; every node hosts the governance party, so the member reads what it sees.
+asMember : Committee -> Party -> SubmitOptions
+asMember c m = actAs m <> readAs c.treasury
+
+confirmCmd : Committee -> Party -> ContractId GovernableAction -> Commands GovernanceRules_ConfirmActionResult
+confirmCmd c m proposal = exerciseCmd c.rules GovernanceRules_ConfirmAction with
+  confirmer = m
+  actionProposalCid = proposal
+
+confirm : Committee -> Party -> ContractId GovernableAction -> Script (ContractId GovernanceConfirmation)
+confirm c m proposal = do
+  r <- submit (asMember c m) (confirmCmd c m proposal)
+  pure r.confirmationCid
+
+executeConfirmedCmd : Committee -> Party -> ContractId GovernableAction -> [ContractId GovernanceConfirmation]
+  -> Commands ExecuteConfirmedActionResult
+executeConfirmedCmd c executor proposal confirmations =
+  exerciseCmd c.rules GovernanceRules_ExecuteConfirmedAction with
+    executor
+    actionProposalCid = proposal
+    confirmations
+
+-- | A Mandate change needs the treasurer's request and 2 of 3 node confirmations.
+test_n8_governed_mandate_change_below_threshold_fails : Script ()
+test_n8_governed_mandate_change_below_threshold_fails = do
+  fx <- setup
+  c <- committeeFor fx.treasury fx.operator
+  let newTerms = fx.terms with cap = 8000.0
+  req <- sealRequest fx newTerms True
+  proposalCid <- submit fx.operator $ createCmd MandateChangeProposal with
+    governanceParty = fx.treasury
+    proposer = fx.operator
+    orgCid = fx.orgCid
+    sealRequestCid = req
+    currentMandateCid = Some fx.mandateCid
+    description = "Raise the auto-execute cap to 8,000 CC"
+  let proposal = toInterfaceContractId @GovernableAction proposalCid
+  -- only members confirm and execute
+  failsWith "Confirmer is a governance member" (asMember c fx.outsider) (confirmCmd c fx.outsider proposal)
+  failsWith "Confirmer is a governance member" (asMember c fx.agent) (confirmCmd c fx.agent proposal)
+  -- one confirmation is below the threshold
+  c1 <- confirm c c.m1 proposal
+  failsWith "Enough confirmations to execute action" (asMember c c.m1) (executeConfirmedCmd c c.m1 proposal [c1])
+  -- the same member twice is still one
+  c1again <- confirm c c.m1 proposal
+  failsWith "No duplicate confirmers" (asMember c c.m1) (executeConfirmedCmd c c.m1 proposal [c1, c1again])
+  -- nothing changed
+  m <- liveMandate fx
+  assertMsg "the Mandate is unchanged" (m.terms.cap == 5000.0 && m.version == 1)
+  -- the proposer is not a member and cannot execute
+  failsWith "Executor is a governance member" (asMember c fx.operator) (executeConfirmedCmd c fx.operator proposal [c1])
+  -- two distinct confirmations execute it
+  c2 <- confirm c c.m2 proposal
+  result <- submit (asMember c c.m3) (executeConfirmedCmd c c.m3 proposal [c1, c2])
+  mandates <- query @Mandate fx.treasury
+  case mandates of
+    [(_, newMandate)] -> do
+      assertMsg "a new Mandate exists with the new cap and version 2"
+        (newMandate.terms.cap == 8000.0 && newMandate.version == 2)
+    _ -> abort "expected exactly one active Mandate"
+  orgs <- query @Organization fx.treasury
+  assertMsg "the organization moved to Mandate version 2" (map (\(_, o) -> o.mandateVersion) orgs == [2])
+  Some audit <- queryContractId fx.treasury result.executionResultCid
+  assertMsg "the governance execution result names the confirmers"
+    (audit.actionLabel == "MithraSealMandate" && audit.confirmers == [c.m1, c.m2])
+  -- the proposal and the seal request were used up
+  failsWith notVisible (asMember c c.m1) (executeConfirmedCmd c c.m1 proposal [c1, c2])
+
+-- | The charter is created by a governed action too, and a governed action alone is not enough
+-- to give anyone else the treasury's authority.
+test_n8_charter_via_governance : Script ()
+test_n8_charter_via_governance = do
+  treasury <- allocatePartyByHint (PartyIdHint "treasury")
+  treasurer <- allocatePartyByHint (PartyIdHint "treasurer")
+  agent <- allocatePartyByHint (PartyIdHint "agent")
+  operator <- allocatePartyByHint (PartyIdHint "operator")
+  c <- committeeFor treasury operator
+  -- nobody can create the charter on their own
+  failsWith notAuthorized (actAs operator) $ createCmd TreasuryCharter with treasury; treasurer; agent; operator
+  failsWith notAuthorized (actAs treasurer) $ createCmd TreasuryCharter with treasury; treasurer; agent; operator
+  proposalCid <- submit operator $ createCmd CharterProposal with
+    governanceParty = treasury; proposer = operator; treasurer; agent; operator
+  let proposal = toInterfaceContractId @GovernableAction proposalCid
+  c1 <- confirm c c.m1 proposal
+  failsWith "Enough confirmations to execute action" (asMember c c.m1) (executeConfirmedCmd c c.m1 proposal [c1])
+  none <- query @TreasuryCharter treasury
+  assertMsg "no charter below the threshold" (null none)
+  c3 <- confirm c c.m3 proposal
+  _ <- submit (asMember c c.m2) (executeConfirmedCmd c c.m2 proposal [c1, c3])
+  charters <- query @TreasuryCharter treasury
+  case charters of
+    [(_, charter)] -> assertMsg "the charter belongs to the governance party, with the given roles"
+      (charter.treasury == treasury && charter.treasurer == treasurer && charter.agent == agent && charter.operator == operator)
+    _ -> abort "expected exactly one charter"
+  -- the treasurer can now create the organization, the agent cannot
+  let [(charterCid, _)] = charters
+      asset = testInstrument treasury
+  failsWith notAuthorized (actAs agent) $ exerciseCmd charterCid Charter_CreateOrganization with
+    name = "Acme Fund"; asset; approvers = []; approvalThreshold = 0
+  pure ()
+
+-- | One charter, one organization: a second attempt fails, invalid terms are refused
+-- without using the charter up.
+test_charter_creates_one_organization_only : Script ()
+test_charter_creates_one_organization_only = do
+  treasury <- allocatePartyByHint (PartyIdHint "treasury")
+  treasurer <- allocatePartyByHint (PartyIdHint "treasurer")
+  agent <- allocatePartyByHint (PartyIdHint "agent")
+  operator <- allocatePartyByHint (PartyIdHint "operator")
+  approver1 <- allocatePartyByHint (PartyIdHint "approver1")
+  approver2 <- allocatePartyByHint (PartyIdHint "approver2")
+  registryAdmin <- allocatePartyByHint (PartyIdHint "registryAdmin")
+  charterCid <- submit treasury $ createCmd TreasuryCharter with treasury; treasurer; agent; operator
+  let asset = testInstrument registryAdmin
+      create' approvers threshold = exerciseCmd charterCid Charter_CreateOrganization with
+        name = "Acme Fund"; asset; approvers; approvalThreshold = threshold
+  -- only the treasurer
+  failsWith notAuthorized (actAs agent) (create' [approver1, approver2] 2)
+  failsWith notAuthorized (actAs operator) (create' [approver1, approver2] 2)
+  -- invalid approver sets
+  submitMustFail treasurer (create' [approver1, approver2] 3)
+  submitMustFail treasurer (create' [approver1, approver2] 0)
+  submitMustFail treasurer (create' [approver1, approver1] 1)
+  submitMustFail treasurer (create' [approver1, agent] 1)
+  submitMustFail treasurer (create' [] 1)
+  -- the charter survived the refusals
+  (orgCid, _) <- submit treasurer (create' [approver1, approver2] 2)
+  -- and is used up by the first organization
+  submitMustFail treasurer (create' [approver1, approver2] 2)
+  orgs <- query @Organization treasury
+  registers <- query @UnitRegister treasury
+  charters <- query @TreasuryCharter treasury
+  assertMsg "exactly one organization and one register, no charter left"
+    (length orgs == 1 && length registers == 1 && null charters)
+  Some org <- queryContractId treasury orgCid
+  assertMsg "the organization starts without a Mandate" (org.mandateVersion == 0 && org.name == "Acme Fund")

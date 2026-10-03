@@ -1,0 +1,267 @@
+-- | L8 (an auditor sees only what an active grant lists), L9 (grants expire and can be
+-- closed), A7 (the agent cannot grant audit access).
+module Mithra.Test.Audit where
+
+import Daml.Script
+import DA.List (sort)
+import DA.Time
+import Mithra.Audit
+import Mithra.Decision
+import Mithra.Mandate
+import Mithra.Org
+import Mithra.Payment
+import Mithra.Proposal
+import Mithra.Types
+import Mithra.Units
+import Mithra.Test.Setup
+
+-- | One executed cycle and one pending proposal, so records exist both inside and outside
+-- what the auditor will ask for.
+data AuditFixture = AuditFixture with
+    fx : Fixture
+    decision1 : ContractId DecisionRecord
+    outcome1 : ContractId DistributionOutcome
+    decision2 : ContractId DecisionRecord
+
+auditSetup : Script AuditFixture
+auditSetup = do
+  fx0 <- setup
+  (proposal1, decision1) <- proposeTotal fx0 "2026-09" 5000.0
+  (mandate1, outcome1) <- execute fx0 proposal1
+  let fx = afterExecute fx0 mandate1
+  (_, decision2) <- proposeTotal fx "2026-08" 1000.0
+  pure AuditFixture with fx; decision1; outcome1; decision2
+
+scopeFor : [Text] -> [ScopeItem]
+scopeFor ids = [ScopeItem i "record" "Needed to answer the question" | i <- ids]
+
+request : Fixture -> Text -> [Text] -> Script (ContractId AuditRequest)
+request fx requestId ids = do
+  now <- getTime
+  submit fx.auditor $ createCmd AuditRequest with
+    auditor = fx.auditor
+    treasury = fx.treasury
+    treasurer = fx.treasurer
+    agent = fx.agent
+    requestId
+    question = "Why was September distributed the way it was?"
+    scope = scopeFor ids
+    excluded = "Unit register, holder identities, other cycles"
+    requestedAt = now
+
+grant : Fixture -> ContractId AuditRequest -> Time -> [EvidenceRef] -> Commands (ContractId AccessGrant)
+grant fx requestCid expiresAt evidence =
+  exerciseCmd fx.orgCid Org_GrantAccess with requestCid; expiresAt; evidence
+
+-- | What the auditor can see, as counts. `others` is everything else the fund holds:
+-- proposals, payments, the register, the Mandate, units and the organization.
+data AuditorView = AuditorView with
+    decisions : Int
+    outcomes : Int
+    shared : Int
+    grants : Int
+    closed : Int
+    others : Int
+  deriving (Eq, Show)
+
+nothingVisible : AuditorView
+nothingVisible = AuditorView 0 0 0 0 0 0
+
+auditorView : Fixture -> Script AuditorView
+auditorView fx = do
+  decisions <- query @DecisionRecord fx.auditor
+  outcomes <- query @DistributionOutcome fx.auditor
+  shared <- query @SharedRecord fx.auditor
+  grants <- query @AccessGrant fx.auditor
+  closed <- query @AccessClosed fx.auditor
+  others1 <- query @Proposal fx.auditor
+  others2 <- query @Payment fx.auditor
+  others3 <- query @UnitRegister fx.auditor
+  others4 <- query @Mandate fx.auditor
+  others5 <- query @FundUnit fx.auditor
+  others6 <- query @Organization fx.auditor
+  pure AuditorView with
+    decisions = length decisions
+    outcomes = length outcomes
+    shared = length shared
+    grants = length grants
+    closed = length closed
+    others = length others1 + length others2 + length others3 + length others4 + length others5 + length others6
+
+-- L8 -------------------------------------------------------------------------
+
+-- | Before a grant the auditor sees only their own request.
+test_l8_auditor_sees_nothing_before_grant : Script ()
+test_l8_auditor_sees_nothing_before_grant = do
+  AuditFixture fx decision1 _ _ <- auditSetup
+  before <- auditorView fx
+  assertMsg "nothing at all before the request" (before == nothingVisible)
+  _ <- request fx "audit-1" ["decision/2026-09/1", "outcome/2026-09/1"]
+  requests <- query @AuditRequest fx.auditor
+  assertMsg "the auditor sees their own request" (length requests == 1)
+  after <- auditorView fx
+  assertMsg "a request alone reveals nothing" (after == nothingVisible)
+  -- the auditor cannot create the records they want to see
+  d <- decisionOf fx decision1
+  failsWith notAuthorized (actAs fx.auditor) $ createCmd SharedRecord with
+    treasury = fx.treasury
+    treasurer = fx.treasurer
+    agent = fx.agent
+    auditor = fx.auditor
+    grantId = "grant/self"
+    recordId = "decision/2026-09/1"
+    evidence = EvDecision d
+    sharedAt = today
+    expiresAt = addRelTime today (days 365)
+
+-- | After a grant the auditor sees exactly the listed records, through shared copies.
+test_l8_auditor_sees_exactly_listed_records : Script ()
+test_l8_auditor_sees_exactly_listed_records = do
+  AuditFixture fx decision1 outcome1 _ <- auditSetup
+  -- the auditor asks for three records; the treasurer shares two
+  requestCid <- request fx "audit-1" ["decision/2026-09/1", "outcome/2026-09/1", "decision/2026-08/1"]
+  now <- getTime
+  grantCid <- submit fx.treasurer $ grant fx requestCid (addRelTime now (days 7)) [RefDecision decision1, RefOutcome outcome1]
+  shared <- query @SharedRecord fx.auditor
+  assertMsg "exactly the two listed records"
+    (sort [s.recordId | (_, s) <- shared] == ["decision/2026-09/1", "outcome/2026-09/1"])
+  Some g <- queryContractId fx.auditor grantCid
+  assertMsg "the grant lists them and expires in 7 days"
+    (sort g.recordIds == ["decision/2026-09/1", "outcome/2026-09/1"] && g.expiresAt == addRelTime now (days 7) && g.auditor == fx.auditor)
+  -- the shared copy is the record
+  Some d <- queryContractId fx.agent decision1
+  assertMsg "the shared decision record is a faithful copy"
+    (or [s.evidence == EvDecision d | (_, s) <- shared])
+  -- the auditor still cannot see the live records, the third record, or anything else
+  view <- auditorView fx
+  assertMsg "only shared copies, one grant, no closure, nothing else"
+    (view == nothingVisible with shared = 2; grants = 1)
+  -- the request was resolved by the grant
+  requests <- query @AuditRequest fx.auditor
+  assertMsg "the request is resolved" (null requests)
+
+-- | A record the auditor did not ask for cannot be shared through that request.
+test_l8_evidence_outside_scope_fails : Script ()
+test_l8_evidence_outside_scope_fails = do
+  AuditFixture fx decision1 outcome1 decision2 <- auditSetup
+  requestCid <- request fx "audit-1" ["decision/2026-09/1"]
+  now <- getTime
+  let expires = addRelTime now (days 7)
+  failsWith "outside the scope of this audit request" (actAs fx.treasurer)
+    (grant fx requestCid expires [RefDecision decision1, RefDecision decision2])
+  failsWith "outside the scope of this audit request" (actAs fx.treasurer)
+    (grant fx requestCid expires [RefOutcome outcome1])
+  failsWith "List at least one record" (actAs fx.treasurer) (grant fx requestCid expires [])
+  failsWith "listed more than once" (actAs fx.treasurer)
+    (grant fx requestCid expires [RefDecision decision1, RefDecision decision1])
+  failsWith "must expire in the future" (actAs fx.treasurer) (grant fx requestCid now [RefDecision decision1])
+  nothing <- auditorView fx
+  assertMsg "nothing was shared" (nothing == nothingVisible)
+  -- the failed attempts did not use up the request: the in-scope grant still works
+  _ <- submit fx.treasurer $ grant fx requestCid expires [RefDecision decision1]
+  view <- auditorView fx
+  assertMsg "one shared record and one grant" (view == nothingVisible with shared = 1; grants = 1)
+  -- a request resolved once cannot be granted again
+  failsWith notVisible (actAs fx.treasurer) (grant fx requestCid expires [RefDecision decision1])
+
+-- | The treasurer can say no, with a reason the auditor sees.
+test_l8_denied_request : Script ()
+test_l8_denied_request = do
+  AuditFixture fx _ _ _ <- auditSetup
+  requestCid <- request fx "audit-1" ["decision/2026-09/1"]
+  failsWith "needs a reason" (actAs fx.treasurer) (exerciseCmd fx.orgCid Org_DenyAccess with requestCid; reason = "")
+  failsWith notAuthorized (actAs fx.agent) (exerciseCmd fx.orgCid Org_DenyAccess with requestCid; reason = "no")
+  denied <- submit fx.treasurer $ exerciseCmd fx.orgCid Org_DenyAccess with requestCid; reason = "Out of scope for this fund"
+  Some d <- queryContractId fx.auditor denied
+  assertMsg "the auditor sees the denial and nothing else"
+    (d.reason == "Out of scope for this fund" && d.requestId == "audit-1")
+  view <- auditorView fx
+  assertMsg "no records" (view == nothingVisible)
+
+-- L9 -------------------------------------------------------------------------
+
+-- | After expiry the agent closes the grant and the auditor's view empties.
+test_l9_close_after_expiry : Script ()
+test_l9_close_after_expiry = do
+  AuditFixture fx decision1 outcome1 _ <- auditSetup
+  requestCid <- request fx "audit-1" ["decision/2026-09/1", "outcome/2026-09/1"]
+  now <- getTime
+  grantCid <- submit fx.treasurer $ grant fx requestCid (addRelTime now (days 7)) [RefDecision decision1, RefOutcome outcome1]
+  before <- auditorView fx
+  assertMsg "two shared records while active" (before == nothingVisible with shared = 2; grants = 1)
+  passTime (days 8)
+  closedCid <- submit fx.agent $ exerciseCmd grantCid AccessGrant_CloseExpired with closer = fx.agent
+  Some closed <- queryContractId fx.auditor closedCid
+  assertMsg "closed as expired by the agent" (closed.reason == "expired" && closed.closedBy == fx.agent)
+  after <- auditorView fx
+  assertMsg "the auditor sees no shared records any more, only the closure"
+    (after == nothingVisible with closed = 1)
+  -- the underlying records are untouched
+  _ <- decisionOf fx decision1
+  _ <- outcomeOf fx outcome1
+  pure ()
+
+-- | The auditor can close an expired grant too, and expiry is inclusive.
+test_l9_auditor_can_close_at_expiry : Script ()
+test_l9_auditor_can_close_at_expiry = do
+  AuditFixture fx decision1 _ _ <- auditSetup
+  requestCid <- request fx "audit-1" ["decision/2026-09/1"]
+  now <- getTime
+  grantCid <- submit fx.treasurer $ grant fx requestCid (addRelTime now (days 7)) [RefDecision decision1]
+  passTime (days 7)
+  failsWith notVisible (actAs fx.outsider) (exerciseCmd grantCid AccessGrant_CloseExpired with closer = fx.outsider)
+  _ <- submit fx.auditor $ exerciseCmd grantCid AccessGrant_CloseExpired with closer = fx.auditor
+  view <- auditorView fx
+  assertMsg "closed" (view == nothingVisible with closed = 1)
+
+-- | Before expiry nobody but the treasurer can end the grant, and the auditor keeps access.
+test_l9_agent_close_before_expiry_fails : Script ()
+test_l9_agent_close_before_expiry_fails = do
+  AuditFixture fx decision1 outcome1 _ <- auditSetup
+  requestCid <- request fx "audit-1" ["decision/2026-09/1", "outcome/2026-09/1"]
+  now <- getTime
+  grantCid <- submit fx.treasurer $ grant fx requestCid (addRelTime now (days 7)) [RefDecision decision1, RefOutcome outcome1]
+  passTime (days 6)
+  failsWith "has not expired yet" (actAs fx.agent) (exerciseCmd grantCid AccessGrant_CloseExpired with closer = fx.agent)
+  failsWith "has not expired yet" (actAs fx.auditor) (exerciseCmd grantCid AccessGrant_CloseExpired with closer = fx.auditor)
+  failsWith "has not expired yet" (actAs fx.treasurer) (exerciseCmd grantCid AccessGrant_CloseExpired with closer = fx.treasurer)
+  failsWith notAuthorized (actAs fx.agent) (exerciseCmd grantCid AccessGrant_Revoke)
+  view <- auditorView fx
+  assertMsg "the auditor still sees both records" (view == nothingVisible with shared = 2; grants = 1)
+
+-- | The treasurer can revoke at any time.
+test_l9_treasurer_revoke_any_time : Script ()
+test_l9_treasurer_revoke_any_time = do
+  AuditFixture fx decision1 outcome1 _ <- auditSetup
+  requestCid <- request fx "audit-1" ["decision/2026-09/1", "outcome/2026-09/1"]
+  now <- getTime
+  grantCid <- submit fx.treasurer $ grant fx requestCid (addRelTime now (days 7)) [RefDecision decision1, RefOutcome outcome1]
+  closedCid <- submit fx.treasurer $ exerciseCmd grantCid AccessGrant_Revoke
+  Some closed <- queryContractId fx.auditor closedCid
+  assertMsg "revoked by the treasurer" (closed.reason == "revoked" && closed.closedBy == fx.treasurer)
+  view <- auditorView fx
+  assertMsg "the auditor lost access" (view == nothingVisible with closed = 1)
+
+-- A7 -------------------------------------------------------------------------
+
+-- | The agent cannot grant audit access, in any form.
+test_a7_agent_cannot_grant_audit_access : Script ()
+test_a7_agent_cannot_grant_audit_access = do
+  AuditFixture fx decision1 _ _ <- auditSetup
+  requestCid <- request fx "audit-1" ["decision/2026-09/1"]
+  now <- getTime
+  let expires = addRelTime now (days 7)
+  failsWith notAuthorized (actAs fx.agent) (grant fx requestCid expires [RefDecision decision1])
+  Some d <- queryContractId fx.agent decision1
+  failsWith notAuthorized (actAs fx.agent) $ createCmd SharedRecord with
+    treasury = fx.treasury
+    treasurer = fx.treasurer
+    agent = fx.agent
+    auditor = fx.auditor
+    grantId = "grant/forged"
+    recordId = "decision/2026-09/1"
+    evidence = EvDecision d
+    sharedAt = now
+    expiresAt = expires
+  view <- auditorView fx
+  assertMsg "the auditor sees nothing" (view == nothingVisible)
