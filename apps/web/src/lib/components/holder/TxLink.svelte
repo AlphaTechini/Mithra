@@ -10,9 +10,21 @@
 
   /** `context` names the payment for assistive technology, e.g. the cycle label. */
   let { link, context }: { link: TxLink; context: string } = $props();
+
+  /** An external link is an anchor only for http(s): `javascript:` and the like never become one. */
+  const safeExternal = $derived.by((): boolean => {
+    try {
+      const { protocol } = new URL(link.href);
+      return protocol === 'https:' || protocol === 'http:';
+    } catch {
+      return false;
+    }
+  });
 </script>
 
-{#if link.external}
+{#if link.external && !safeExternal}
+  <span class="muted">Explorer link unavailable</span>
+{:else if link.external}
   <!-- External explorer URL: not an app route, so it is not resolved against the app base. -->
   <!-- eslint-disable svelte/no-navigation-without-resolve -->
   <a
@@ -28,3 +40,9 @@
     >View transaction</a
   >
 {/if}
+
+<style>
+  .muted {
+    color: var(--color-text-muted);
+  }
+</style>

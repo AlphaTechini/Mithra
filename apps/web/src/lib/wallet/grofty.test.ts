@@ -153,9 +153,22 @@ describe('balance', () => {
     ).toBe('7');
     expect(await balanceOf({ CC: '3.25' })).toBe('3.25');
     expect(await balanceOf({ balances: [{ tokenSymbol: 'CC', available: '99' }] })).toBe('99');
-    expect(await balanceOf({ amount: 42 })).toBe('42');
+    expect(await balanceOf({ amount: '42' })).toBe('42');
     expect(await balanceOf('1,5')).toBeNull();
     expect(await balanceOf({ unrelated: true })).toBeNull();
+  });
+
+  it('accepts amounts only as decimal strings and rejects numbers', async () => {
+    expect(await balanceOf({ amount: 42 })).toBeNull();
+    expect(await balanceOf(42)).toBeNull();
+    expect(await balanceOf(1e-7)).toBeNull();
+    expect(await balanceOf([{ symbol: 'CC', amount: 0.1 + 0.2 }])).toBeNull();
+    expect(await balanceOf({ CC: 1.2345678901234567e19 })).toBeNull();
+    // The same amount as a string keeps every digit.
+    expect(await balanceOf({ amount: '0.0000001' })).toBe('0.0000001');
+    expect(await balanceOf('12345678901234567890.1234567890')).toBe(
+      '12345678901234567890.1234567890',
+    );
   });
 
   it('asks the wallet for the balance resource', async () => {

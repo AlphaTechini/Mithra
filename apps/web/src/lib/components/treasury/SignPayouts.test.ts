@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MainnetPayout, MainnetPayoutsResponse } from '@mithra/shared';
 import { sessionStore } from '$lib/stores/session.svelte';
@@ -365,6 +365,72 @@ describe('Sign payouts in Grofty', () => {
       await fireEvent.click(screen.getByRole('button', { name: 'Record payment' }));
       await waitFor(() => expect(screen.getByText('Paid', { exact: true })).toBeInTheDocument());
       expect(window.localStorage.getItem('mithra.unrecorded.2026-09')).toBe('{}');
+    });
+
+    it('remembers the transfer as soon as Grofty executed it, so a reload while the outcome is read cannot pay twice', async () => {
+      const hang = deferred<unknown>();
+      const provider = healthyGrofty({ update: () => hang.promise });
+      useProvider(provider);
+      const { api } = await mount(list([A()]), {
+        [RECORD('A')]: () => list([paid(A(), '1220deadbeef')]),
+      });
+      await fireEvent.click(await connectButton());
+      await screen.findByText('Grofty Wallet connected');
+      await fireEvent.click(payButton('A'));
+      await waitFor(() => expect(provider.callsTo('prepareExecuteAndWait')).toHaveLength(1));
+      // Grofty sent it; Mithra has not recorded it, and the outcome is still being read.
+      await waitFor(() =>
+        expect(
+          JSON.parse(window.localStorage.getItem('mithra.unrecorded.2026-09') ?? '{}'),
+        ).toEqual({ 'pay-A': { updateId: '1220deadbeef', outcome: 'unknown' } }),
+      );
+      expect(api.callsTo(RECORD('A'))).toHaveLength(0);
+
+      // The treasurer reloads the page: the row offers recording, not paying.
+      cleanup();
+      render(SignPayouts, { props: { cycleId: '2026-09' } });
+      expect(
+        await screen.findByText(/Grofty sent this transfer, but Mithra has not recorded it yet/),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Pay Holder A in Grofty' })).toBeNull();
+      await fireEvent.click(screen.getByRole('button', { name: 'Record payment' }));
+      await waitFor(() => expect(api.callsTo(RECORD('A'))).toHaveLength(1));
+      expect(api.callsTo(RECORD('A'))[0]?.body).toEqual({
+        updateId: '1220deadbeef',
+        outcome: 'unknown',
+      });
+      expect(provider.callsTo('prepareExecuteAndWait')).toHaveLength(1);
+      await waitFor(() =>
+        expect(window.localStorage.getItem('mithra.unrecorded.2026-09')).toBe('{}'),
+      );
+    });
+
+    it('updates the remembered transfer with the real outcome before recording', async () => {
+      useProvider(
+        healthyGrofty({
+          update: {
+            events: [
+              {
+                created: {
+                  templateId: 'pkg:Splice.Wallet.TransferOffer:TransferOffer',
+                  createArgument: { receiver: 'a-main::1220aabbccddeeff' },
+                },
+              },
+            ],
+          },
+        }),
+      );
+      await mount(list([A()]), {
+        [RECORD('A')]: () =>
+          errorResponse(503, 'ledger_unavailable', 'The ledger is not reachable right now.'),
+      });
+      await fireEvent.click(await connectButton());
+      await screen.findByText('Grofty Wallet connected');
+      await fireEvent.click(payButton('A'));
+      await screen.findByText(/Grofty sent this transfer, but Mithra could not record it/);
+      expect(JSON.parse(window.localStorage.getItem('mithra.unrecorded.2026-09') ?? '{}')).toEqual({
+        'pay-A': { updateId: '1220deadbeef', outcome: 'pending' },
+      });
     });
 
     it('"Mark as accepted" records the same transfer as completed once the holder accepted it', async () => {

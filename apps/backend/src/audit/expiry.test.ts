@@ -1,4 +1,4 @@
-import { EventBus, type Published } from '../events/bus';
+import { EventBus, inAudience, type Audience, type Published } from '../events/bus';
 import { describe, expect, it, vi } from 'vitest';
 import type { Ledger } from './../ledger';
 import type { AccessGrant, Contract } from '../ledger';
@@ -84,7 +84,7 @@ function setup(
   const bus = new EventBus();
   const published: Published[] = [];
   bus.subscribe((p) => published.push(p));
-  const activity: { kind: string; text: string; actorParty: string }[] = [];
+  const activity: { kind: string; text: string; actorParty: string; audience?: Audience }[] = [];
   const fixed = options.now;
   const now: () => Date =
     typeof fixed === 'function' ? fixed : () => fixed ?? new Date('2026-10-08T12:00:00Z');
@@ -94,7 +94,12 @@ function setup(
     names: { name: (id) => Promise.resolve(id === 'auditor::1' ? 'Audit Firm' : id) },
     activity: {
       record: (input) => {
-        activity.push({ kind: input.kind, text: input.text, actorParty: input.actorParty });
+        activity.push({
+          kind: input.kind,
+          text: input.text,
+          actorParty: input.actorParty,
+          ...(input.audience ? { audience: input.audience } : {}),
+        });
         return Promise.resolve({} as never);
       },
     },
@@ -128,12 +133,26 @@ describe('grant expiry', () => {
       kind: 'grant.closed',
       text: 'Access for Audit Firm ended 2026-10-08 (expired)',
       actorParty: 'agent::1',
+      audience: { roles: ['treasurer'] },
     });
     expect(published).toHaveLength(2);
     expect(published[0]).toEqual({
       event: { type: 'audit', requestId: 'req-g-old' },
       audience: { parties: ['treasurer::1', 'auditor::1'] },
     });
+  });
+
+  it('writes the grant.closed entry for the treasurer only, like the audit service does', async () => {
+    const { expiry, activity } = setup([grant('g', '2026-10-01T00:00:00Z')]);
+    await expiry.closeExpiredNow();
+    expiry.stop();
+    const audience = activity[0]?.audience;
+    expect(audience).toEqual({ roles: ['treasurer'] });
+    // Approvers, holders and the auditor do not receive it.
+    expect(inAudience(audience as Audience, 'treasurer::1', ['treasurer'])).toBe(true);
+    expect(inAudience(audience as Audience, 'approver::1', ['approver'])).toBe(false);
+    expect(inAudience(audience as Audience, 'holder::1', ['holder'])).toBe(false);
+    expect(inAudience(audience as Audience, 'auditor::1', ['auditor'])).toBe(false);
   });
 
   it('does nothing when nothing has expired', async () => {

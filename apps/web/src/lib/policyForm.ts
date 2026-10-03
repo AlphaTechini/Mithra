@@ -53,8 +53,9 @@ export function toForm(fields: PolicyFields): PolicyForm {
 }
 
 const POSITIVE_INT = /^[1-9]\d{0,5}$/;
-const POSITIVE_DECIMAL = (v: string): boolean =>
-  DecimalString.safeParse(v).success && /[1-9]/.test(v);
+/** A decimal string above zero. A leading minus is never accepted ("-5" has a digit 1 to 9 in it). */
+export const POSITIVE_DECIMAL = (v: string): boolean =>
+  DecimalString.safeParse(v).success && !v.startsWith('-') && /[1-9]/.test(v);
 const NON_NEGATIVE_DECIMAL = (v: string): boolean =>
   DecimalString.safeParse(v).success && !v.startsWith('-');
 

@@ -267,7 +267,7 @@ describe('auditor workspace: requests and evidence room', () => {
     expect(exportLink).toHaveAttribute('download');
   });
 
-  it('answers 410 with "Access ended {date}" and removes the records', async () => {
+  it('answers 410 with "Access ended" and removes the records, without the scheduled expiry as a date', async () => {
     const api = await stub({
       'GET /api/audit/requests': { requests: [grantedView()] },
       'GET /api/audit/grants/grant-1/evidence': () =>
@@ -276,12 +276,43 @@ describe('auditor workspace: requests and evidence room', () => {
     render(Page);
     await fireEvent.click(await screen.findByRole('button', { name: /Show all Q3/ }));
 
-    expect(await screen.findByText('Access ended Oct 8')).toBeInTheDocument();
+    // The request is still marked granted, with an expiry of Oct 8: it ended early, so that date
+    // is not shown as when access ended.
+    expect(await screen.findByText('Access ended')).toBeInTheDocument();
+    expect(screen.queryByText(/Access ended Oct/)).toBeNull();
     expect(screen.getByText('This access grant has ended.')).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Evidence room' })).not.toBeInTheDocument();
     expect(screen.queryByText('Holder A')).not.toBeInTheDocument();
     // The list is reloaded so the status catches up with the server.
     await waitFor(() => expect(api.callsTo('GET /api/audit/requests').length).toBeGreaterThan(1));
+  });
+
+  it('shows the date once the server supplies closedAt for a request ended early', async () => {
+    let revoked = false;
+    await stub({
+      'GET /api/audit/requests': () => ({
+        requests: [
+          revoked
+            ? grantedView({
+                status: 'ended',
+                grant: {
+                  ...grantedView().grant!,
+                  closedAt: '2026-10-03T08:00:00Z',
+                  closedReason: 'revoked',
+                },
+              })
+            : grantedView(),
+        ],
+      }),
+      'GET /api/audit/grants/grant-1/evidence': () => {
+        revoked = true;
+        return errorResponse(410, 'access_ended', 'This access grant has ended.');
+      },
+    });
+    render(Page);
+    await fireEvent.click(await screen.findByRole('button', { name: /Show all Q3/ }));
+    expect((await screen.findAllByText('Access ended Oct 3')).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Access ended Oct 8/)).toBeNull();
   });
 
   it('refetches the evidence room when an audit event arrives and drops the records on 410', async () => {

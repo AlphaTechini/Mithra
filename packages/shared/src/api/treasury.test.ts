@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PolicyFieldsSchema, RunCycleRequestSchema } from './treasury';
+import { PolicyFieldsSchema, RunCycleRequestSchema, TxLinkSchema } from './treasury';
 
 const policy = {
   cap: '5000',
@@ -58,5 +58,37 @@ describe('RunCycleRequestSchema', () => {
     expect(RunCycleRequestSchema.safeParse({ total: '-0.5', cycleId: '2026-09' }).success).toBe(
       false,
     );
+  });
+});
+
+describe('TxLinkSchema', () => {
+  it('accepts an in-app link and an http(s) explorer link', () => {
+    expect(
+      TxLinkSchema.safeParse({ updateId: 'u1', href: '/holder/tx/u1', external: false }).success,
+    ).toBe(true);
+    expect(
+      TxLinkSchema.safeParse({
+        updateId: 'u1',
+        href: 'https://explorer.example/tx/u1',
+        external: true,
+      }).success,
+    ).toBe(true);
+    expect(
+      TxLinkSchema.safeParse({
+        updateId: 'u1',
+        href: 'http://localhost:8080/tx/u1',
+        external: true,
+      }).success,
+    ).toBe(true);
+  });
+
+  it.each([
+    'javascript:alert(1)',
+    'data:text/html,x',
+    'ftp://explorer.example/u1',
+    '/relative',
+    '',
+  ])('rejects %j as an external link', (href) => {
+    expect(TxLinkSchema.safeParse({ updateId: 'u1', href, external: true }).success).toBe(false);
   });
 });

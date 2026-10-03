@@ -116,7 +116,10 @@
       const saved = remembered();
       for (const p of payouts.payouts) {
         const note = saved[p.paymentId];
-        if (p.status === 'to-sign' && note && rows[p.paymentId] === undefined) {
+        if (note && p.status !== 'to-sign') {
+          // The server has it now; the remembered copy is stale.
+          remember(p.paymentId, null);
+        } else if (note && rows[p.paymentId] === undefined) {
           rows[p.paymentId] = {
             kind: 'unrecorded',
             ...note,
@@ -208,6 +211,17 @@
 
   async function pay(payout: MainnetPayout): Promise<void> {
     if (!canSign || busyId !== null) return;
+    // A transfer already sent for this payout is recorded, never sent again.
+    const sentBefore = remembered()[payout.paymentId];
+    if (sentBefore) {
+      rows[payout.paymentId] = {
+        kind: 'unrecorded',
+        ...sentBefore,
+        message:
+          'Grofty sent this transfer, but Mithra has not recorded it yet. Record it; do not send it again.',
+      };
+      return;
+    }
     rows[payout.paymentId] = { kind: 'signing' };
     let sent: grofty.GroftyTransfer;
     try {
@@ -221,7 +235,16 @@
       rows[payout.paymentId] = { kind: 'error', message: error.message, helpUrl: error.helpUrl };
       return;
     }
-    const outcome = await grofty.transferOutcome(sent.updateId, payout.receiver);
+    // The money has moved. Remember it before anything else can fail or the page can reload, so a
+    // reload offers to record this transfer instead of paying again.
+    remember(payout.paymentId, { updateId: sent.updateId, outcome: 'unknown' });
+    let outcome: MainnetTransferOutcome = 'unknown';
+    try {
+      outcome = await grofty.transferOutcome(sent.updateId, payout.receiver);
+    } catch {
+      // The transfer executed; an unreadable outcome is recorded as unknown.
+    }
+    remember(payout.paymentId, { updateId: sent.updateId, outcome });
     await record(payout, { updateId: sent.updateId, outcome });
   }
 

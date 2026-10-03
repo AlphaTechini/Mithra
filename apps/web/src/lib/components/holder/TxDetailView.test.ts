@@ -1,7 +1,8 @@
 import '@testing-library/jest-dom/vitest';
-import { render, screen, within } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sessionStore } from '$lib/stores/session.svelte';
+import { deferred } from '../../../test/treasury/stub';
 import { configFor, HOLDER_A, HOLDER_B, holderSession, json, stubApi } from './fixtures';
 import TxDetailView from './TxDetailView.svelte';
 
@@ -63,5 +64,64 @@ describe('TxDetailView', () => {
     });
     render(TxDetailView, { updateId: '1220deadbeef', viewer: 'holder' });
     expect(await screen.findByRole('alert')).toHaveTextContent('No such transaction.');
+  });
+  it('loads again when the update id changes', async () => {
+    stubApi({
+      'GET /api/tx/1220aaaa': { ...tx, updateId: '1220aaaa' },
+      'GET /api/tx/1220bbbb': { ...tx, updateId: '1220bbbb' },
+    });
+    const view = render(TxDetailView, { updateId: '1220aaaa', viewer: 'holder' });
+    expect(await screen.findByText('1220aaaa')).toBeInTheDocument();
+    await view.rerender({ updateId: '1220bbbb', viewer: 'holder' });
+    expect(await screen.findByText('1220bbbb')).toBeInTheDocument();
+    expect(screen.queryByText('1220aaaa')).toBeNull();
+  });
+
+  it('applies only the latest response when the id changes while an older request is out', async () => {
+    const slow = deferred<unknown>();
+    stubApi({
+      'GET /api/tx/1220aaaa': () => slow.promise.then((body) => json(body)),
+      'GET /api/tx/1220bbbb': { ...tx, updateId: '1220bbbb' },
+    });
+    const view = render(TxDetailView, { updateId: '1220aaaa', viewer: 'holder' });
+    await view.rerender({ updateId: '1220bbbb', viewer: 'holder' });
+    expect(await screen.findByText('1220bbbb')).toBeInTheDocument();
+    slow.resolve({ ...tx, updateId: '1220aaaa' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText('1220aaaa')).toBeNull();
+    expect(screen.getByText('1220bbbb')).toBeInTheDocument();
+  });
+
+  it('a failed retry keeps showing the error, and a retry that works replaces it', async () => {
+    let attempts = 0;
+    stubApi({
+      'GET /api/tx/1220deadbeef': () =>
+        ++attempts < 3
+          ? json({ error: { code: 'not_found', message: 'No such transaction.' } }, 404)
+          : json(tx),
+    });
+    render(TxDetailView, { updateId: '1220deadbeef', viewer: 'holder' });
+    expect(await screen.findByRole('alert')).toHaveTextContent('No such transaction.');
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(attempts).toBe(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await screen.findByRole('alert')).toHaveTextContent('No such transaction.');
+    expect(screen.queryByText('1220deadbeef')).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('1220deadbeef')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('after an id change the old transaction is gone while the new one loads or fails', async () => {
+    stubApi({
+      'GET /api/tx/1220aaaa': { ...tx, updateId: '1220aaaa' },
+      'GET /api/tx/1220cccc': () =>
+        json({ error: { code: 'not_found', message: 'No such transaction.' } }, 404),
+    });
+    const view = render(TxDetailView, { updateId: '1220aaaa', viewer: 'holder' });
+    expect(await screen.findByText('1220aaaa')).toBeInTheDocument();
+    await view.rerender({ updateId: '1220cccc', viewer: 'holder' });
+    expect(await screen.findByRole('alert')).toHaveTextContent('No such transaction.');
+    expect(screen.queryByText('1220aaaa')).toBeNull();
   });
 });

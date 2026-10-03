@@ -187,4 +187,110 @@ describe('agent conversation', () => {
     });
     expect(agentStore.busy).toBe(false);
   });
+  it('retry after a failed send sends the same prompt again and does not reload the conversation', async () => {
+    let attempts = 0;
+    const api = stubApi({
+      ...sessionRoutes('treasurer'),
+      'GET /api/agent/messages': { suggestions: [], messages: [] },
+      'POST /api/agent/messages': () => {
+        attempts += 1;
+        return attempts === 1
+          ? new Response(
+              JSON.stringify({ error: { code: 'agent_failed', message: 'The agent stopped.' } }),
+              { status: 500, headers: { 'content-type': 'application/json' } },
+            )
+          : {
+              user: message({ id: 'u1', role: 'user', text: 'Distribute 1,200 CC.' }),
+              reply: message({ id: 'a1', text: 'Done.' }),
+            };
+      },
+    });
+    await sessionStore.load();
+    await agentStore.load();
+    await agentStore.send('Distribute 1,200 CC.');
+    expect(agentStore.error).not.toBeNull();
+
+    await agentStore.retry();
+    expect(api.callsTo('POST /api/agent/messages').map((c) => c.body)).toEqual([
+      { text: 'Distribute 1,200 CC.' },
+      { text: 'Distribute 1,200 CC.' },
+    ]);
+    expect(api.callsTo('GET /api/agent/messages')).toHaveLength(1);
+    expect(agentStore.error).toBeNull();
+    expect(agentStore.messages.map((m) => m.id)).toEqual(['u1', 'a1']);
+
+    // Nothing is left to resend once it worked: the next retry would reload.
+    await agentStore.retry();
+    expect(api.callsTo('POST /api/agent/messages')).toHaveLength(2);
+    expect(api.callsTo('GET /api/agent/messages')).toHaveLength(2);
+  });
+
+  it('retry with no failed prompt reloads the conversation, and reset forgets a failed prompt', async () => {
+    let fail = true;
+    const api = stubApi({
+      ...sessionRoutes('treasurer'),
+      'GET /api/agent/messages': () =>
+        fail
+          ? new Response(JSON.stringify({ error: { code: 'internal', message: 'No.' } }), {
+              status: 500,
+              headers: { 'content-type': 'application/json' },
+            })
+          : { suggestions: [], messages: [] },
+      'POST /api/agent/messages': () =>
+        new Response(JSON.stringify({ error: { code: 'agent_failed', message: 'Stopped.' } }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        }),
+    });
+    await sessionStore.load();
+    await agentStore.load();
+    expect(agentStore.error).not.toBeNull();
+    fail = false;
+    await agentStore.retry();
+    expect(agentStore.error).toBeNull();
+    expect(api.callsTo('POST /api/agent/messages')).toHaveLength(0);
+
+    await agentStore.send('lost?');
+    expect(agentStore.error).not.toBeNull();
+    agentStore.reset();
+    await agentStore.load();
+    await agentStore.retry();
+    expect(api.callsTo('POST /api/agent/messages')).toHaveLength(1);
+  });
+
+  it('an action for an unknown message is shown only while a send is running', async () => {
+    const reply = deferred<unknown>();
+    stubApi({
+      ...sessionRoutes('treasurer'),
+      'GET /api/agent/messages': { suggestions: [], messages: [] },
+      'POST /api/agent/messages': () => reply.promise,
+    });
+    await sessionStore.load();
+    await agentStore.load();
+
+    // No send is running: the card would be an orphan, so it is ignored.
+    FakeEventSource.latest.emit({ type: 'agent', messageId: 'ghost', action: CARD });
+    await Promise.resolve();
+    expect(agentStore.rows).toEqual([]);
+
+    const sending = agentStore.send('hello');
+    await waitFor(() => expect(agentStore.busy).toBe(true));
+    FakeEventSource.latest.emit({ type: 'agent', messageId: 'a1', action: CARD });
+    await waitFor(() => expect(agentStore.rows.some((r) => r.role === 'tool')).toBe(true));
+    reply.resolve({
+      user: message({ id: 'u1', role: 'user', text: 'hello' }),
+      reply: message({ id: 'a1', text: 'Done.', actions: [CARD] }),
+    });
+    await sending;
+    expect(agentStore.rows.filter((r) => r.role === 'tool')).toHaveLength(1);
+
+    // Once the send is over, a late event for an unknown message adds nothing.
+    FakeEventSource.latest.emit({
+      type: 'agent',
+      messageId: 'late',
+      action: { ...CARD, id: 'act-2' },
+    });
+    await Promise.resolve();
+    expect(agentStore.rows.filter((r) => r.role === 'tool')).toHaveLength(1);
+  });
 });

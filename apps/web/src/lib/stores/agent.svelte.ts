@@ -62,6 +62,8 @@ interface AgentState {
   busy: boolean;
   error: unknown;
   errorWhat: string;
+  /** The prompt whose send failed, kept so Retry sends it again instead of losing it. */
+  failedPrompt: string | null;
 }
 
 const state = $state<AgentState>({
@@ -74,6 +76,7 @@ const state = $state<AgentState>({
   busy: false,
   error: null,
   errorWhat: '',
+  failedPrompt: null,
 });
 
 let unsubscribe: (() => void) | null = null;
@@ -87,7 +90,8 @@ function upsertAction(list: ActionCardView[], action: ActionCardView): void {
 function onAgentEvent(event: { messageId: string; action: ActionCardView }): void {
   const message = state.messages.find((m) => m.id === event.messageId);
   if (message) upsertAction(message.actions, event.action);
-  else upsertAction(state.liveActions, event.action);
+  // Only a running send shows live cards: the reply replaces them. Otherwise one would be an orphan.
+  else if (state.busy) upsertAction(state.liveActions, event.action);
 }
 
 export const agentStore = {
@@ -139,8 +143,14 @@ export const agentStore = {
     }
   },
 
-  /** Reload after an error. */
+  /** After a failed send, sends the same prompt again; after any other error, reloads. */
   async retry(): Promise<void> {
+    const prompt = state.failedPrompt;
+    if (prompt !== null) {
+      state.failedPrompt = null;
+      await agentStore.send(prompt);
+      return;
+    }
     state.error = null;
     state.loaded = false;
     await agentStore.load();
@@ -152,6 +162,7 @@ export const agentStore = {
     if (!value || state.busy) return;
     state.busy = true;
     state.error = null;
+    state.failedPrompt = null;
     state.pendingText = value;
     state.liveActions = [];
     try {
@@ -162,6 +173,7 @@ export const agentStore = {
     } catch (e) {
       state.error = e;
       state.errorWhat = "The agent couldn't answer.";
+      state.failedPrompt = value;
     } finally {
       state.pendingText = null;
       state.busy = false;
@@ -180,5 +192,6 @@ export const agentStore = {
     state.loaded = false;
     state.busy = false;
     state.error = null;
+    state.failedPrompt = null;
   },
 };

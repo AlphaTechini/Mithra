@@ -53,13 +53,17 @@
     proposing = true;
     proposeFailure = null;
     requestFailure = null;
+    // The question this proposal is for. If it changes while the request is out, the answer is for
+    // a question that is no longer on screen, so it is dropped rather than shown for the new one.
+    const asked = trimmed;
     try {
-      const result = await draftScope(trimmed);
+      const result = await draftScope(asked);
+      if (asked !== trimmed) return;
       draft = result;
-      draftedQuestion = trimmed;
+      draftedQuestion = asked;
       rows = result.items.map((item) => ({ item, keep: true, reason: item.reason }));
     } catch (e) {
-      proposeFailure = describeError(e, "Couldn't propose a scope.");
+      if (asked === trimmed) proposeFailure = describeError(e, "Couldn't propose a scope.");
     } finally {
       proposing = false;
     }

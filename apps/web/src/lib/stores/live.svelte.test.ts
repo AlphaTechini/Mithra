@@ -1,3 +1,4 @@
+import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { live } from './live.svelte';
 import { sessionStore } from './session.svelte';
@@ -98,6 +99,53 @@ describe('live events', () => {
     vi.advanceTimersByTime(1000);
     FakeEventSource.latest.open();
     expect(onReconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('after a party switch the first open is not a reconnect, so no reconnect handler fires', async () => {
+    stubApi({
+      ...sessionRoutes('treasurer'),
+      'POST /api/session/switch': {
+        network: 'localnet',
+        testMode: true,
+        signedIn: true,
+        party: {
+          partyId: 'approver1::1220b1',
+          displayName: 'Approver 1',
+          roles: ['approver'],
+          primaryRole: 'approver',
+        },
+      },
+    });
+    await sessionStore.load();
+    live.subscribe('cycle', vi.fn());
+    const onReconnect = vi.fn();
+    live.onReconnect(onReconnect);
+    FakeEventSource.latest.open();
+
+    await sessionStore.switchParty('approver1::1220b1');
+    flushSync();
+    expect(FakeEventSource.instances).toHaveLength(2);
+    FakeEventSource.latest.open();
+    expect(onReconnect).not.toHaveBeenCalled();
+
+    // A real drop for the new party is still a reconnect.
+    FakeEventSource.latest.fail();
+    vi.advanceTimersByTime(1000);
+    FakeEventSource.latest.open();
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stream closed on purpose and opened again is a first open, not a reconnect', async () => {
+    await signedIn();
+    live.subscribe('cycle', vi.fn());
+    const onReconnect = vi.fn();
+    live.onReconnect(onReconnect);
+    FakeEventSource.latest.open();
+    live.stop();
+    live.subscribe('activity', vi.fn());
+    expect(FakeEventSource.instances).toHaveLength(2);
+    FakeEventSource.latest.open();
+    expect(onReconnect).not.toHaveBeenCalled();
   });
 
   it('does not connect when nobody is signed in', () => {

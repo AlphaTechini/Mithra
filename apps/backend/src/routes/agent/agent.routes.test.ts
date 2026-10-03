@@ -26,7 +26,7 @@ interface Calls {
   scope: string[];
 }
 
-async function build(limit = 20): Promise<{ app: FastifyInstance; calls: Calls }> {
+async function build(limit = 20, draftLimit = 10): Promise<{ app: FastifyInstance; calls: Calls }> {
   const calls: Calls = { respond: [], draft: [], scope: [] };
   const message = (role: 'user' | 'assistant', text: string) => ({
     id: String(calls.respond.length),
@@ -55,6 +55,7 @@ async function build(limit = 20): Promise<{ app: FastifyInstance; calls: Calls }
   });
   agentRoutes(app, {
     messageLimit: { limit, windowMs: 60_000 },
+    draftLimit: { limit: draftLimit, windowMs: 60_000 },
     agent: {
       respond(input): Promise<SendAgentMessageResponse> {
         calls.respond.push(input);
@@ -209,6 +210,86 @@ describe('agent routes', () => {
     }
     expect(last).toBe(429);
     expect(built.calls.respond).toHaveLength(20);
+  });
+
+  it('rate limits policy drafts per party and answers 429 too_many_requests', async () => {
+    const built = await build(20, 2);
+    app = built.app;
+    const draft = (party: string) =>
+      app!.inject({
+        method: 'POST',
+        url: '/api/policy/draft',
+        headers: as(party),
+        payload: { prompt: 'Pay monthly' },
+      });
+    expect((await draft('treasurer::1')).statusCode).toBe(200);
+    expect((await draft('treasurer::1')).statusCode).toBe(200);
+    const limited = await draft('treasurer::1');
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toMatchObject({ error: { code: 'too_many_requests' } });
+    // The language model was not called for the refused request.
+    expect(built.calls.draft).toHaveLength(2);
+  });
+
+  it('rate limits scope drafts per party, including a party with no role', async () => {
+    const built = await build(20, 2);
+    app = built.app;
+    const draft = (party: string) =>
+      app!.inject({
+        method: 'POST',
+        url: '/api/audit/scope/draft',
+        headers: as(party),
+        payload: { question: 'Show Q3' },
+      });
+    expect((await draft('prospect::1')).statusCode).toBe(200);
+    expect((await draft('prospect::1')).statusCode).toBe(200);
+    const limited = await draft('prospect::1');
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toMatchObject({ error: { code: 'too_many_requests' } });
+    expect(built.calls.scope).toHaveLength(2);
+    // Another party has its own allowance, and the policy route and the messages route are not shared with it.
+    expect((await draft('auditor::1')).statusCode).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/policy/draft',
+          headers: as('prospect::1'),
+          payload: { prompt: 'x' },
+        })
+      ).statusCode,
+    ).toBe(403);
+  });
+
+  it('defaults to 10 drafts per minute per party on each draft route', async () => {
+    const built = await build();
+    app = built.app;
+    let last = 0;
+    for (let i = 0; i < 11; i += 1) {
+      last = (
+        await app.inject({
+          method: 'POST',
+          url: '/api/audit/scope/draft',
+          headers: as('auditor::1'),
+          payload: { question: 'Show Q3' },
+        })
+      ).statusCode;
+    }
+    expect(last).toBe(429);
+    expect(built.calls.scope).toHaveLength(10);
+    last = 0;
+    for (let i = 0; i < 11; i += 1) {
+      last = (
+        await app.inject({
+          method: 'POST',
+          url: '/api/policy/draft',
+          headers: as('treasurer::1'),
+          payload: { prompt: 'Pay monthly' },
+        })
+      ).statusCode;
+    }
+    expect(last).toBe(429);
+    expect(built.calls.draft).toHaveLength(10);
   });
 
   it('POST /api/policy/draft: treasurer only; passes the prompt; relays 503 with the reason', async () => {

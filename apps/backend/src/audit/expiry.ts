@@ -1,5 +1,5 @@
 import type { ActivityLog } from '../activity/log';
-import type { EventBus } from '../events/bus';
+import { TREASURER_ONLY, type EventBus } from '../events/bus';
 import type { Ledger } from '../ledger';
 import type { PartyNames } from '../parties/names';
 
@@ -79,6 +79,9 @@ export function startGrantExpiry(deps: GrantExpiryDeps): GrantExpiry {
           text: `Access for ${auditorName} ended ${isoDay(now())} (expired)`,
           link: '/app/audit',
           detail: { auditor, requestId: grant.payload.requestId, reason: 'expired' },
+          // Without an audience the entry goes to the whole treasury team, approvers included.
+          // Like the audit service's entries, only the treasurer reads this one.
+          audience: TREASURER_ONLY,
         });
         deps.bus.publish(
           { type: 'audit', requestId: grant.payload.requestId },

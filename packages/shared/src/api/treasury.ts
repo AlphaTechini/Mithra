@@ -15,11 +15,17 @@ export const PartyRefSchema = z.object({ partyId: PartyId, displayName: z.string
 export type PartyRef = z.infer<typeof PartyRefSchema>;
 
 /** A link to a payment's transaction: explorer on MainNet, in-app detail on LocalNet (P3). */
-export const TxLinkSchema = z.object({
-  updateId: z.string(),
-  href: z.string(),
-  external: z.boolean(),
-});
+export const TxLinkSchema = z
+  .object({
+    updateId: z.string(),
+    href: z.string(),
+    external: z.boolean(),
+  })
+  // An external link is shown as an anchor: only http(s) may be one (never `javascript:`).
+  .refine((link) => !link.external || /^https?:\/\/[^\s]+$/i.test(link.href), {
+    message: 'An external link must be an http(s) URL',
+    path: ['href'],
+  });
 export type TxLink = z.infer<typeof TxLinkSchema>;
 
 // ---------------------------------------------------------------------------------------------

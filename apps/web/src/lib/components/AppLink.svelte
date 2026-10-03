@@ -11,7 +11,9 @@
   let { link, children }: { link: string; children: Snippet } = $props();
 
   const external = $derived(/^https?:\/\//.test(link));
-  const path = $derived((link.startsWith('/') ? link : `/${link}`) as Pathname);
+  // One leading slash, always: "//evil.example/x" (or "/\\evil.example") would otherwise resolve
+  // to a cross-origin URL. Whatever the server sent, an in-app link stays on this origin.
+  const path = $derived(`/${link.replace(/^[/\\\s]+/, '')}` as Pathname);
 </script>
 
 {#if external}

@@ -23,6 +23,8 @@ export interface AgentRouteOptions {
   scope: ScopeDrafter;
   /** Messages per party per window. Default 20 per minute. */
   messageLimit?: { limit: number; windowMs: number; now?: () => number };
+  /** Drafts (policy and audit scope) per party per window, each route on its own. Default 10 per minute. */
+  draftLimit?: { limit: number; windowMs: number; now?: () => number };
 }
 
 /** Shown with a scope the rules drafted because the model could not (A11). */
@@ -59,6 +61,17 @@ function partyOf(request: FastifyRequest): string {
 
 export function agentRoutes(app: FastifyInstance, options: AgentRouteOptions): void {
   const limiter = new RateLimiter(options.messageLimit ?? { limit: 20, windowMs: 60_000 });
+  // Both draft routes call the language model, like the messages route: each has its own
+  // per-party allowance. The scope route is open to any signed-in party, so it needs one most.
+  const draftLimit = options.draftLimit ?? { limit: 10, windowMs: 60_000 };
+  const policyLimiter = new RateLimiter(draftLimit);
+  const scopeLimiter = new RateLimiter(draftLimit);
+  const tooManyDrafts = (): ApiError =>
+    new ApiError(
+      429,
+      'too_many_requests',
+      'You are asking for drafts too fast. Wait a moment, then try again.',
+    );
 
   app.get(
     '/api/agent/messages',
@@ -92,8 +105,10 @@ export function agentRoutes(app: FastifyInstance, options: AgentRouteOptions): v
     '/api/policy/draft',
     { preHandler: requireRole('treasurer') },
     async (request): Promise<PolicyDraft> => {
+      const partyId = partyOf(request);
       const body = parse(DraftPolicyRequestSchema, request.body);
-      return options.drafter.draftPolicy(body.prompt, partyOf(request));
+      if (!policyLimiter.allow(partyId)) throw tooManyDrafts();
+      return options.drafter.draftPolicy(body.prompt, partyId);
     },
   );
 
@@ -101,7 +116,9 @@ export function agentRoutes(app: FastifyInstance, options: AgentRouteOptions): v
     '/api/audit/scope/draft',
     { preHandler: requireRoleOrNone('auditor', 'treasurer') },
     async (request): Promise<ScopeDraft> => {
+      const partyId = partyOf(request);
       const body = parse(AuditScopeDraftRequestSchema, request.body);
+      if (!scopeLimiter.allow(partyId)) throw tooManyDrafts();
       return scopeDraftView(await options.scope.draft(body.question));
     },
   );

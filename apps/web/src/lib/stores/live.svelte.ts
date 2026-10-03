@@ -54,6 +54,9 @@ function close(): void {
   source = null;
   state.connected = false;
   connectedAs = null;
+  // A stream closed on purpose (sign-out, party switch, no subscribers) starts over: the next
+  // open is a first open, not a reconnect, and must not fire the reconnect handlers.
+  hadOpen = false;
 }
 
 function dispatch(raw: string): void {
@@ -73,7 +76,10 @@ function open(): void {
   const partyId = sessionStore.session?.signedIn ? (sessionStore.party?.partyId ?? null) : null;
   if (partyId === null || subscriberCount() === 0) return;
   if (source && connectedAs === partyId) return;
+  // Reopening for the same party after a drop is a reconnect; any other open is not.
+  const reconnecting = hadOpen && connectedAs === partyId;
   close();
+  hadOpen = reconnecting;
   connectedAs = partyId;
   const es = new EventSource('/api/events');
   source = es;

@@ -28,6 +28,31 @@ function reducedMotion(matches: boolean): void {
   );
 }
 
+/** A `matchMedia` whose answer can change after mount, like the operating system setting. */
+function controllableMotion(initial: boolean) {
+  let matches = initial;
+  const handlers = new Set<(event: { matches: boolean }) => void>();
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn(() => ({
+      get matches() {
+        return matches;
+      },
+      addEventListener: (_: string, handler: (event: { matches: boolean }) => void) =>
+        handlers.add(handler),
+      removeEventListener: (_: string, handler: (event: { matches: boolean }) => void) =>
+        handlers.delete(handler),
+    })),
+  );
+  return {
+    set(value: boolean): void {
+      matches = value;
+      for (const handler of [...handlers]) handler({ matches: value });
+    },
+    listeners: () => handlers.size,
+  };
+}
+
 beforeEach(() => {
   sessionStore.reset();
   reducedMotion(true);
@@ -165,6 +190,35 @@ describe('landing page: the live seal', () => {
     });
     render(Page);
     expect(await screen.findByText('Example.')).toBeInTheDocument();
+    // A failed request is not "nothing approved yet": the copy says the answer could not be read.
+    expect(screen.getByText(/could not load the latest distribution/)).toBeInTheDocument();
+    expect(screen.queryByText(/nothing has been approved on this ledger yet/)).toBeNull();
+  });
+
+  it('keeps the "nothing has been approved" sentence for a successful empty answer only', async () => {
+    stubApi(routes(null));
+    render(Page);
+    expect(await screen.findByText(/nothing has been approved on this ledger yet/)).toBeVisible();
+    expect(screen.queryByText(/could not load the latest distribution/)).toBeNull();
+  });
+
+  it('stops the animation and shows the final state when reduced motion is switched on later', async () => {
+    const media = controllableMotion(false);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    stubApi(routes(SHOWCASE));
+    const view = render(Page);
+    expect(await screen.findByRole('img', { name: /0 of 2 signatures/ })).toBeInTheDocument();
+    expect(media.listeners()).toBe(1);
+    media.set(true);
+    expect(
+      await screen.findByRole('img', { name: /2 of 2 signatures, sealed/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Replay the seal' })).toBeNull();
+    // No timer from the stopped animation moves it afterwards.
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(screen.getByRole('img', { name: /2 of 2 signatures, sealed/ })).toBeInTheDocument();
+    view.unmount();
+    expect(media.listeners()).toBe(0);
   });
 
   it('closes the seal step by step, and can replay it', async () => {

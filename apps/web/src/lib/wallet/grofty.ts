@@ -217,7 +217,8 @@ export async function signMessage(message: string): Promise<string> {
 /**
  * The wallet's CC balance as a decimal string, or null when the answer has a shape this code does
  * not know. UNVERIFIED (docs/verification.md): `getBalance()` is typed as unknown by the SDK. The
- * reader accepts the shapes a wallet plausibly returns: a number or string, an object keyed by
+ * reader accepts the shapes a wallet plausibly returns: a decimal string (a number is refused: it
+ * may have lost precision), an object keyed by
  * symbol, an object with `amount`/`available`/`total`, or a list of such entries (CC first).
  */
 export async function balance(symbol = 'CC'): Promise<string | null> {
@@ -232,7 +233,7 @@ export async function balance(symbol = 'CC'): Promise<string | null> {
 const DECIMAL = /^-?\d+(\.\d+)?$/;
 
 function asDecimal(value: unknown): string | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  // Only decimal strings: a JSON number may already have lost digits, and `String(1e-7)` is "1e-7".
   if (typeof value === 'string' && DECIMAL.test(value.trim())) return value.trim();
   return null;
 }

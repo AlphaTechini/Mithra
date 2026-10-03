@@ -6,9 +6,9 @@
    * calculation.
    */
   import { untrack } from 'svelte';
-  import { DecimalString } from '@mithra/shared';
   import { fundTreasury } from '$lib/api/treasury';
   import { describeError } from '$lib/errors';
+  import { POSITIVE_DECIMAL } from '$lib/policyForm';
   import { sessionStore } from '$lib/stores/session.svelte';
   import { toasts } from '$lib/stores/toasts.svelte';
   import Button from '../Button.svelte';
@@ -38,9 +38,7 @@
   let failure = $state<{ title: string; message: string } | null>(null);
 
   const amountError = $derived(
-    DecimalString.safeParse(amount.trim()).success && /[1-9]/.test(amount)
-      ? null
-      : 'Enter an amount above zero, like 500 or 1200.50.',
+    POSITIVE_DECIMAL(amount.trim()) ? null : 'Enter an amount above zero, like 500 or 1200.50.',
   );
 
   async function submit(event?: Event): Promise<void> {

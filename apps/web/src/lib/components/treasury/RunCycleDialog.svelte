@@ -5,11 +5,12 @@
    * empty, the server applies the mandate's record date rule and says why when it cannot proceed.
    */
   import { untrack } from 'svelte';
-  import { DecimalString, type MandateView } from '@mithra/shared';
+  import type { MandateView } from '@mithra/shared';
   import { runCycle } from '$lib/api/treasury';
   import { describeError } from '$lib/errors';
   import { previousMonth, todayIso } from '$lib/format';
   import { navigate } from '$lib/nav';
+  import { POSITIVE_DECIMAL } from '$lib/policyForm';
   import { toasts } from '$lib/stores/toasts.svelte';
   import Button from '../Button.svelte';
   import Dialog from '../Dialog.svelte';
@@ -34,9 +35,9 @@
     /^\d{4}-(0[1-9]|1[0-2])$/.test(period) ? null : 'Choose a month, like 2026-09.',
   );
   const totalError = $derived(
-    total.trim() === '' || DecimalString.safeParse(total.trim()).success
+    total.trim() === '' || POSITIVE_DECIMAL(total.trim())
       ? null
-      : 'Enter the total as a number, like 1200 or 1200.50.',
+      : 'Enter the total as a number above zero, like 1200 or 1200.50.',
   );
   const valid = $derived(!periodError && !totalError);
   const recordRule = $derived(mandate?.terms.recordDateText ?? null);

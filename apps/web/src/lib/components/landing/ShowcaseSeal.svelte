@@ -3,8 +3,9 @@
    * The landing page's live seal (userflow section 2): the seal closing on the latest approved
    * distribution of this ledger, read from the aggregate-only `GET /api/public/showcase`. When
    * there is none (or the backend cannot be reached) it replays a clearly labelled example
-   * instead, so a first-time visitor still sees what a seal is. The replay plays once on load and
-   * again on request; with reduced motion the seal simply shows its final state.
+   * instead, so a first-time visitor still sees what a seal is; the label says whether the ledger
+   * has nothing to show or the request failed. The replay plays once on load and again on request;
+   * with reduced motion (also when it is switched on later) the seal simply shows its final state.
    *
    * The signature count here is a demonstration of a finished record, so it is stepped by this
    * component on purpose; the app's real seals only ever show what the ledger reports.
@@ -33,6 +34,8 @@
 
   let distribution = $state<Distribution | null>(null);
   let live = $state(false);
+  /** The request failed: the example is shown, but not because the ledger has nothing to show. */
+  let failed = $state(false);
   let signed = $state(0);
   let reduced = $state(false);
   let timers: ReturnType<typeof setTimeout>[] = [];
@@ -69,14 +72,25 @@
   }
 
   onMount(() => {
-    reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    const motion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    reduced = motion?.matches ?? false;
+    // The setting can change while the page is open: stop the animation and show the final state.
+    const onMotionChange = (event: { matches: boolean }): void => {
+      reduced = event.matches;
+      if (reduced) {
+        stop();
+        if (distribution) signed = distribution.approvals.need;
+      }
+    };
+    motion?.addEventListener?.('change', onMotionChange);
     let cancelled = false;
     void (async () => {
       let found: Showcase = null;
       try {
         found = await apiGet('/public/showcase', ShowcaseSchema);
       } catch {
-        // No answer is the same as no record: the example is shown, and labelled as one.
+        // The example is shown, and labelled as one, with a sentence that says it could not be read.
+        failed = true;
       }
       if (cancelled) return;
       live = found !== null;
@@ -86,6 +100,7 @@
     return () => {
       cancelled = true;
       stop();
+      motion?.removeEventListener?.('change', onMotionChange);
     };
   });
 </script>
@@ -101,9 +116,14 @@
         <span>Latest approved distribution on this ledger</span>
       {:else}
         <Icon name="flask" size={16} />
-        <span
-          ><strong>Example.</strong> A demo replay: nothing has been approved on this ledger yet.</span
-        >
+        <span>
+          <strong>Example.</strong>
+          {#if failed}
+            A demo replay: Mithra could not load the latest distribution right now.
+          {:else}
+            A demo replay: nothing has been approved on this ledger yet.
+          {/if}
+        </span>
       {/if}
     </p>
     {#if !reduced}

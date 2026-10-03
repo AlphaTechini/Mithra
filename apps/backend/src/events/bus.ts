@@ -44,3 +44,6 @@ export function inAudience(audience: Audience, partyId: string, roles: readonly 
 
 /** The treasury team: everyone who sees proposals, flags and payment history. */
 export const TREASURY_TEAM: Audience = { roles: ['treasurer', 'approver'] };
+
+/** Audit entries and events about access grants: only the treasurer, not the approvers. */
+export const TREASURER_ONLY: Audience = { roles: ['treasurer'] };

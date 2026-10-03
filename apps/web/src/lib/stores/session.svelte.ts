@@ -35,6 +35,18 @@ async function fetchAll(): Promise<void> {
 }
 
 /**
+ * A sign-in or switch answered with a session. When the config is already here, the store is
+ * complete, so an earlier error or a loading skeleton must not stay on screen (SessionGate).
+ */
+function adopt(session: SessionResponse): void {
+  state.session = session;
+  if (state.config) {
+    state.error = null;
+    state.status = 'ready';
+  }
+}
+
+/**
  * Session and public config, loaded once at startup. The ledger is the source of truth: this
  * store only mirrors what the backend says about the current party.
  */
@@ -82,14 +94,14 @@ export const sessionStore = {
   /** LocalNet sign-in with the shared demo password. Throws ApiError on a wrong password. */
   async signIn(password: string): Promise<SessionResponse> {
     const session = await apiPost('/session/localnet/sign-in', SessionResponseSchema, { password });
-    state.session = session;
+    adopt(session);
     return session;
   },
 
   /** LocalNet role switcher: acts as another demo party. */
   async switchParty(partyId: string): Promise<SessionResponse> {
     const session = await apiPost('/session/switch', SessionResponseSchema, { partyId });
-    state.session = session;
+    adopt(session);
     return session;
   },
 

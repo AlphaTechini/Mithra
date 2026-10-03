@@ -22,7 +22,7 @@ import type { Config } from '../config/env';
 import { plural } from '../cycle/format';
 import type { Database } from '../db';
 import { activityLog, txRefs } from '../db/schema';
-import type { Audience, EventBus } from '../events/bus';
+import { TREASURER_ONLY, type EventBus } from '../events/bus';
 import { ApiError } from '../http/errors';
 import {
   AccessGrantSchema,
@@ -177,9 +177,6 @@ const GrantSnapshotSchema = z.object({
   recordIds: z.array(z.string()),
 });
 type GrantSnapshot = z.infer<typeof GrantSnapshotSchema>;
-
-/** Only the treasurer reads the audit entries of the activity log. */
-const TREASURER_ONLY: Audience = { roles: ['treasurer'] };
 
 /** Time window in which several views of one grant by one auditor count as one view session. */
 export const VIEW_SESSION_MS = 10 * 60 * 1000;

@@ -38,8 +38,11 @@
   });
 
   const ended = $derived(request.status === 'ended' || isAccessEnded(evidence.error));
+  // A request still marked granted whose evidence answered 410 ended early (revoked): the
+  // scheduled `expiresAt` is not when it ended, so no date is shown until the server's own
+  // `closedAt` arrives with the reloaded request.
   const endedDate = $derived(
-    request.status === 'ended' ? endedAt(request) : (request.grant?.expiresAt ?? null),
+    request.status === 'ended' ? endedAt(request) : (request.grant?.closedAt ?? null),
   );
   let reportedEnd = false;
 

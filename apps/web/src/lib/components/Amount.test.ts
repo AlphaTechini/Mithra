@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
+import { sessionStore } from '$lib/stores/session.svelte';
 import Amount from './Amount.svelte';
 
 describe('Amount', () => {
@@ -24,9 +25,14 @@ describe('Amount', () => {
     expect(screen.getByText('-42.50')).toBeInTheDocument();
   });
 
-  it('can hide the symbol and falls back to CC', () => {
+  it('can hide the symbol and falls back to CC', async () => {
+    sessionStore.reset();
     const { container, rerender } = render(Amount, { value: '1', hideSymbol: true });
     expect(container.textContent).toBe('1.00');
-    void rerender({ value: '1', hideSymbol: false });
+    expect(screen.queryByText('CC')).toBeNull();
+    await rerender({ value: '1', hideSymbol: false });
+    // No symbol was given and no config is loaded: the symbol is CC.
+    expect(screen.getByText('CC')).toBeInTheDocument();
+    expect(container.textContent).toBe('1.00\u00a0CC');
   });
 });

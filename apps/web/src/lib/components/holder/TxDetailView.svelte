@@ -6,7 +6,7 @@
    * the session's own party and never prints a name (it says "You").
    */
   import type { TxDetail } from '@mithra/shared';
-  import { onMount } from 'svelte';
+  import { untrack } from 'svelte';
   import { fetchTx } from '$lib/api/holder';
   import Amount from '$lib/components/Amount.svelte';
   import Button from '$lib/components/Button.svelte';
@@ -36,20 +36,32 @@
   let error = $state<unknown>(null);
   let loading = $state(true);
 
+  /** Counts fetches, so only the latest one may write: an older response arriving late is dropped. */
+  let latest = 0;
+
   async function load(): Promise<void> {
+    const mine = ++latest;
+    const id = updateId;
     loading = true;
+    tx = null;
+    error = null;
     try {
-      tx = await fetchTx(updateId);
-      error = null;
+      const result = await fetchTx(id);
+      if (mine === latest) tx = result;
     } catch (e) {
-      error = e;
+      if (mine === latest) error = e;
     } finally {
-      loading = false;
+      if (mine === latest) loading = false;
     }
   }
 
-  onMount(() => {
-    void load();
+  // Load on mount and again whenever the update id changes (the route may reuse this component).
+  $effect(() => {
+    void updateId;
+    untrack(() => void load());
+    return () => {
+      latest++;
+    };
   });
 
   const ownPartyId = $derived(sessionStore.party?.partyId ?? null);
