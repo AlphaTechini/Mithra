@@ -145,14 +145,16 @@ export class GroftyMainnetRail implements PayoutRail {
   constructor(private readonly deps: GroftyRailDeps) {}
 
   /**
-   * What a recorded transfer becomes on the ledger. `unknown` is Grofty confirming the transfer
-   * while the app could not read whether the receiver already holds the funds: it counts as Paid
-   * (the transfer executed) and the activity line says acceptance could not be read.
+   * What a recorded transfer becomes on the ledger. Only `completed` (the receiver holds the funds,
+   * read from Grofty) is `Paid` (P4). `pending` (the receiver has to accept an offer) and `unknown`
+   * (Grofty executed the transfer, but the app could not read whether it arrived) are both
+   * `AwaitingAcceptance`: not yet confirmed. There is no MainNet node, so the ledger cannot check
+   * either; the treasurer records the same transfer again once it is confirmed (`completed`).
    */
   static recordedStatus(
     outcome: 'completed' | 'pending' | 'unknown',
   ): 'Paid' | 'AwaitingAcceptance' {
-    return outcome === 'pending' ? 'AwaitingAcceptance' : 'Paid';
+    return outcome === 'completed' ? 'Paid' : 'AwaitingAcceptance';
   }
 
   /** How a ledger payment status shows on the payout page. */

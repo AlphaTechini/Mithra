@@ -150,7 +150,9 @@ export class MainnetPayouts {
       const status = GroftyMainnetRail.recordedStatus(body.outcome);
       // A retry of a record the ledger already took (the first answer was lost, or the bookkeeping
       // after the ledger write failed): the payment carries this update id and the status this
-      // record asks for, so it is done. Nothing is submitted; only the tx ref is repaired.
+      // record asks for, so it is done. Nothing is submitted; only the tx ref is repaired. The same
+      // update id with a different status is not a retry but new information (an unconfirmed
+      // transfer that is now confirmed), so it goes on to the ledger below.
       if (payment.payload.externalTxRef === body.updateId && payment.payload.status === status) {
         await this.repairTxRef(payment.contractId, body.updateId);
         await this.emitStatus(cycleId);
@@ -213,12 +215,12 @@ export class MainnetPayouts {
           body.outcome === 'pending'
             ? `Sent ${amount} to ${name} on MainNet (signed in Grofty); ${name} has to accept it`
             : body.outcome === 'unknown'
-              ? `Paid ${amount} to ${name} on MainNet (signed in Grofty); whether it was accepted could not be read`
+              ? `Sent ${amount} to ${name} on MainNet (signed in Grofty); Mithra could not confirm it arrived. Check it in Grofty.`
               : `Paid ${amount} to ${name} on MainNet (signed in Grofty)`;
         await this.deps.activity
           .record({
             actorParty: actor,
-            kind: body.outcome === 'pending' ? 'payment.awaiting' : 'payment.paid',
+            kind: body.outcome === 'completed' ? 'payment.paid' : 'payment.awaiting',
             subject: cycleId,
             text,
             link: `/app/cycles/${cycleId}`,
@@ -283,7 +285,7 @@ export class MainnetPayouts {
     const detail =
       waiting === 0
         ? `Paid ${total} to ${plural(payments.length, 'holder')} on MainNet`
-        : `Sent ${total} to ${plural(payments.length, 'holder')} on MainNet; ${waiting} awaiting acceptance`;
+        : `Sent ${total} to ${plural(payments.length, 'holder')} on MainNet; ${waiting} not confirmed yet`;
     const step: TimelineStep = {
       id: 'execute',
       label: 'Payments',

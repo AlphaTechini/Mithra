@@ -35,6 +35,9 @@
   let starting = $state(false);
   let failure = $state<ErrorCopy | null>(null);
   let celebrated = false;
+  /** The post-seal redirect; cleared when the page is left so it cannot pull the user back. */
+  let redirectTimer: number | undefined;
+  let leftPage = false;
 
   const sealing = $derived(seal !== null && seal.state === 'awaiting-nodes');
   const sealed = $derived(seal?.state === 'sealed');
@@ -61,10 +64,12 @@
       toasts.push('Mandate sealed');
       // Read the roles again first: a session loaded before the organization existed has none, and
       // the treasurer's screens would send it back to the start page.
-      window.setTimeout(
-        () => void sessionStore.refresh().then(() => navigate('/app/overview')),
-        REDIRECT_MS,
-      );
+      redirectTimer = window.setTimeout(() => {
+        redirectTimer = undefined;
+        void sessionStore.refresh().then(() => {
+          if (!leftPage) return navigate('/app/overview');
+        });
+      }, REDIRECT_MS);
     }
   }
 
@@ -100,8 +105,10 @@
       }
     }, POLL_MS);
     return () => {
+      leftPage = true;
       off();
       window.clearInterval(timer);
+      window.clearTimeout(redirectTimer);
     };
   });
 

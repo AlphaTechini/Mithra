@@ -41,9 +41,9 @@ const request = { cycleId: '2026-09', label: 'September 2026', proposal, mandate
 const tx = { updateId: 'upd-1', events: [] } as unknown as Transaction;
 
 describe('GroftyMainnetRail status mapping', () => {
-  it('records completed and unknown as Paid, pending as AwaitingAcceptance', () => {
+  it('records only completed as Paid; pending and unknown are not yet confirmed (P4)', () => {
     expect(GroftyMainnetRail.recordedStatus('completed')).toBe('Paid');
-    expect(GroftyMainnetRail.recordedStatus('unknown')).toBe('Paid');
+    expect(GroftyMainnetRail.recordedStatus('unknown')).toBe('AwaitingAcceptance');
     expect(GroftyMainnetRail.recordedStatus('pending')).toBe('AwaitingAcceptance');
   });
 

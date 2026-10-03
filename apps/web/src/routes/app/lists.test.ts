@@ -143,6 +143,7 @@ describe('Seeded tags (U8)', () => {
     );
     expect(within(items[1]!).queryByText('Seeded')).toBeNull();
 
+    FakeEventSource.latest.open();
     FakeEventSource.latest.emit({
       type: 'activity',
       entry: activity({ id: 'a3', text: 'Approver 1 approved September 2026 (1 of 2)' }),

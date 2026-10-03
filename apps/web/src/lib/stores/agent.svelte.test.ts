@@ -146,6 +146,7 @@ describe('agent conversation', () => {
     expect(log.getByText('Distribute 1,200 CC for September.')).toBeInTheDocument();
 
     // The agent's first tool call shows up before its reply.
+    FakeEventSource.latest.open();
     FakeEventSource.latest.emit({ type: 'agent', messageId: 'a1', action: CARD });
     await waitFor(() => expect(agentStore.rows.some((r) => r.role === 'tool')).toBe(true));
     await view.rerender({ open: true, messages: agentStore.rows, busy: agentStore.busy });
@@ -269,6 +270,7 @@ describe('agent conversation', () => {
     await agentStore.load();
 
     // No send is running: the card would be an orphan, so it is ignored.
+    FakeEventSource.latest.open();
     FakeEventSource.latest.emit({ type: 'agent', messageId: 'ghost', action: CARD });
     await Promise.resolve();
     expect(agentStore.rows).toEqual([]);

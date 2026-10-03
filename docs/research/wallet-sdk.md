@@ -27,7 +27,7 @@ LocalNet constants (`localNetStaticConfig`): `LOCALNET_APP_VALIDATOR_URL = http:
 | Holdings | `await sdk.token.utxos.list({ partyId })` → `PrettyContract<HoldingView>[]` with `interfaceViewValue.amount` (string), `.instrumentId.id` |
 | Tx by id | `await sdk.token.transactionsById({ updateId, partyId })` |
 | Create preapproval | `await sdk.amulet.preapproval.command.create({ parties: { receiver } })` → commands, submit as receiver |
-| Preapproval status | `await sdk.amulet.preapproval.fetchStatus(receiver)` → `{ contractId, templateId, expiresAt } | null`; `fetchQuick(receiver)` |
+| Preapproval status | `await sdk.amulet.preapproval.fetchStatus(receiver)` → `{ contractId, templateId, expiresAt } \| null`; `fetchQuick(receiver)` |
 | Renew / cancel | `sdk.amulet.preapproval.renew({ parties: { receiver }, expiresAt })`, `sdk.amulet.preapproval.command.cancel({ parties: { receiver } })` |
 | Parties | `sdk.party.external.create(publicKey, { partyHint, confirmingParticipantEndpoints? })...execute()`, `sdk.party.list()` |
 

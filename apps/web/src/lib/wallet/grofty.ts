@@ -340,7 +340,8 @@ function createdEvents(node: unknown, found: CreatedEvent[] = [], depth = 0): Cr
  * - a holding (Amulet or token-standard Holding) owned by `receiver`: `completed`, the receiver has the funds;
  * - a transfer offer or transfer instruction was created: `pending`, the receiver must accept it;
  * - anything else, or a read that fails: `unknown`. The transfer did execute (the wallet said so),
- *   so Mithra records it as paid with a note that acceptance could not be read.
+ *   but nothing confirms the receiver has the funds, so Mithra records it as awaiting acceptance
+ *   (not Paid, P4) and the treasurer can check again later.
  * The sender's view may not include the receiver's new holding; `unknown` is the safe answer then.
  */
 export async function transferOutcome(

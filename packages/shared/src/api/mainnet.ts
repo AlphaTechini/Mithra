@@ -41,7 +41,8 @@ export type MainnetPayoutsResponse = z.infer<typeof MainnetPayoutsResponseSchema
 /**
  * How Grofty reported the transfer, as the browser read it:
  * `completed` the receiver holds the funds, `pending` the receiver has to accept an offer,
- * `unknown` Grofty executed the transfer but the outcome could not be read.
+ * `unknown` Grofty executed the transfer but the outcome could not be read (recorded as not yet
+ * confirmed, like `pending`: only `completed` is Paid).
  */
 export const MainnetTransferOutcomeSchema = z.enum(['completed', 'pending', 'unknown']);
 export type MainnetTransferOutcome = z.infer<typeof MainnetTransferOutcomeSchema>;

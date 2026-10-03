@@ -45,8 +45,9 @@ export function stubApi(routes: Record<string, unknown>): ApiStub {
     const call: RecordedCall = { method, path: url.pathname + url.search, body };
     calls.push(call);
 
+    // A handler for the exact query wins over the one for the bare path.
     const handler =
-      table.get(`${method} ${url.pathname}`) ?? table.get(`${method} ${url.pathname}${url.search}`);
+      table.get(`${method} ${url.pathname}${url.search}`) ?? table.get(`${method} ${url.pathname}`);
     if (handler === undefined) {
       return Promise.resolve(
         errorResponse(404, 'not_found', `No stub for ${method} ${url.pathname}`),
@@ -108,6 +109,8 @@ export class FakeEventSource {
   }
   /** Deliver a live event the way the backend sends it: `event:` is the type, `data:` the JSON. */
   emit(event: { type: string } & Record<string, unknown>): void {
+    // Like a real EventSource: nothing is delivered once it is closed (or before it is open).
+    if (this.readyState !== 1) return;
     for (const listener of this.listeners.get(event.type) ?? []) {
       listener(new MessageEvent(event.type, { data: JSON.stringify(event) }));
     }

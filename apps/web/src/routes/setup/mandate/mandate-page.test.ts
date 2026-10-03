@@ -8,7 +8,8 @@ import { draft, sessionRoutes } from '../../../test/treasury/fixtures';
 import { FakeEventSource, installFakeEventSource, stubApi } from '../../../test/treasury/stub';
 import Page from './+page.svelte';
 
-vi.mock('$app/navigation', () => ({ goto: vi.fn(() => Promise.resolve()) }));
+const goto = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock('$app/navigation', () => ({ goto }));
 
 const NODES = [
   { id: 'n1', name: 'Node 1', operator: 'Operator A', confirmed: true },
@@ -33,6 +34,7 @@ function seal(overrides: Partial<SealStatus>): SealStatus {
 }
 
 beforeEach(() => {
+  goto.mockClear();
   sessionStore.reset();
   live.reset();
   toasts.clear();
@@ -40,6 +42,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   live.reset();
   vi.unstubAllGlobals();
 });
@@ -75,6 +78,7 @@ describe('setup mandate page', () => {
     // Clicking did not fill the ring; the server has not said the treasurer signed.
     expect(screen.getByRole('img', { name: /^0 of 1 signature/ })).toBeInTheDocument();
 
+    FakeEventSource.latest.open();
     FakeEventSource.latest.emit({
       type: 'seal',
       seal: seal({
@@ -185,5 +189,39 @@ describe('setup mandate page', () => {
     await fireEvent.click(await screen.findByRole('button', { name: 'Seal mandate' }));
     expect(await screen.findByText(/The ledger refused the seal request/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Seal mandate' })).toBeEnabled();
+  });
+
+  describe('redirect after sealing', () => {
+    async function sealNow(): Promise<{ unmount: () => void }> {
+      stubApi({
+        ...sessionRoutes('treasurer'),
+        'GET /api/policy/draft': draft(),
+        'POST /api/mandate/seal': seal({
+          state: 'sealed',
+          treasurerSigned: true,
+          mandateVersion: 1,
+        }),
+      });
+      await sessionStore.load();
+      const view = render(Page);
+      await fireEvent.click(await screen.findByRole('button', { name: 'Seal mandate' }));
+      await screen.findByRole('img', { name: /sealed. Mandate sealed/ });
+      return view;
+    }
+
+    it('goes to the overview a moment after the seal closes', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      await sealNow();
+      await vi.advanceTimersByTimeAsync(2000);
+      await waitFor(() => expect(goto).toHaveBeenCalledWith('/app/overview', expect.anything()));
+    });
+
+    it('does not redirect once the page has been left', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const view = await sealNow();
+      view.unmount();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(goto).not.toHaveBeenCalled();
+    });
   });
 });

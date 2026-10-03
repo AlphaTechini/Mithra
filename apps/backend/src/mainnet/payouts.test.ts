@@ -98,6 +98,7 @@ function setup() {
     },
   };
   const warnings: string[] = [];
+  const activity: { kind: string; text: string }[] = [];
   const payouts = new MainnetPayouts({
     config: {
       network: 'mainnet',
@@ -111,7 +112,12 @@ function setup() {
       name: (id: string) => Promise.resolve(id),
       ref: (id: string) => Promise.resolve({ partyId: id, displayName: id }),
     } as unknown as PartyNames,
-    activity: { record: () => Promise.resolve({}) } as unknown as ActivityLog,
+    activity: {
+      record: (entry: { kind: string; text: string }) => {
+        activity.push({ kind: entry.kind, text: entry.text });
+        return Promise.resolve({});
+      },
+    } as unknown as ActivityLog,
     bus: { publish: () => undefined } as unknown as EventBus,
     cycles: {
       getCycle: () => Promise.resolve({ summary: { status: 'executing', label: 'Sep' } }),
@@ -133,6 +139,7 @@ function setup() {
     submitted,
     txRefs,
     warnings,
+    activity,
     readBehindOnce: (snapshot: Contract<Payment>[]): void => {
       staleOnce = snapshot;
     },
@@ -140,10 +147,10 @@ function setup() {
   };
 }
 
-const body = (updateId: string): RecordMainnetPayoutRequest => ({
-  updateId,
-  outcome: 'completed',
-});
+const body = (
+  updateId: string,
+  outcome: RecordMainnetPayoutRequest['outcome'] = 'completed',
+): RecordMainnetPayoutRequest => ({ updateId, outcome });
 
 describe('MainnetPayouts.record is retry-safe', () => {
   it('logs, and does not fail, when saving the tx ref fails after the ledger write', async () => {
@@ -189,5 +196,79 @@ describe('MainnetPayouts.record is retry-safe', () => {
     expect(retry.payouts.find((p) => p.paymentId === paymentId)?.status).toBe('paid');
     expect(t.submitted).toHaveLength(1);
     expect(t.txRefs.at(-1)).toEqual({ cid: 'cid-h1-1', updateId: 'upd-1' });
+  });
+});
+
+describe('MainNet outcome unknown is not Paid (P4)', () => {
+  const statusOf = (
+    reply: Awaited<ReturnType<MainnetPayouts['record']>>,
+    paymentId: string,
+  ): string | undefined => reply.payouts.find((p) => p.paymentId === paymentId)?.status;
+
+  it('records unknown as awaiting acceptance, with honest activity text', async () => {
+    const t = setup();
+    const paymentId = t.payouts.paymentIdOf(CYCLE, 'h1');
+    const reply = await t.payouts.record(
+      CYCLE,
+      paymentId,
+      body('upd-1', 'unknown'),
+      'treasurer::1',
+    );
+    expect(statusOf(reply, paymentId)).toBe('awaiting-acceptance');
+    expect(t.current().find((p) => p.payload.holder === 'h1')?.payload.status).toBe(
+      'AwaitingAcceptance',
+    );
+    expect(t.activity).toContainEqual({
+      kind: 'payment.awaiting',
+      text: 'Sent 100 CC to h1 on MainNet (signed in Grofty); Mithra could not confirm it arrived. Check it in Grofty.',
+    });
+    expect(t.activity.some((a) => a.kind === 'payment.paid')).toBe(false);
+  });
+
+  it('a later completed record with the same update id marks it Paid', async () => {
+    const t = setup();
+    const paymentId = t.payouts.paymentIdOf(CYCLE, 'h1');
+    await t.payouts.record(CYCLE, paymentId, body('upd-1', 'unknown'), 'treasurer::1');
+    const reply = await t.payouts.record(CYCLE, paymentId, body('upd-1'), 'treasurer::1');
+    expect(statusOf(reply, paymentId)).toBe('paid');
+    // Two ledger records: the unconfirmed one, then the confirmation.
+    expect(t.submitted).toHaveLength(2);
+    expect(t.current().find((p) => p.payload.holder === 'h1')?.payload).toMatchObject({
+      status: 'Paid',
+      externalTxRef: 'upd-1',
+    });
+    expect(t.activity.at(-1)?.kind).toBe('payment.paid');
+  });
+
+  it('the same update id and the same status stays idempotent', async () => {
+    const t = setup();
+    const paymentId = t.payouts.paymentIdOf(CYCLE, 'h1');
+    await t.payouts.record(CYCLE, paymentId, body('upd-1', 'unknown'), 'treasurer::1');
+    const again = await t.payouts.record(
+      CYCLE,
+      paymentId,
+      body('upd-1', 'unknown'),
+      'treasurer::1',
+    );
+    expect(statusOf(again, paymentId)).toBe('awaiting-acceptance');
+    // "Check again" that still cannot read the outcome (or sees a pending offer) changes nothing.
+    const pending = await t.payouts.record(
+      CYCLE,
+      paymentId,
+      body('upd-1', 'pending'),
+      'treasurer::1',
+    );
+    expect(statusOf(pending, paymentId)).toBe('awaiting-acceptance');
+    expect(t.submitted).toHaveLength(1);
+  });
+
+  it('never moves a Paid payment back to awaiting acceptance', async () => {
+    const t = setup();
+    const paymentId = t.payouts.paymentIdOf(CYCLE, 'h1');
+    await t.payouts.record(CYCLE, paymentId, body('upd-1'), 'treasurer::1');
+    await expect(
+      t.payouts.record(CYCLE, paymentId, body('upd-1', 'unknown'), 'treasurer::1'),
+    ).rejects.toMatchObject({ code: 'already_recorded' });
+    expect(t.current().find((p) => p.payload.holder === 'h1')?.payload.status).toBe('Paid');
   });
 });

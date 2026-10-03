@@ -531,25 +531,25 @@ describe('MainNet payouts through Grofty (records on LocalNet)', () => {
     );
     expect(bad.status).toBe(400);
 
-    // Holder B: executed but the outcome could not be read: recorded as paid.
+    // Holder B: executed but the outcome could not be read: not confirmed, so not Paid (P4).
     ids['B'] = fakeUpdateId();
     expect((await record(clean.id, idOf('Holder B'), ids['B'], 'unknown')).status).toBe(200);
     // Holder C: a transfer offer the holder has to accept.
     ids['C'] = fakeUpdateId();
     expect((await record(clean.id, idOf('Holder C'), ids['C'], 'pending')).status).toBe(200);
-    // Holder D: completed. Now every payout is recorded, one awaits acceptance.
+    // Holder D: completed. Now every payout is recorded, two are not confirmed yet.
     ids['D'] = fakeUpdateId();
     const last = await record(clean.id, idOf('Holder D'), ids['D'], 'completed');
     expect(holdersOf(MainnetPayoutsResponseSchema.parse(last.json()))).toEqual([
       ['Holder A', 'paid'],
-      ['Holder B', 'paid'],
+      ['Holder B', 'awaiting-acceptance'],
       ['Holder C', 'awaiting-acceptance'],
       ['Holder D', 'paid'],
     ]);
     const waiting = await waitForStatus(clean.id, 'awaiting-acceptance');
     expect(waiting.proposal?.payouts.map((p) => p.payment?.status)).toEqual([
       'paid',
-      'paid',
+      'awaiting-acceptance',
       'awaiting-acceptance',
       'paid',
     ]);
@@ -562,6 +562,21 @@ describe('MainNet payouts through Grofty (records on LocalNet)', () => {
     const twice = await record(clean.id, idOf('Holder A'), fakeUpdateId(), 'completed');
     expect(twice.status).toBe(409);
 
+    // "Check again" that still cannot read B's outcome changes nothing: the same transfer, the same status.
+    const stillUnknown = await record(clean.id, idOf('Holder B'), ids['B'], 'unknown');
+    expect(stillUnknown.status, stillUnknown.body).toBe(200);
+    expect(holdersOf(MainnetPayoutsResponseSchema.parse(stillUnknown.json()))[1]).toEqual([
+      'Holder B',
+      'awaiting-acceptance',
+    ]);
+    // Later B's transfer is confirmed: the same update id, now completed, marks it Paid.
+    const confirmedB = await record(clean.id, idOf('Holder B'), ids['B'], 'completed');
+    expect(confirmedB.status, confirmedB.body).toBe(200);
+    expect(holdersOf(MainnetPayoutsResponseSchema.parse(confirmedB.json()))[1]).toEqual([
+      'Holder B',
+      'paid',
+    ]);
+    expect((await cycleDetail(clean.id)).summary.status).toBe('awaiting-acceptance');
     // Later the holder accepted the offer in Grofty: the treasurer records it as completed, with the same transfer.
     const done = await record(clean.id, idOf('Holder C'), ids['C'], 'completed');
     expect(done.status, done.body).toBe(200);
@@ -577,6 +592,7 @@ describe('MainNet payouts through Grofty (records on LocalNet)', () => {
     expect(activity.entries.map((e) => e.text)).toEqual(
       expect.arrayContaining([
         'Paid 15 CC to Holder A on MainNet (signed in Grofty)',
+        'Sent 45 CC to Holder B on MainNet (signed in Grofty); Mithra could not confirm it arrived. Check it in Grofty.',
         'Sent 90 CC to Holder C on MainNet (signed in Grofty); Holder C has to accept it',
       ]),
     );

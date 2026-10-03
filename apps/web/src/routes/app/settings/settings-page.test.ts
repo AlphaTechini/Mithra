@@ -53,6 +53,44 @@ afterEach(() => {
 });
 
 describe('settings page', () => {
+  it('makes no infrastructure request on MainNet, not on load and not on the poll', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const api = stubApi({
+        ...sessionRoutes('treasurer', 'mainnet'),
+        'GET /api/org': ORG,
+        'GET /api/infrastructure': infra(),
+      });
+      await sessionStore.load();
+      render(Page);
+      expect(await screen.findByText('Acme Fund')).toBeInTheDocument();
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(api.callsTo('GET /api/infrastructure')).toHaveLength(0);
+      expect(screen.queryByRole('heading', { name: 'Infrastructure' })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('loads infrastructure on LocalNet and keeps polling it every 10 seconds', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const api = stubApi({
+        ...sessionRoutes('treasurer'),
+        'GET /api/org': ORG,
+        'GET /api/infrastructure': infra(),
+      });
+      await sessionStore.load();
+      render(Page);
+      expect(await screen.findByText('Still running on 2 of 3 nodes')).toBeInTheDocument();
+      expect(api.callsTo('GET /api/infrastructure')).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(10_500);
+      expect(api.callsTo('GET /api/infrastructure').length).toBeGreaterThanOrEqual(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows the organization, the mandate terms and the infrastructure with icon plus word status', async () => {
     stubApi({
       ...sessionRoutes('treasurer'),

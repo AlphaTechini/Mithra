@@ -14,12 +14,18 @@ import {
 import { live } from '$lib/stores/live.svelte';
 import { sessionStore } from '$lib/stores/session.svelte';
 import { toasts } from '$lib/stores/toasts.svelte';
-import { errorResponse, installFakeEventSource, stubApi } from '../../../test/treasury/stub';
+import { navigateTo } from '../../../test/route-page.svelte';
+import {
+  deferred,
+  errorResponse,
+  installFakeEventSource,
+  stubApi,
+} from '../../../test/treasury/stub';
 import ListPage from './+page.svelte';
 import ReviewPage from './[requestId]/+page.svelte';
 
-vi.mock('$app/state', () => ({
-  page: { params: { requestId: 'req-1' }, url: new URL('http://localhost/app/audit/req-1') },
+vi.mock('$app/state', async () => ({
+  page: (await import('../../../test/route-page.svelte')).routePage,
 }));
 
 async function stub(routes: Record<string, unknown>): Promise<ReturnType<typeof stubApi>> {
@@ -29,6 +35,7 @@ async function stub(routes: Record<string, unknown>): Promise<ReturnType<typeof 
 }
 
 beforeEach(() => {
+  navigateTo('/app/audit/req-1', { requestId: 'req-1' });
   sessionStore.reset();
   live.reset();
   toasts.clear();
@@ -258,5 +265,50 @@ describe('treasurer review page', () => {
     render(ReviewPage);
     expect(await screen.findByRole('alert')).toHaveTextContent('No such request.');
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('shows request B after a navigation from A and grants with B’s records only', async () => {
+    const aOnly = { ...PREVIEW[0]!, recordId: 'rec-a', label: 'Record only in A' };
+    const bOnly = { ...PREVIEW[1]!, recordId: 'rec-b', label: 'Record only in B' };
+    const slowB = deferred<unknown>();
+    const api = await stub({
+      'GET /api/audit/requests/req-1': detail(
+        requestView({ requestId: 'req-1', question: 'Question A' }),
+        [aOnly],
+      ),
+      'GET /api/audit/requests/req-2': () => slowB.promise,
+      'POST /api/audit/requests/req-2/grant': detail(
+        grantedView({ requestId: 'req-2', grant: { ...GRANT, recordIds: ['rec-b'] } }),
+      ),
+    });
+    render(ReviewPage);
+    await screen.findByText('Question A');
+    // Tick a box and open Deny on A, so there is request-specific state to leak.
+    await fireEvent.click(screen.getByRole('checkbox', { name: /Record only in A/ }));
+    await fireEvent.click(screen.getByRole('radio', { name: '30 days' }));
+
+    navigateTo('/app/audit/req-2', { requestId: 'req-2' });
+
+    // While B loads, nothing of A is on screen or usable.
+    await waitFor(() => expect(api.callsTo('GET /api/audit/requests/req-2')).toHaveLength(1));
+    expect(screen.queryByText('Question A')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Grant access' })).not.toBeInTheDocument();
+
+    slowB.resolve(detail(requestView({ requestId: 'req-2', question: 'Question B' }), [bOnly]));
+    expect(await screen.findByText('Question B')).toBeInTheDocument();
+    expect(screen.queryByText('Record only in A')).not.toBeInTheDocument();
+    // A's ticked-off record and its 30 days choice are gone: B starts at the defaults.
+    expect(screen.getByRole('checkbox', { name: /Record only in B/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: '7 days' })).toBeChecked();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Grant access' }));
+    await waitFor(() =>
+      expect(api.callsTo('POST /api/audit/requests/req-2/grant')).toHaveLength(1),
+    );
+    expect(api.callsTo('POST /api/audit/requests/req-2/grant')[0]?.body).toEqual({
+      expiresIn: '7d',
+      recordIds: ['rec-b'],
+    });
+    expect(api.callsTo('POST /api/audit/requests/req-1/grant')).toHaveLength(0);
   });
 });

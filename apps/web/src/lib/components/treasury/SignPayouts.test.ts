@@ -188,16 +188,107 @@ describe('Sign payouts in Grofty', () => {
     expect(screen.queryByText('Paid', { exact: true })).toBeNull();
   });
 
-  it('when the outcome cannot be read it records unknown', async () => {
+  it('when the outcome cannot be read it records unknown, and the row is not Paid (P4)', async () => {
     useProvider(healthyGrofty());
     const { api } = await mount(list([A()]), {
-      [RECORD('A')]: () => list([paid(A(), '1220deadbeef')]),
+      [RECORD('A')]: () => list([{ ...paid(A(), '1220deadbeef'), status: 'awaiting-acceptance' }]),
     });
     await fireEvent.click(await connectButton());
     await screen.findByText('Grofty Wallet connected');
     await fireEvent.click(payButton('A'));
     await waitFor(() => expect(api.callsTo(RECORD('A'))).toHaveLength(1));
     expect(api.callsTo(RECORD('A'))[0]?.body).toMatchObject({ outcome: 'unknown' });
+    expect(await screen.findByText('Awaiting acceptance')).toBeInTheDocument();
+    expect(screen.queryByText('Paid', { exact: true })).toBeNull();
+    // The treasurer can check it again later.
+    expect(screen.getByRole('button', { name: 'Check again for Holder A' })).toBeInTheDocument();
+  });
+
+  describe('Check again', () => {
+    const waiting = (): MainnetPayout => ({
+      ...paid(A(), '1220deadbeef'),
+      status: 'awaiting-acceptance',
+    });
+    const HOLDING = {
+      events: [
+        {
+          created: {
+            templateId: 'pkg:Splice.Amulet:Amulet',
+            createArgument: { owner: 'a-main::1220aabbccddeeff' },
+          },
+        },
+      ],
+    };
+
+    it('is offered on an awaiting-acceptance row with a known update id, not on a row without one', async () => {
+      useProvider(healthyGrofty());
+      await mount(list([waiting(), { ...waiting(), paymentId: 'pay-B', link: null }]));
+      expect(
+        await screen.findByRole('button', { name: 'Check again for Holder A' }),
+      ).toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: /^Check again for/ })).toHaveLength(1);
+    });
+
+    it('re-reads the transfer in Grofty and, when it arrived, records the same update id as completed', async () => {
+      const provider = healthyGrofty({ update: HOLDING });
+      useProvider(provider);
+      const { api, onchange } = await mount(list([waiting()]), {
+        [RECORD('A')]: () => list([paid(A(), '1220deadbeef')]),
+      });
+      await fireEvent.click(
+        await screen.findByRole('button', { name: 'Check again for Holder A' }),
+      );
+      await waitFor(() => expect(api.callsTo(RECORD('A'))).toHaveLength(1));
+      expect(api.callsTo(RECORD('A'))[0]?.body).toEqual({
+        updateId: '1220deadbeef',
+        outcome: 'completed',
+      });
+      expect(
+        provider
+          .callsTo('ledgerApi')
+          .some((c) => JSON.stringify(c.params).includes('1220deadbeef')),
+      ).toBe(true);
+      await waitFor(() => expect(screen.getByText('Paid', { exact: true })).toBeInTheDocument());
+      expect(screen.queryByText('Awaiting acceptance')).toBeNull();
+      expect(toasts.items.map((t) => t.message)).toContain(
+        'Confirmed: the payment to Holder A arrived',
+      );
+      expect(onchange).toHaveBeenCalled();
+    });
+
+    it('stays awaiting acceptance, never Paid, while Grofty still cannot confirm it', async () => {
+      useProvider(healthyGrofty());
+      const { api } = await mount(list([waiting()]), { [RECORD('A')]: () => list([waiting()]) });
+      await fireEvent.click(
+        await screen.findByRole('button', { name: 'Check again for Holder A' }),
+      );
+      await waitFor(() => expect(api.callsTo(RECORD('A'))).toHaveLength(1));
+      expect(api.callsTo(RECORD('A'))[0]?.body).toEqual({
+        updateId: '1220deadbeef',
+        outcome: 'unknown',
+      });
+      await waitFor(() =>
+        expect(toasts.items.map((t) => t.message)).toContain(
+          'Still not confirmed for Holder A. Check it in Grofty.',
+        ),
+      );
+      expect(screen.getByText('Awaiting acceptance')).toBeInTheDocument();
+      expect(screen.queryByText('Paid', { exact: true })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Check again for Holder A' })).toBeEnabled();
+    });
+
+    it('shows the server message in place when recording the check fails', async () => {
+      useProvider(healthyGrofty({ update: HOLDING }));
+      await mount(list([waiting()]), {
+        [RECORD('A')]: () =>
+          errorResponse(503, 'ledger_unavailable', 'The ledger is not reachable right now.'),
+      });
+      await fireEvent.click(
+        await screen.findByRole('button', { name: 'Check again for Holder A' }),
+      );
+      expect(await screen.findByText('The ledger is not reachable right now.')).toBeInTheDocument();
+      expect(screen.queryByText('Paid', { exact: true })).toBeNull();
+    });
   });
 
   describe('Grofty errors, in words', () => {

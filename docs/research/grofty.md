@@ -7,6 +7,7 @@ Source: npm `@groftylabs/dapp-sdk@0.2.0` and its repo `github.com/groftywallet/g
 ```ts
 import { createGroftyClient, isUserRejection, isUnauthorized, INTERNAL_ERROR } from '@groftylabs/dapp-sdk'
 const grofty = await createGroftyClient()   // null when not installed or during SSR
+if (!grofty) { /* show install link */ }     // check before any call below
 await grofty.connect()                       // prompts
 const account = await grofty.getPrimaryAccount()  // { partyId, hint, namespace, networkId, publicKey, primary, status }
 const { tx } = await grofty.prepareExecuteAndWait({ commands, disclosedContracts, commandId })

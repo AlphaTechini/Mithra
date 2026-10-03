@@ -45,8 +45,11 @@
 
   async function retry(): Promise<void> {
     retrying = true;
-    await load();
-    retrying = false;
+    try {
+      await load();
+    } finally {
+      retrying = false;
+    }
   }
 
   onMount(() => {

@@ -33,6 +33,7 @@ describe('live events', () => {
     expect(FakeEventSource.instances).toHaveLength(1);
     expect(FakeEventSource.latest.url).toBe('/api/events');
 
+    FakeEventSource.latest.open();
     FakeEventSource.latest.emit({ type: 'cycle', cycleId: '2026-09', status: 'countdown' });
     expect(onCycle).toHaveBeenCalledWith({
       type: 'cycle',
@@ -46,6 +47,7 @@ describe('live events', () => {
     await signedIn();
     const onCycle = vi.fn();
     live.subscribe('cycle', onCycle);
+    FakeEventSource.latest.open();
     FakeEventSource.latest.emit({ type: 'cycle', cycleId: '2026-09', status: 'made-up' });
     expect(onCycle).not.toHaveBeenCalled();
   });
@@ -55,7 +57,9 @@ describe('live events', () => {
     const handler = vi.fn();
     const off = live.subscribe('seal', handler);
     const source = FakeEventSource.latest;
+    source.open();
     off();
+    // The stream stays open for a moment after the last unsubscribe; the handler is already gone.
     source.emit({
       type: 'seal',
       seal: {

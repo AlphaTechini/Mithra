@@ -12,20 +12,19 @@ import {
   sessionRoutes,
   summary,
 } from '../../../../test/treasury/fixtures';
+import { navigateTo } from '../../../../test/route-page.svelte';
 import {
   FakeEventSource,
   deferred,
+  errorResponse,
   installFakeEventSource,
   stubApi,
 } from '../../../../test/treasury/stub';
 import { useProvider } from '$lib/wallet/grofty';
 import Page from './+page.svelte';
 
-vi.mock('$app/state', () => ({
-  page: {
-    params: { cycleId: '2026-09' },
-    url: new URL('http://localhost/app/cycles/2026-09'),
-  },
+vi.mock('$app/state', async () => ({
+  page: (await import('../../../../test/route-page.svelte')).routePage,
 }));
 
 const CYCLE = 'GET /api/cycles/2026-09';
@@ -62,6 +61,7 @@ const within_mandate = (overrides: Partial<CycleDetail> = {}): CycleDetail =>
   });
 
 beforeEach(() => {
+  navigateTo('/app/cycles/2026-09', { cycleId: '2026-09' });
   sessionStore.reset();
   live.reset();
   toasts.clear();
@@ -106,6 +106,7 @@ describe('cycle page', () => {
         },
       }),
     );
+    FakeEventSource.latest.open();
     FakeEventSource.latest.emit({
       type: 'cycle',
       cycleId: '2026-09',
@@ -292,6 +293,7 @@ describe('cycle page', () => {
       screen.getByText('The proposal appears here when the agent finishes.'),
     ).toBeInTheDocument();
 
+    FakeEventSource.latest.open();
     FakeEventSource.latest.emit({
       type: 'timeline',
       cycleId: '2026-09',
@@ -365,6 +367,91 @@ describe('cycle page', () => {
     expect(api.callsTo('POST /api/proposals/prop-1/approve')).toHaveLength(1);
     expect(screen.getByRole('img', { name: /^0 of 2 signatures/ })).toBeInTheDocument();
     void APPROVER_2;
+  });
+
+  it('shows cycle B after a navigation from A, and the actions target B', async () => {
+    const executesAt = new Date(Date.now() + 60_000).toISOString();
+    const cycleA = within_mandate({
+      summary: summary({
+        cycleId: '2026-08',
+        label: 'August 2026',
+        status: 'countdown',
+        approvals: null,
+        flagCount: 0,
+      }),
+      countdown: { executesAt, held: false },
+    });
+    const cycleB = within_mandate({
+      summary: summary({
+        cycleId: '2026-09',
+        label: 'September 2026',
+        status: 'countdown',
+        approvals: null,
+        flagCount: 0,
+      }),
+      countdown: { executesAt, held: false },
+    });
+    const slowB = deferred<CycleDetail>();
+    navigateTo('/app/cycles/2026-08', { cycleId: '2026-08' });
+    const api = await signIn('treasurer', {
+      'GET /api/cycles/2026-08': cycleA,
+      [CYCLE]: () => slowB.promise,
+      'POST /api/cycles/2026-08/hold': {},
+      'POST /api/cycles/2026-09/hold': {},
+    });
+    render(Page);
+    await screen.findByRole('heading', { name: 'August 2026' });
+    // Request-specific state on A: an open Cancel dialog.
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel proposal' }));
+    await screen.findByRole('dialog', { name: 'Cancel this proposal?' });
+
+    navigateTo('/app/cycles/2026-09', { cycleId: '2026-09' });
+
+    await waitFor(() => expect(api.callsTo(CYCLE)).toHaveLength(1));
+    // While B loads: no dialog, no A, no actions.
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'August 2026' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Hold' })).toBeNull();
+
+    slowB.resolve(cycleB);
+    expect(await screen.findByRole('heading', { name: 'September 2026' })).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: 'Hold' }));
+    await waitFor(() => expect(api.callsTo('POST /api/cycles/2026-09/hold')).toHaveLength(1));
+    expect(api.callsTo('POST /api/cycles/2026-08/hold')).toHaveLength(0);
+    // One load per cycle on first mount, not two.
+    expect(api.callsTo('GET /api/cycles/2026-08')).toHaveLength(1);
+  });
+
+  describe('?record=1', () => {
+    const RECORD = 'GET /api/decision-records/rec-1';
+
+    it('opens the decision record once; closing it, or a poll, does not reopen it', async () => {
+      const api = await signIn('treasurer', {
+        [CYCLE]: cycleDetail(),
+        [RECORD]: () => errorResponse(500, 'internal', 'The ledger is busy.'),
+      });
+      navigateTo('/app/cycles/2026-09?record=1', { cycleId: '2026-09' });
+      render(Page);
+
+      const dialog = await screen.findByRole('dialog', { name: 'Decision record' });
+      expect(await within(dialog).findByText('The ledger is busy.')).toBeInTheDocument();
+      expect(api.callsTo(RECORD)).toHaveLength(1);
+
+      // Close the panel, then let the live stream refetch the cycle: it stays closed.
+      await fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      const before = api.callsTo(CYCLE).length;
+      FakeEventSource.latest.open();
+      FakeEventSource.latest.emit({
+        type: 'cycle',
+        cycleId: '2026-09',
+        status: 'awaiting-approval',
+      });
+      await waitFor(() => expect(api.callsTo(CYCLE).length).toBeGreaterThan(before));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(api.callsTo(RECORD)).toHaveLength(1);
+    });
   });
 
   describe('MainNet payouts', () => {

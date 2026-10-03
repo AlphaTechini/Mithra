@@ -133,6 +133,8 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   for (;;) {
     if (exited !== null) {
       const tail = existsSync(logPath) ? readFileSync(logPath, 'utf8').slice(-2000) : '';
+      await stop(server);
+      log.end();
       throw new Error(`The full-stack server exited with ${exited} before it was ready.\n${tail}`);
     }
     try {
@@ -142,6 +144,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     }
     if (Date.now() - started > START_TIMEOUT_MS) {
       await stop(server);
+      log.end();
       throw new Error(`The full-stack server did not answer within ${START_TIMEOUT_MS / 1000}s.`);
     }
     await new Promise((wait) => setTimeout(wait, 500));

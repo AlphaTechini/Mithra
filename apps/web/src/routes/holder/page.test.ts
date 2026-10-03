@@ -238,6 +238,27 @@ describe('holder home', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('The ledger is busy. Try again.');
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
+
+  it('Retry stops being busy when the retry fails too, and a later retry can succeed', async () => {
+    let answer: 'fail' | 'ok' = 'fail';
+    const api = stubApi({
+      'GET /api/me/position': () =>
+        answer === 'fail'
+          ? json({ error: { code: 'unavailable', message: 'The ledger is busy. Try again.' } }, 503)
+          : json(position({ payments: [paid] })),
+    });
+    render(Page);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(callsTo(api, 'GET /api/me/position')).toBe(2));
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    await waitFor(() => expect(retry).toBeEnabled());
+    expect(retry).not.toHaveAttribute('aria-busy');
+
+    answer = 'ok';
+    await fireEvent.click(retry);
+    expect(await screen.findByText('2,500')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 });
 
 describe('U7: holder screens never render another holder', () => {

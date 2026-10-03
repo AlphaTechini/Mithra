@@ -47,6 +47,8 @@
     | { kind: 'idle' }
     | { kind: 'signing' }
     | { kind: 'recording' }
+    /** "Check again": re-reading Grofty's view of a transfer that is recorded but not confirmed. */
+    | { kind: 'checking' }
     | { kind: 'error'; message: string; helpUrl: string | null }
     /** Grofty sent it, the server has not recorded it yet: do not send again, record it. */
     | { kind: 'unrecorded'; updateId: string; outcome: MainnetTransferOutcome; message: string };
@@ -63,8 +65,9 @@
 
   const symbol = $derived(sessionStore.config?.assetSymbol ?? 'CC');
   const busyId = $derived(
-    Object.entries(rows).find(([, r]) => r.kind === 'signing' || r.kind === 'recording')?.[0] ??
-      null,
+    Object.entries(rows).find(
+      ([, r]) => r.kind === 'signing' || r.kind === 'recording' || r.kind === 'checking',
+    )?.[0] ?? null,
   );
 
   /** The amount still to send, plus the fee buffer (P5). The server's own figures, added here. */
@@ -248,6 +251,38 @@
     await record(payout, { updateId: sent.updateId, outcome });
   }
 
+  /**
+   * A recorded transfer that is not confirmed yet (the holder has to accept it, or Mithra could not
+   * read whether it arrived): read Grofty's view of it again and record what it says. Same update
+   * id, so the server only moves it to Paid when Grofty now reports `completed` (P4); otherwise it
+   * stays as it was.
+   */
+  async function checkAgain(payout: MainnetPayout): Promise<void> {
+    if (busyId !== null || !payout.link) return;
+    const updateId = payout.link.updateId;
+    rows[payout.paymentId] = { kind: 'checking' };
+    let outcome: MainnetTransferOutcome = 'unknown';
+    try {
+      outcome = await grofty.transferOutcome(updateId, payout.receiver);
+    } catch {
+      // An unreadable outcome is recorded as unknown, which changes nothing.
+    }
+    try {
+      payouts = await recordMainnetPayout(cycleId, payout.paymentId, { updateId, outcome });
+      rows[payout.paymentId] = { kind: 'idle' };
+      const now = payouts.payouts.find((p) => p.paymentId === payout.paymentId);
+      toasts.push(
+        now?.status === 'paid'
+          ? `Confirmed: the payment to ${payout.holder.displayName} arrived`
+          : `Still not confirmed for ${payout.holder.displayName}. Check it in Grofty.`,
+      );
+      onchange?.();
+    } catch (e) {
+      const copy = describeError(e, "Couldn't check the payment.");
+      rows[payout.paymentId] = { kind: 'error', message: copy.message, helpUrl: null };
+    }
+  }
+
   /** The holder accepted the offer in Grofty: record the same transfer as completed. */
   async function markAccepted(payout: MainnetPayout): Promise<void> {
     if (busyId !== null || !payout.link) return;
@@ -347,13 +382,32 @@
               {#if payout.link}<AppLink link={payout.link.href}>View on explorer</AppLink>{/if}
               {#if row.kind === 'recording'}
                 <PendingNotice message="Waiting for Mithra to record it…" />
+              {:else if row.kind === 'checking'}
+                <PendingNotice message="Checking in Grofty…" />
               {:else}
+                {#if payout.link}
+                  <Button
+                    variant="secondary"
+                    small
+                    disabled={busyId !== null}
+                    aria-label="Check again for {payout.holder.displayName}"
+                    onclick={() => checkAgain(payout)}>Check again</Button
+                  >
+                {/if}
                 <Button
                   variant="secondary"
                   small
                   disabled={busyId !== null}
                   onclick={() => markAccepted(payout)}>Mark as accepted</Button
                 >
+                <p class="muted note">
+                  Not confirmed yet. Check the transfer in Grofty, then check again here.
+                </p>
+                {#if row.kind === 'error' || row.kind === 'unrecorded'}
+                  <p class="problem" role="alert">
+                    <Icon name="alert" size={16} /><span>{row.message}</span>
+                  </p>
+                {/if}
               {/if}
             {:else if row.kind === 'signing'}
               <StatusChip kind="pending" />
@@ -487,6 +541,11 @@
   }
   .muted {
     color: var(--color-text-muted);
+  }
+  .note {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: var(--text-13);
   }
   .done {
     display: flex;

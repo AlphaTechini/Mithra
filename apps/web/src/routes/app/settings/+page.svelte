@@ -48,14 +48,15 @@
   onMount(() => {
     void sessionStore.load();
     void org.load();
+    return live.subscribe('seal', () => void org.load());
+  });
+
+  // The Infrastructure panel shows on LocalNet only, so the node status is loaded and polled only
+  // there; the poll stops as soon as the network is anything else.
+  $effect(() => {
+    if (!localnet) return;
     void infra.load();
-    const offs = [
-      live.subscribe('seal', () => void org.load()),
-      poll(() => void infra.load(), 10_000),
-    ];
-    return () => {
-      for (const off of offs) off();
-    };
+    return poll(() => void infra.load(), 10_000);
   });
 
   /**

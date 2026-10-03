@@ -237,4 +237,28 @@ describe('holder welcome', () => {
     render(Page);
     expect(await screen.findByRole('alert')).toHaveTextContent('This invitation is not for you.');
   });
+
+  it('Retry stops being busy when the retry fails too, and a later retry can succeed', async () => {
+    sessionStore.reset();
+    let answer: 'fail' | 'ok' = 'fail';
+    const api = stubApi({
+      'GET /api/session': holderSession(),
+      'GET /api/config/public': configFor(),
+      'GET /api/me/position': () =>
+        answer === 'fail'
+          ? json({ error: { code: 'unavailable', message: 'The ledger is busy. Try again.' } }, 503)
+          : json(position({ pendingUnits: [tranche] })),
+    });
+    await sessionStore.load();
+    render(Page);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(callsTo(api, 'GET /api/me/position')).toBe(2));
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    await waitFor(() => expect(retry).toBeEnabled());
+    expect(retry).not.toHaveAttribute('aria-busy');
+
+    answer = 'ok';
+    await fireEvent.click(retry);
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
 });
