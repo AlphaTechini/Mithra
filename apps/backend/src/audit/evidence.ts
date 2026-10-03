@@ -122,12 +122,12 @@ function labelOfHolder(ctx: EvidenceContext, party: string): string {
   return ctx.holderLabels.get(party) ?? UNKNOWN_HOLDER;
 }
 
+/** "Holder B" before "Holder AA": the shorter label first, then the string. */
 function byLabel<T extends { holderLabel: string }>(a: T, b: T): number {
-  return a.holderLabel < b.holderLabel
-    ? -1
-    : a.holderLabel > b.holderLabel
-      ? 1
-      : a.holderLabel.length - b.holderLabel.length;
+  return (
+    a.holderLabel.length - b.holderLabel.length ||
+    (a.holderLabel < b.holderLabel ? -1 : a.holderLabel > b.holderLabel ? 1 : 0)
+  );
 }
 
 export function mapDecisionEvidence(

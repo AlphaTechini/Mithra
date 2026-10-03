@@ -38,6 +38,8 @@ export type AutoReceiveOptions = AutoReceiveCommon &
 export class AutoReceiveStatus {
   private readonly cache = new Map<string, { value: boolean | null; expiresAt: number }>();
   private readonly inflight = new Map<string, Promise<boolean | null>>();
+  /** Bumped by `invalidate`: a lookup started under an older generation is not cached or shared. */
+  private readonly generations = new Map<string, number>();
   private readonly ttlMs: number;
   private readonly now: () => number;
 
@@ -51,7 +53,12 @@ export class AutoReceiveStatus {
     if (cached && this.now() < cached.expiresAt) return cached.value;
     const running = this.inflight.get(holder);
     if (running) return running;
-    const lookup = this.lookup(holder).finally(() => this.inflight.delete(holder));
+    const lookup: Promise<boolean | null> = this.lookup(holder, this.generationOf(holder)).finally(
+      () => {
+        // Only this lookup's own entry: `invalidate` may already have replaced it.
+        if (this.inflight.get(holder) === lookup) this.inflight.delete(holder);
+      },
+    );
     this.inflight.set(holder, lookup);
     return lookup;
   }
@@ -62,12 +69,21 @@ export class AutoReceiveStatus {
     return new Map(holders.map((h, i) => [h, answers[i] ?? null]));
   }
 
-  /** Forget the cached answer (after the holder turned auto-receive on). */
+  /**
+   * Forget the cached answer (after the holder turned auto-receive on), and any lookup still in
+   * flight: it asked before the change, so it is neither shared nor cached.
+   */
   invalidate(holder: string): void {
+    this.generations.set(holder, this.generationOf(holder) + 1);
     this.cache.delete(holder);
+    this.inflight.delete(holder);
   }
 
-  private async lookup(holder: string): Promise<boolean | null> {
+  private generationOf(holder: string): number {
+    return this.generations.get(holder) ?? 0;
+  }
+
+  private async lookup(holder: string, generation: number): Promise<boolean | null> {
     let value: boolean | null;
     try {
       if ('lookup' in this.options) {
@@ -84,6 +100,7 @@ export class AutoReceiveStatus {
       this.options.onError?.(holder, error);
       value = null;
     }
+    if (generation !== this.generationOf(holder)) return value;
     const ttl = value === null ? Math.min(AUTO_RECEIVE_ERROR_TTL_MS, this.ttlMs) : this.ttlMs;
     this.cache.set(holder, { value, expiresAt: this.now() + ttl });
     return value;

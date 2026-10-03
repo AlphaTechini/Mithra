@@ -384,7 +384,13 @@ export function treasuryRoutes(app: FastifyInstance, deps: TreasuryRoutesDeps): 
           return null;
         },
       ),
-      cycles.listCycles(),
+      cycles.listCycles().then(
+        (list) => list,
+        (error: unknown) => {
+          app.log.warn({ err: error }, 'could not read the cycles for the overview');
+          return [] as CycleSummary[];
+        },
+      ),
       activity.list(RECENT_ACTIVITY),
     ]);
 

@@ -19,6 +19,14 @@ describe('describeSchedule', () => {
     expect(describeSchedule('0 9 40 * *', 'UTC')).toBe('Cron "0 9 40 * *" (UTC)');
     expect(describeSchedule('nonsense', 'UTC')).toBe('Cron "nonsense" (UTC)');
   });
+
+  it('reads weekdays 0 to 7 and shows the raw cron for any other number', () => {
+    expect(describeSchedule('0 9 * * 0', 'UTC')).toBe('Weekly on Sunday at 09:00 UTC');
+    expect(describeSchedule('0 9 * * 7', 'UTC')).toBe('Weekly on Sunday at 09:00 UTC');
+    expect(describeSchedule('0 9 * * 6', 'UTC')).toBe('Weekly on Saturday at 09:00 UTC');
+    expect(describeSchedule('0 9 * * 8', 'UTC')).toBe('Cron "0 9 * * 8" (UTC)');
+    expect(describeSchedule('0 9 * * 15', 'UTC')).toBe('Cron "0 9 * * 15" (UTC)');
+  });
 });
 
 describe('describeRecordDate', () => {

@@ -157,6 +157,37 @@ describe('holder labels', () => {
     ]);
   });
 
+  it('sort Holder B before Holder AA in payouts and payments once there are more than 26 holders', () => {
+    const holders = Array.from({ length: 30 }, (_, i) => party(`h${String(i).padStart(2, '0')}`));
+    const many: Evidence = {
+      tag: 'EvDecision',
+      value: decision({
+        payouts: [...holders]
+          .reverse()
+          .map((holder) => ({ holder, units: 1, amount: '1.0000000000' })),
+      }),
+    };
+    const manyOutcome: Evidence = {
+      tag: 'EvOutcome',
+      value: outcome({
+        payments: [...holders].reverse().map((holder, i) => ({
+          holder,
+          paymentCid: `cid-${i}`,
+          amount: '1.0000000000',
+          status: 'Paid' as const,
+          transferInstructionCid: null,
+        })),
+      }),
+    };
+    const ctx = context([many, manyOutcome]);
+    const expected = holders.map((_, i) => holderLabel(i));
+    const labelsOf = (rows: { holderLabel: string }[] | undefined): string[] | undefined =>
+      rows?.map((r) => r.holderLabel);
+    expect(labelsOf(toEvidenceRecord(many, ctx).decision?.payouts)).toEqual(expected);
+    expect(labelsOf(toEvidenceRecord(manyOutcome, ctx).outcome?.payments)).toEqual(expected);
+    expect(expected.indexOf('Holder B')).toBeLessThan(expected.indexOf('Holder AA'));
+  });
+
   it('follow party-id order across the records of a grant and are stable for one holder', () => {
     const labels = holderLabelsFor([D, O]);
     // alpha < mid < zeta

@@ -198,4 +198,58 @@ describe('GET /api/public/showcase', () => {
     await app.inject({ method: 'GET', url: '/api/public/showcase' });
     expect(src.reads).toBe(2);
   });
+
+  it('shares one build between concurrent requests, also after the answer expired', async () => {
+    let reads = 0;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const cycles = [summary({})];
+    const slow: ShowcaseSource = {
+      async listCycles() {
+        reads += 1;
+        await gate;
+        return cycles;
+      },
+      getCycle: (id) =>
+        Promise.resolve(detail(cycles.find((c) => c.cycleId === id) ?? summary({}))),
+    };
+    let clock = 1_000;
+    app = Fastify();
+    showcaseRoute(app, { cycles: slow, assetSymbol: 'CC', now: () => clock, cacheMs: 15_000 });
+    const server = app;
+    const requests = Array.from({ length: 5 }, () =>
+      server.inject({ method: 'GET', url: '/api/public/showcase' }),
+    );
+    release();
+    const replies = await Promise.all(requests);
+    expect(reads).toBe(1);
+    expect(replies.every((r) => r.statusCode === 200)).toBe(true);
+    clock += 16_000;
+    await Promise.all([
+      app.inject({ method: 'GET', url: '/api/public/showcase' }),
+      app.inject({ method: 'GET', url: '/api/public/showcase' }),
+    ]);
+    expect(reads).toBe(2);
+  });
+
+  it('does not cache a failed build: the next request tries again', async () => {
+    let reads = 0;
+    const cycles = [summary({})];
+    const flaky: ShowcaseSource = {
+      listCycles() {
+        reads += 1;
+        return reads === 1 ? Promise.reject(new Error('ledger down')) : Promise.resolve(cycles);
+      },
+      getCycle: () => Promise.resolve(detail(summary({}))),
+    };
+    app = Fastify();
+    showcaseRoute(app, { cycles: flaky, assetSymbol: 'CC' });
+    const first = await app.inject({ method: 'GET', url: '/api/public/showcase' });
+    expect(first.statusCode).toBe(500);
+    const second = await app.inject({ method: 'GET', url: '/api/public/showcase' });
+    expect(second.statusCode).toBe(200);
+    expect(reads).toBe(2);
+  });
 });

@@ -50,7 +50,10 @@ export function describeSchedule(cron: string, timezone: string): string {
   }
   if (day === '*' && weekday === '*') return `Daily at ${time}`;
   if (day === '*' && NUMBER.test(weekday)) {
-    const name = WEEKDAYS[Number(weekday) % 7];
+    // 0 and 7 are both Sunday in cron; anything else is not a weekday.
+    const dow = Number(weekday);
+    if (dow > 7) return raw;
+    const name = WEEKDAYS[dow % 7];
     return name ? `Weekly on ${name} at ${time}` : raw;
   }
   return raw;

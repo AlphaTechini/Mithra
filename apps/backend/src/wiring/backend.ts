@@ -148,7 +148,7 @@ export function createBackend(
           onError: onAutoReceiveError,
         });
   const payouts = wallets
-    ? new MainnetPayouts({ config, db, ledger, names, activity, bus, cycles: cycle.cycles })
+    ? new MainnetPayouts({ config, db, ledger, names, activity, bus, cycles: cycle.cycles, log })
     : undefined;
   const holderAdmin = createHolderAdmin({ config, ledger, names, activity, bus, db });
   const services = createAgentServices({

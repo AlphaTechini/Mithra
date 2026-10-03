@@ -79,4 +79,29 @@ describe('AutoReceiveStatus', () => {
     await status.get('a');
     expect(calls).toHaveLength(2);
   });
+
+  it('discards a lookup in flight when invalidated: it is not shared and not cached', async () => {
+    const answers: { resolve: (value: boolean) => void }[] = [];
+    let asked = 0;
+    const status = new AutoReceiveStatus({
+      lookup: () => {
+        asked += 1;
+        return new Promise<boolean>((resolve) => answers.push({ resolve }));
+      },
+    });
+    const old = status.get('a'); // starts lookup 1 (the old answer)
+    status.invalidate('a');
+    const fresh = status.get('a'); // must start lookup 2, not share lookup 1
+    expect(asked).toBe(2);
+    answers[0]?.resolve(false); // the old lookup resolves after invalidation
+    expect(await old).toBe(false);
+    // The old answer did not reach the cache, and the fresh lookup is still the one in flight.
+    const again = status.get('a');
+    expect(asked).toBe(2);
+    answers[1]?.resolve(true);
+    expect(await fresh).toBe(true);
+    expect(await again).toBe(true);
+    expect(await status.get('a')).toBe(true);
+    expect(asked).toBe(2);
+  });
 });

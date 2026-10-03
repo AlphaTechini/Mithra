@@ -1,5 +1,5 @@
 import { PolicyFieldsSchema, type PartyRef, type PolicyFields } from '@mithra/shared';
-import { DecimalString } from '@mithra/shared';
+import { DecimalString, toDecimal } from '@mithra/shared';
 import { Cron } from 'croner';
 import { z } from 'zod';
 import { formatAmount } from './format';
@@ -265,6 +265,26 @@ function show(key: keyof typeof LABELS, value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** The fields that hold a decimal: "5000" and the ledger's "5000.0000000000" are the same cap. */
+const DECIMAL_FIELDS: ReadonlySet<string> = new Set([
+  'cap',
+  'fixedAmount',
+  'deviationPct',
+  'unitChangePct',
+  'feeBuffer',
+]);
+
+function sameValue(key: string, before: unknown, value: unknown): boolean {
+  if (DECIMAL_FIELDS.has(key) && typeof before === 'string' && typeof value === 'string') {
+    try {
+      return toDecimal(before).equals(toDecimal(value));
+    } catch {
+      // Not a decimal after all: fall through to the plain comparison.
+    }
+  }
+  return JSON.stringify(before) === JSON.stringify(value);
+}
+
 /** Applies a change on top of the sealed Mandate. Nothing is taken from the model but what it names. */
 export async function resolveMandateChange(
   args: MandateChangeArgs,
@@ -295,7 +315,7 @@ export async function resolveMandateChange(
   for (const [key, value] of Object.entries(overrides)) {
     if (value === undefined) continue;
     const k = key as keyof typeof LABELS;
-    if (JSON.stringify(before[key]) !== JSON.stringify(value)) {
+    if (!sameValue(key, before[key], value)) {
       changes.push({ label: LABELS[k], from: show(k, before[key]), to: show(k, value) });
     }
     target[key] = value;

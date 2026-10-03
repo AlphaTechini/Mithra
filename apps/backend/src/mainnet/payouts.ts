@@ -29,6 +29,7 @@ export interface MainnetPayoutsDeps {
   bus: EventBus;
   cycles: Pick<CycleService, 'getCycle'>;
   now?: () => Date;
+  log?: { warn(object: unknown, message?: string): void };
 }
 
 /**
@@ -146,6 +147,15 @@ export class MainnetPayouts {
           'That payment is not part of this cycle. Reload the page and try again.',
         );
       }
+      const status = GroftyMainnetRail.recordedStatus(body.outcome);
+      // A retry of a record the ledger already took (the first answer was lost, or the bookkeeping
+      // after the ledger write failed): the payment carries this update id and the status this
+      // record asks for, so it is done. Nothing is submitted; only the tx ref is repaired.
+      if (payment.payload.externalTxRef === body.updateId && payment.payload.status === status) {
+        await this.repairTxRef(payment.contractId, body.updateId);
+        await this.emitStatus(cycleId);
+        return this.list(cycleId);
+      }
       if (payment.payload.status === 'Paid') {
         throw new ApiError(
           409,
@@ -170,45 +180,95 @@ export class MainnetPayouts {
         );
       }
 
-      const status = GroftyMainnetRail.recordedStatus(body.outcome);
-      const tx = await client.submit({
-        actAs: [this.deps.config.parties.agent],
-        readAs: this.deps.config.ledger.readAsTreasury ? [this.treasury] : [],
-        commands: [
-          commands.paymentRecordExternal(payment.contractId, { txRef: body.updateId, status }),
-        ],
-        shape: 'LEDGER_EFFECTS',
+      let paymentCid: string;
+      try {
+        const tx = await client.submit({
+          actAs: [this.deps.config.parties.agent],
+          readAs: this.deps.config.ledger.readAsTreasury ? [this.treasury] : [],
+          commands: [
+            commands.paymentRecordExternal(payment.contractId, { txRef: body.updateId, status }),
+          ],
+          shape: 'LEDGER_EFFECTS',
+        });
+        paymentCid = choiceResults.paymentRecordExternal(tx).paymentCid;
+      } catch (error) {
+        // The contract we read may be archived already because the ledger took an earlier attempt
+        // with this update id: then the record is done and only the bookkeeping is left.
+        const done = await this.recordedBefore(cycleId, paymentId, body.updateId, status);
+        if (!done) throw error;
+        await this.repairTxRef(done.contractId, body.updateId);
+        await this.emitStatus(cycleId);
+        return this.list(cycleId);
+      }
+
+      // The ledger now holds the record. From here on a bookkeeping failure is logged, never
+      // reported as a failed recording: the treasurer's retry would target an archived contract.
+      await this.repairTxRef(paymentCid, body.updateId);
+      await this.bookkeep(`record of ${paymentId}`, async () => {
+        const holder = payment.payload.holder;
+        const name = await this.deps.names.name(holder);
+        const amount = formatAmount(payment.payload.amount, this.symbol);
+        const label = payment.payload.cycleLabel;
+        const text =
+          body.outcome === 'pending'
+            ? `Sent ${amount} to ${name} on MainNet (signed in Grofty); ${name} has to accept it`
+            : body.outcome === 'unknown'
+              ? `Paid ${amount} to ${name} on MainNet (signed in Grofty); whether it was accepted could not be read`
+              : `Paid ${amount} to ${name} on MainNet (signed in Grofty)`;
+        await this.deps.activity
+          .record({
+            actorParty: actor,
+            kind: body.outcome === 'pending' ? 'payment.awaiting' : 'payment.paid',
+            subject: cycleId,
+            text,
+            link: `/app/cycles/${cycleId}`,
+            seeded: payment.payload.seeded,
+            detail: { updateId: body.updateId, outcome: body.outcome, label },
+          })
+          .catch(() => undefined);
+        this.deps.bus.publish({ type: 'holder', change: 'payments' }, { parties: [holder] });
       });
-      const { paymentCid } = choiceResults.paymentRecordExternal(tx);
-      await this.store.setTxRef(paymentCid, body.updateId, 'payment');
-
-      const holder = payment.payload.holder;
-      const name = await this.deps.names.name(holder);
-      const amount = formatAmount(payment.payload.amount, this.symbol);
-      const label = payment.payload.cycleLabel;
-      const text =
-        body.outcome === 'pending'
-          ? `Sent ${amount} to ${name} on MainNet (signed in Grofty); ${name} has to accept it`
-          : body.outcome === 'unknown'
-            ? `Paid ${amount} to ${name} on MainNet (signed in Grofty); whether it was accepted could not be read`
-            : `Paid ${amount} to ${name} on MainNet (signed in Grofty)`;
-      await this.deps.activity
-        .record({
-          actorParty: actor,
-          kind: body.outcome === 'pending' ? 'payment.awaiting' : 'payment.paid',
-          subject: cycleId,
-          text,
-          link: `/app/cycles/${cycleId}`,
-          seeded: payment.payload.seeded,
-          detail: { updateId: body.updateId, outcome: body.outcome, label },
-        })
-        .catch(() => undefined);
-      this.deps.bus.publish({ type: 'holder', change: 'payments' }, { parties: [holder] });
-
-      await this.finishIfDone(cycleId, actor);
+      await this.bookkeep(`timeline of ${cycleId}`, () => this.finishIfDone(cycleId, actor));
       await this.emitStatus(cycleId);
       return this.list(cycleId);
     });
+  }
+
+  /** The payment of `paymentId` as the ledger holds it now, if it carries this update id and status. */
+  private async recordedBefore(
+    cycleId: string,
+    paymentId: string,
+    updateId: string,
+    status: 'Paid' | 'AwaitingAcceptance',
+  ): Promise<Contract<Payment> | null> {
+    try {
+      const found = (await this.paymentsOf(cycleId)).find(
+        (p) => this.paymentIdOf(cycleId, p.payload.holder) === paymentId,
+      );
+      return found && found.payload.externalTxRef === updateId && found.payload.status === status
+        ? found
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Stores the update id of a recorded payment; a failure is logged (the ledger has the record). */
+  private repairTxRef(contractId: string, updateId: string): Promise<void> {
+    return this.bookkeep(`tx ref of ${contractId}`, () =>
+      this.store.setTxRef(contractId, updateId, 'payment'),
+    );
+  }
+
+  private async bookkeep(what: string, step: () => Promise<void>): Promise<void> {
+    try {
+      await step();
+    } catch (error) {
+      this.deps.log?.warn(
+        { err: error },
+        `MainNet payout recorded on the ledger, but its ${what} could not be saved`,
+      );
+    }
   }
 
   /** When every payment of the cycle is recorded, closes the "Payments" step of the timeline. */

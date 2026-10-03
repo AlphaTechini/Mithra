@@ -1,5 +1,5 @@
 import { EventBus, type Published } from '../events/bus';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Ledger } from './../ledger';
 import type { AccessGrant, Contract } from '../ledger';
 import { startGrantExpiry } from './expiry';
@@ -78,13 +78,16 @@ function fakeLedger(grants: Contract<AccessGrant>[], options: { failFor?: string
 
 function setup(
   grants: Contract<AccessGrant>[],
-  options: { failFor?: string; now?: Date; intervalMs?: number } = {},
+  options: { failFor?: string; now?: Date | (() => Date); intervalMs?: number } = {},
 ) {
   const { ledger, submitted } = fakeLedger(grants, options);
   const bus = new EventBus();
   const published: Published[] = [];
   bus.subscribe((p) => published.push(p));
   const activity: { kind: string; text: string; actorParty: string }[] = [];
+  const fixed = options.now;
+  const now: () => Date =
+    typeof fixed === 'function' ? fixed : () => fixed ?? new Date('2026-10-08T12:00:00Z');
   const expiry = startGrantExpiry({
     ledger,
     bus,
@@ -97,7 +100,7 @@ function setup(
     },
     intervalMs: options.intervalMs ?? 60_000,
     readAs: ['treasury::1'],
-    now: () => options.now ?? new Date('2026-10-08T12:00:00Z'),
+    now,
   });
   return { expiry, submitted, published, activity };
 }
@@ -151,11 +154,24 @@ describe('grant expiry', () => {
     expect(submitted.map((s) => s.cid)).toEqual(['cid-g2']);
   });
 
-  it('checks on a timer, well within 5 minutes by default', async () => {
-    const { expiry, submitted } = setup([grant('g', '2026-10-01T00:00:00Z')], { intervalMs: 20 });
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    expiry.stop();
-    expect(submitted.map((s) => s.cid)).toEqual(['cid-g']);
+  it('checks on a timer: a grant that expires after startup is closed by a tick', async () => {
+    // Not expired at startup, so the immediate check at startup closes nothing; only a later
+    // timer tick, after the clock has passed the expiry, can close it.
+    let clock = new Date('2026-10-08T12:00:00Z');
+    const { expiry, submitted } = setup([grant('g', '2026-10-08T12:05:00Z')], {
+      intervalMs: 10,
+      now: () => clock,
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(submitted).toEqual([]);
+      clock = new Date('2026-10-08T12:05:01Z');
+      await vi.waitFor(() => expect(submitted.map((s) => s.cid)).toEqual(['cid-g']), {
+        timeout: 2000,
+      });
+    } finally {
+      expiry.stop();
+    }
   });
 
   it('shares one run between concurrent callers', async () => {

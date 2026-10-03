@@ -1,6 +1,6 @@
 import type { CycleDetail, CycleStatus } from '@mithra/shared';
 import { describe, expect, it } from 'vitest';
-import { createFakeServices, fakeNames, FAKE_PARTIES } from '../fakes';
+import { createFakeServices, fakeMandate, fakeNames, FAKE_PARTIES } from '../fakes';
 import {
   ALL_TOOLS,
   MALFORMED_REQUEST,
@@ -224,6 +224,41 @@ describe('create_cycle', () => {
     expect(amountsWritten('Pay 5k now').map(String)).toContain('5000');
     expect(amountsWritten('send 2 million').map(String)).toContain('2000000');
     expect(amountsWritten('pay 50,000 CC now').map(String)).toContain('50000');
+  });
+
+  it('does not count years, dates, cycle ids, quarters, counts, ordinals or percentages as amounts', () => {
+    for (const text of [
+      'Distribute for September 2026',
+      'Run Q3',
+      'Run Q3 2026',
+      'Needs 2 of 3 approvals',
+      'Pay for 2026-09',
+      'Record date 2026-09-30',
+      'Pay on the 3rd',
+      'Pay on 30 September',
+      'Pay on September 30, 2026',
+      'Flag at 50% or 12.5 percent',
+    ]) {
+      expect(amountsWritten(text).map(String), text).toEqual([]);
+    }
+  });
+
+  it('keeps the amount next to a date or period', () => {
+    expect(amountsWritten('Distribute 300 CC for August 2026.').map(String)).toEqual(['300']);
+    expect(amountsWritten('1,200 CC for September').map(String)).toEqual(['1200']);
+    expect(amountsWritten('Pay 1.2k for 2026-09').map(String)).toEqual(['1200']);
+    expect(amountsWritten('Pay 300 CC in Q3, 2 of 3 approving').map(String)).toEqual(['300']);
+    expect(amountsWritten('Pay 2026 CC for September 2026').map(String)).toEqual(['2026']);
+  });
+
+  it('refuses a total of 2026 for "Distribute for September 2026", and starts nothing', async () => {
+    const ctx = context({ userText: 'Distribute for September 2026' });
+    const run = await tool('create_cycle').execute('{"total":"2026"}', ctx);
+    expect(run.card.status).toBe('failed');
+    expect(run.card.summary).toContain('not an amount you wrote');
+    expect((ctx.services as ReturnType<typeof createFakeServices>).runs).toEqual([]);
+    const q3 = context({ userText: 'Run Q3' });
+    expect((await tool('create_cycle').execute('{"total":"3"}', q3)).card.status).toBe('failed');
   });
 
   it('is only for the treasurer', () => {
@@ -647,6 +682,41 @@ describe('policy tools', () => {
     );
     expect(none.card.status).toBe('failed');
     expect(none.card.summary).toContain('no sealed Mandate');
+  });
+});
+
+describe('propose_mandate_change with ledger decimals', () => {
+  function sealedWithLedgerForm(): ReturnType<typeof createFakeServices> {
+    const services = createFakeServices();
+    const base = fakeMandate('5000.0000000000');
+    services.state.mandate = {
+      ...base,
+      terms: {
+        ...base.terms,
+        fixedAmount: '1200.0000000000',
+        deviationPct: '50.0000000000',
+        unitChangePct: '100.0000000000',
+        feeBuffer: '1.0000000000',
+      },
+    };
+    return services;
+  }
+
+  it('does not call 5000 a change from the sealed 5000.0000000000', async () => {
+    const run = await tool('propose_mandate_change').execute(
+      '{"cap":"5000","fixedAmount":"1200","deviationPct":"50","unitChangePct":"100","feeBuffer":"1"}',
+      context({ services: sealedWithLedgerForm() }),
+    );
+    expect(run.card.status).toBe('failed');
+    expect(run.card.summary).toContain('already matches');
+  });
+
+  it('lists only the fields whose value really changes', async () => {
+    const run = await tool('propose_mandate_change').execute(
+      '{"cap":"5000","feeBuffer":"2","approvalThreshold":3}',
+      context({ services: sealedWithLedgerForm() }),
+    );
+    expect(run.card.details?.map((d) => d.label)).toEqual(['Approval threshold', 'Fee buffer']);
   });
 });
 

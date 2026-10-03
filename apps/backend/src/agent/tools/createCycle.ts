@@ -12,14 +12,36 @@ import { messageOf } from './errors';
 import { cycleFacts, isAboveCap, waitForProposal } from './cycleWait';
 import { card, defineTool, failedRun, type ToolContext, type ToolRun } from './types';
 
+const MONTH =
+  '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
+
+/**
+ * Numbers that are dates, periods, counts or ratios rather than amounts: a cycle id or ISO date
+ * (2026-09, 2026-09-30), a year or day next to a month name (September 2026, 30 September), a
+ * quarter (Q3, Q3 2026), "2 of 3", an ordinal (3rd) and a percentage (50%).
+ */
+const NOT_AMOUNTS = new RegExp(
+  [
+    String.raw`(?<![\d,.])\d{4}-\d{2}(?:-\d{2})?(?![\d-])`,
+    String.raw`\b${MONTH}\b\.?\s+(?:\d{1,2}(?:st|nd|rd|th)?\b(?:,?\s+\d{4}\b)?|\d{4}\b)`,
+    String.raw`\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?${MONTH}\b\.?(?:,?\s+\d{4}\b)?`,
+    String.raw`\bQ[1-4]\b(?:\s+\d{4}\b)?`,
+    String.raw`\b\d+\s+of\s+\d+\b`,
+    String.raw`\b\d+(?:st|nd|rd|th)\b`,
+    String.raw`\d+(?:\.\d+)?\s*(?:%|percent\b|per\s+cent\b)`,
+  ].join('|'),
+  'gi',
+);
+
 /**
  * Amounts a person wrote in `text`: "1,200", "1200.50", "5k", "2 million". The agent only starts
  * a cycle for a total that appears in the user's own message, so the model cannot choose one.
+ * Years, dates, cycle ids, quarters, "2 of 3", ordinals and percentages are not amounts.
  */
 export function amountsWritten(text: string): Decimal[] {
   const found: Decimal[] = [];
   const pattern = /(\d{1,3}(?:[,_]\d{3})+|\d+)(\.\d+)?(?:\s*(k|m|thousand|million)\b)?/gi;
-  for (const match of text.matchAll(pattern)) {
+  for (const match of text.replace(NOT_AMOUNTS, ' ').matchAll(pattern)) {
     const whole = (match[1] ?? '').replace(/[,_]/g, '');
     const value = new Decimal(`${whole}${match[2] ?? ''}`);
     const suffix = (match[3] ?? '').toLowerCase();

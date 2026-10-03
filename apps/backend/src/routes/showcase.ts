@@ -62,12 +62,27 @@ export interface ShowcaseRouteDeps {
 export function showcaseRoute(app: FastifyInstance, deps: ShowcaseRouteDeps): void {
   const now = deps.now ?? Date.now;
   const cacheMs = deps.cacheMs ?? 15_000;
-  let cached: { at: number; value: Showcase } | undefined;
+  // The in-flight (or finished) build is cached, not only its value: visitors who arrive while a
+  // build runs share it, and a failed build is dropped so the next visitor tries again.
+  let cached: { at: number; settled: boolean; promise: Promise<Showcase> } | undefined;
   app.get('/api/public/showcase', async (_request, reply): Promise<Showcase> => {
     void reply.header('cache-control', 'public, max-age=15');
-    if (cached && now() - cached.at < cacheMs) return cached.value;
-    const value = await buildShowcase(deps.cycles, deps.assetSymbol);
-    cached = { at: now(), value };
-    return value;
+    if (cached && (!cached.settled || now() - cached.at < cacheMs)) return cached.promise;
+    const entry: NonNullable<typeof cached> = {
+      at: now(),
+      settled: false,
+      promise: buildShowcase(deps.cycles, deps.assetSymbol),
+    };
+    cached = entry;
+    entry.promise.then(
+      () => {
+        entry.settled = true;
+        entry.at = now();
+      },
+      () => {
+        if (cached === entry) cached = undefined;
+      },
+    );
+    return entry.promise;
   });
 }
