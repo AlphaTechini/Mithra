@@ -9,7 +9,8 @@ Mithra is a treasury app on Canton where an AI agent runs a fund's recurring yie
 ## 2. Context
 
 - **Event:** HackCanton Season 3 (organized by Noders on AppsFactory). Track 3: Investment Infrastructure (Funds, DAOs and Governance Tools).
-- **Sponsor challenges entered:** Grofty Wallet bounty (wallet in the core flow, demo on Canton MainNet). BitSafe challenge, contribution pool path (the treasury party runs as a Decentralized Party across independent nodes, reproducible LocalNet demo).
+- **Sponsor challenges entered:** BitSafe challenge, contribution pool path (the treasury party runs as a Decentralized Party across independent nodes, reproducible LocalNet demo).
+- **Withdrawn (decision 14, 2026-10-06):** the Grofty Wallet bounty (wallet in the core flow, demo on Canton MainNet). The MainNet payout path is built but not demonstrated: there are no funds for MainNet CC.
 - **Builder:** solo.
 - **Submission deadline:** October 9, 2026, 23:59 UTC.
 - **Judging criteria (whole hackathon):** Value, ICP, Metrics, GTM, MVP, Pitch. Track 3 asks for role-based workflows (managers, investors) and a demonstration of transparency, auditability and operational logic.
@@ -133,14 +134,14 @@ The app runs in two configured modes, LocalNet and MainNet. One codebase, a conf
 - No wallet supports LocalNet, so users sign through the app's own sign-in, with a visible role switcher for demo purposes. The UI must label this as "LocalNet test mode".
 - CC is minted locally by the LocalNet setup.
 
-**MainNet mode (Grofty segment).**
+**MainNet mode (Grofty segment; built, not demonstrated: decision 14).**
 - Users connect and sign with Grofty Wallet through CIP-0103.
 - Holders onboard through Grofty and turn on auto-receive (preapproval).
 - The treasurer executes the payout batch by signing in Grofty; real CC moves.
 - Small amounts only.
 - Same Daml package and flows as LocalNet; endpoints, operator and agent parties come from configuration.
 
-## 10. Demo story (target under 3 minutes for the Grofty video; under 5 for the main pitch video)
+## 10. Demo story (target under 5 minutes for the main pitch video; the Grofty video is dropped, decision 14)
 
 1. A treasurer arrives at the landing page and launches the app.
 2. Sets up the organization and approvers.
