@@ -1,6 +1,6 @@
 # Mithra
 
-Mithra is a treasury app on Canton where an AI agent runs a fund's recurring yield distributions on schedule, inside spending limits the ledger enforces, and gives auditors scoped, time-limited, logged access to exactly the records they ask for. A treasurer tells the agent the policy in plain English and seals it as a **Mandate**; the agent prepares every cycle, runs the checks, writes the memo and pays inside the Mandate; flagged cycles wait for the approvers; an auditor sees only the records the treasurer grants, for as long as the treasurer grants them. Built for HackCanton Season 3, Track 3 (Investment Infrastructure), entered in the Grofty Wallet and BitSafe challenges.
+Mithra is a treasury app on Canton where an AI agent runs a fund's recurring yield distributions on schedule, inside spending limits the ledger enforces, and gives auditors scoped, time-limited, logged access to exactly the records they ask for. A treasurer tells the agent the policy in plain English and seals it as a **Mandate**; the agent prepares every cycle, runs the checks, writes the memo and pays inside the Mandate; flagged cycles wait for the approvers; an auditor sees only the records the treasurer grants, for as long as the treasurer grants them. Built for HackCanton Season 3, Track 3 (Investment Infrastructure), entered in the BitSafe challenge. The MainNet payout path through Grofty Wallet is built and tested but not demonstrated, and Mithra is not entered in the Grofty bounty (decision 14).
 
 **What to look at first:** the landing page of the running app, [docs/demo-script.md](docs/demo-script.md) (the 5-minute story), [docs/traceability.md](docs/traceability.md) (every requirement with its code and tests), and the one Playwright test that walks the whole story in a browser (`pnpm e2e`).
 
@@ -97,7 +97,9 @@ The treasury organization's party is a **Decentralized Party** created with BitS
 
 Thresholds: hosting 2 of 3, namespace 2 of 3, governance confirmations 2 of 3. Settings, Infrastructure in the app shows the nodes, operators, threshold and live status ("Still running on 2 of 3 nodes"). The Daml Script tests `test_n8_*` prove a governed change cannot execute below its threshold; `scripts/bitsafe-demo.sh` runs the node-offline demonstration on a real LocalNet and writes a report to `docs/bitsafe-evidence/`. Full write-up, test results and remaining work: [docs/bitsafe.md](docs/bitsafe.md). The LocalNet run itself is still to be done on the owner's machine (see "What is not verified" below).
 
-## MainNet payouts with Grofty
+## MainNet payouts with Grofty (built, not demonstrated)
+
+> **Status (decision 14).** This path is implemented and tested against fakes, and off by default (`NETWORK=localnet`). It has not been run on Canton MainNet, which needs a funded Grofty Wallet. Everything the demo shows runs on LocalNet.
 
 There is no MainNet node, so Mithra cannot host its Daml package or read the MainNet ledger. `NETWORK=mainnet` therefore means **MainNet payouts** (decision 11 in [docs/decisions.md](docs/decisions.md)):
 
@@ -147,6 +149,8 @@ The integration tests need the sandbox and PostgreSQL users `mithra`/`mithra` wi
 
 ## Documentation
 
+**Continuing the project:** [docs/handoff.md](docs/handoff.md) has the plan, what is left before the October 9 deadline, and how to pick it up.
+
 | Document                                       | What                                                                            |
 | ---------------------------------------------- | ------------------------------------------------------------------------------- |
 | [details.md](details.md)                       | What Mithra is, who uses it, what it must never do                              |
@@ -169,6 +173,7 @@ Honest list. Details and the owner's checklists are in [docs/verification.md](do
 
 - **Not run in the environment this was built in** (the LocalNet and DecMan images cannot be pulled there): `scripts/localnet-up.sh` against real images, the Decentralized Party on three nodes, taking a node offline, `scripts/bitsafe-demo.sh`, and the Canton error ids Mithra maps to "the treasury's nodes did not confirm". These were checked with `bash -n`, `shellcheck`, `--dry-run` and fake services. Everything else runs against a real Canton sandbox with a test token registry.
 - **Not run with real services:** the OpenAI call (tested against a local stub that speaks the same protocol), and everything that needs a real Grofty Wallet and real MainNet CC (tested against fakes; nine guessed response shapes are listed for the owner).
+- **MainNet is not demonstrated** (decision 14): the Grofty payout path has not been run with a real wallet and real CC.
 - **MainNet is payouts only** (decision 11). Users other than the treasurer's payouts do not sign with their own Grofty party, which deviates from spec N6.
 - **LocalNet test mode** signs for every demo party on the server behind one shared password. It is a demo, not an authentication system, and the "Acting as" list shows the demo party names to everyone (except on holder screens, which link to the launch page to switch instead).
 - **One asset:** CC. The design goes through the token standard (CIP-56) so USDCx can follow, but it is not built.

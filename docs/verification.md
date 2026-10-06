@@ -202,6 +202,8 @@ Item 20 of the table above is what this section answers: taking node B offline l
 
 ## MainNet payouts with Grofty (owner's machine)
 
+> **Not part of the submission (decision 14).** Keep this checklist for when a funded Grofty Wallet is available; the hackathon demo runs on LocalNet only.
+
 `NETWORK=mainnet` means **MainNet payouts**. There is no MainNet node, so Mithra cannot host its Daml package or read the MainNet ledger: every Mithra record (organization, Mandate, proposals, approvals, decision records, payments, audit grants) stays on the **LocalNet** ledger, signed on the server through the role switcher exactly as on LocalNet (decision 11 in [decisions.md](decisions.md)). What changes is the money: a cycle the Mandate clears is paid as real CC transfers from the treasurer's Grofty Wallet, signed in the browser, one per holder. The server never moves MainNet funds, and the browser submits nothing to Canton except those transfers. Everything below needs a real Grofty Wallet and real (small) amounts of CC, so it was written and tested without them (fake provider in the unit tests, a fake Grofty in `apps/backend/test/integration/mainnet.test.ts`); this is what you run.
 
 ### Environment
