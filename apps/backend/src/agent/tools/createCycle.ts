@@ -68,7 +68,7 @@ const PositiveAmount = DecimalString.refine(
 
 export const createCycleParameters = z.strictObject({
   total: PositiveAmount.describe(
-    'The total the treasurer asked to distribute, in CC, exactly as they wrote it, e.g. "1200". Never calculate or round this.',
+    'The total the treasurer asked to distribute, in CC, as plain digits without thousands separators: they wrote "1,200", pass "1200". Never calculate or round this.',
   ),
   period: z
     .string()
@@ -347,7 +347,7 @@ export const createCycleTool = defineTool({
   name: 'create_cycle',
   description:
     'Prepare a distribution proposal for a cycle from the total the treasurer asked for in their message ' +
-    '("Distribute 1,200 CC for September"). Pass the total exactly as the treasurer wrote it and the month if they named one. ' +
+    '("Distribute 1,200 CC for September"). Pass the total the treasurer wrote, as plain digits ("1,200" becomes "1200"), and the month if they named one. ' +
     'Code splits the total by units on the record date, runs the checks and decides whether it fits the Mandate. ' +
     'It does NOT pay anyone, never takes per-holder amounts, and a total above the cap simply becomes a proposal that needs approvals. ' +
     'Call it once per request.',
