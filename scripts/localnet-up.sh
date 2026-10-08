@@ -418,6 +418,15 @@ treasury_listed() {
   printf '%s' "$p"
 }
 
+# DecMan A submits for the treasury (act-as); DecMan B and C read its governance contracts to confirm.
+ledger_grant_treasury_rights() {
+  local n
+  ledger_grant_rights a actAs "$1"
+  for n in $(printf '%s' "$NODE_IDS" | cut -d' ' -f2-); do
+    ledger_grant_rights "$n" readAs "$1"
+  done
+}
+
 create_treasury_party() {
   CURRENT_STEP="treasury Decentralized Party"
   local existing others peers_json_ids body n hosted=""
@@ -425,7 +434,7 @@ create_treasury_party() {
   if [ -n "$existing" ]; then
     state_set_str '.treasury.party' "$existing"
     # An earlier run may have been interrupted after the party was created and before the grant.
-    ledger_grant_rights a readAs "$existing"
+    ledger_grant_treasury_rights "$existing"
     log_skip "Treasury party $(short_party "$existing") (hosted on $(node_list_text); threshold $HOSTING_THRESHOLD)"
     return 0
   fi
@@ -452,7 +461,7 @@ create_treasury_party() {
   if [ "$hosted" != "$(node_list_text)" ] && ! is_dry; then
     log_warn "the ledger API reports the treasury party as local on: ${hosted:-no node}. Expected $(node_list_text). Check the hosting in DecMan (see docs/verification.md)."
   fi
-  ledger_grant_rights a readAs "$existing"
+  ledger_grant_treasury_rights "$existing"
   log_ok "Treasury party $(short_party "$existing") (hosted on $(node_list_text); threshold $HOSTING_THRESHOLD)"
 }
 
@@ -624,6 +633,11 @@ deploy_governance_rules() {
     log_skip "GovernanceRules for the treasury ($(short_party "$existing"), confirmations needed: $GOVERNANCE_THRESHOLD of 3)"
     return 0
   fi
+  # A failed deployment stays "failed" on DecMan A; start a new one instead of waiting on it.
+  if step_done rules_started && { status_completed a /contracts/status >/dev/null; [ $? -eq 2 ]; }; then
+    log_info "The last GovernanceRules deployment failed on DecMan A; starting it again."
+    state_set '.steps["rules_started"]' false
+  fi
   if ! step_done rules_started; then
     dm_curl a POST /contracts "$(rules_body)" >/dev/null
     step_mark rules_started
@@ -739,8 +753,10 @@ create_charter() {
     [ -n "$pcid" ] || die "CharterProposal was created but no contract id was found in the response: $resp"
   fi
   state_set_str '.charter.proposal_cid' "$pcid"
-  body="$(jq -cn --arg p "$(treasury)" --arg r "$(rules_cid)" --arg pc "$pcid" \
-    '{party_id: $p, rules_contract_id: $r, action: {type: "generic_vote", description: "MithraCreateCharter"}, governance_type: "core_domain", proposal_cid: $pc}')"
+  # DecMan requires an action, but a core_domain confirmation only uses proposal_cid; the current
+  # threshold makes the placeholder a no-op even if it were ever applied.
+  body="$(jq -cn --arg p "$(treasury)" --arg r "$(rules_cid)" --arg pc "$pcid" --argjson thr "$GOVERNANCE_THRESHOLD" \
+    '{party_id: $p, rules_contract_id: $r, action: {type: "governance_set_threshold", new_threshold: $thr}, governance_type: "core_domain", proposal_cid: $pc}')"
   confirm_and_execute charter "$pcid" "$body" '{"disclosed_contracts": []}'
   wait_for "TreasuryCharter visible to the treasurer on node A" 180 3 charter_listed
   state_set_str '.charter.cid' "$WAIT_RESULT"

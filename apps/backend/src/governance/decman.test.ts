@@ -340,7 +340,7 @@ describe('DecMan sealer against a stub Decentralization Manager', () => {
     expect(confirms[0]?.body).toEqual({
       party_id: TREASURY,
       rules_contract_id: 'rules-cid-1',
-      action: { type: 'generic_vote', description: 'MithraSealMandate' },
+      action: { type: 'governance_set_threshold', new_threshold: 2 },
       governance_type: 'core_domain',
       proposal_cid: PROPOSAL_CID,
     });
@@ -388,7 +388,7 @@ describe('DecMan sealer against a stub Decentralization Manager', () => {
       body: {
         party_id: TREASURY,
         rules_contract_id: 'rules-cid-1',
-        action: { type: 'generic_vote', description: 'MithraSealMandate' },
+        action: { type: 'governance_set_threshold', new_threshold: 2 },
         governance_type: 'core_domain',
         proposal_cid: PROPOSAL_CID,
         disclosed_contracts: [],

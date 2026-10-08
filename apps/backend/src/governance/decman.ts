@@ -20,9 +20,6 @@ import {
   type SealStore,
 } from './sealer';
 
-/** The action label the Mithra governed action reports (`actionLabel` in Mithra.Governance). */
-export const SEAL_ACTION_LABEL = 'MithraSealMandate';
-
 /** A DecMan call that failed; `status` 0 means no answer. */
 export class DecmanError extends Error {
   constructor(
@@ -182,7 +179,9 @@ export function createDecmanSealer(deps: DecmanSealerDeps): MandateSealer {
   const actionBody = (proposalCid: string): Record<string, unknown> => ({
     party_id: treasury,
     rules_contract_id: rulesCid,
-    action: { type: 'generic_vote', description: SEAL_ACTION_LABEL },
+    // DecMan requires an action, but a core_domain confirmation only uses proposal_cid. The
+    // current threshold makes the placeholder a no-op even if it were ever applied.
+    action: { type: 'governance_set_threshold', new_threshold: local.decmanGovernanceThreshold },
     governance_type: 'core_domain',
     proposal_cid: proposalCid,
   });

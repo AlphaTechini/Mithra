@@ -101,13 +101,42 @@ Everything below was built from the research notes and the bundle's files but co
 | 11 | DAR distribution succeeds although the governance DARs may already be vetted, and the Mithra DAR also lands on node A (the operator creates a `CharterProposal` there) | step 10 | `curl localhost:8081/packages/vetted` lists `mithra-v1`; step 13 fails with an unknown-package error otherwise |
 | 12 | `GET /governance/state?party_id=...` contains the `GovernanceRules` contract id (the script reads `rules_contract_id`, `rules_cid`, `governance_rules_contract_id`, or the first `contract_id`) | step 11 | the timeout message prints the response; set the id by hand in `localnet/.state/state.json` under `rules_cid` if the shape differs |
 | 13 | `GET /governance/confirmations?party_id=...` lists confirmations per action; the script takes confirmations from the entry that mentions the operator party (add-proposer) or the proposal contract id (charter) | steps 12, 13 | the timeout message prints the response |
-| 14 | `governance_add_additional_proposer` (`core_self`) and `generic_vote` with description `MithraCreateCharter` (`core_domain`, `disclosed_contracts: []`) are accepted by confirm and execute | steps 12, 13 | execute returns 200 and a `TreasuryCharter` appears for the treasurer on node A |
+| 14 | `governance_add_additional_proposer` (`core_self`) and the no-op placeholder action `governance_set_threshold` set to the current threshold (`core_domain`, `disclosed_contracts: []`) are accepted by confirm and execute | steps 12, 13 | execute returns 200 and a `TreasuryCharter` appears for the treasurer on node A |
 | 15 | The treasury party reports `isLocal: true` on all three nodes through the JSON API (`GET /v2/parties/{party}`) | step 7 | a warning if not; then check DecMan's view |
 | 16 | The hosting threshold of 2 is applied to the party-to-participant mapping | DecMan UI / API | the party shows threshold 2 with three hosts |
 | 17 | DSO party: `GET http://localhost:3000/api/validator/v0/scan-proxy/dso-party-id` returns `{"dso_party_id": "..."}` (the path is listed in the bundle's validator API docs; the response shape is taken from Scan's `/v0/dso-party-id`) | step 14 | the script falls back to `http://scan.localhost:4000/api/scan/v0/dso-party-id`; check `curl -s -H "Authorization: Bearer $(jwt_unsafe)" localhost:3000/api/validator/v0/scan-proxy/dso-party-id` |
 | 18 | Canton console commands `synchronizers.disconnect_all()`, `synchronizers.reconnect_all()`, `synchronizers.list_connected()` on the remote participants, and that `canton run` exits after the script | `scripts/localnet-node.sh b offline` | the status script shows node B with `NONE (offline)`, and `online` restores `global`; `scripts/localnet-node.sh console` opens a console to look up names |
 | 19 | The console override works with the bundle's `console` service (it builds the image from `sgaunet/jwt-cli:latest`; all four profiles must be enabled) | node offline demo | `scripts/localnet-node.sh b offline` prints `[mithra] disconnecting app-user ...` |
 | 20 | Taking node B offline leaves the treasury working on A and C (two of three) | BitSafe evidence, later milestone | see the BitSafe evidence section when it exists |
+
+### Result of the first run on real images (2026-10-08)
+
+Machine: WSL2 with 6 GB for Docker and 10 GB swap. LocalNet's containers use about 4.4 GB of it, so the node console (a JVM) is tight on memory and is best started as its own service after checking free memory. `scripts/localnet-up.sh` completed all 15 steps against the real images, and `scripts/localnet-status.sh` shows all three nodes on Canton 3.5.8 with DecMan `up`.
+
+| # | Result | Evidence |
+|---|---|---|
+| 1 | Verified | All images pulled; the bring-up reached step 15 |
+| 2 | Verified | LocalNet stayed up through the whole run on the machine above |
+| 3 | Verified | DecMan started on all three nodes and answers on 8081 to 8083 |
+| 4 | Verified | Peer names with spaces and parentheses were accepted by `/network-config` |
+| 5 | Verified | `POST /onboarding` returned at once and the script accepted the invitations on B and C |
+| 6 | Verified | Invitations were found for onboarding, DARs and contracts |
+| 7 | Verified | `/decentralized-parties` on 8081 returns `"party_id":"mithra-treasury::122011bb..."` |
+| 8 | Verified | Status polling completed for onboarding, DARs and contracts |
+| 9 | Fixed | Node A's `ledger-api-user` now gets actAs on the treasury party (DecMan A submits for it); nodes B and C get readAs, because they only read the governance contracts to confirm |
+| 10 | Verified | Step 9 (`PUT /party-config`) completed on all three nodes once the grants from item 9 were in place |
+| 11 | Fixed | DAR distribution worked; the `mithra-v1` package is vetted on all nodes |
+| 12 | Fixed | Step 11 now restarts a GovernanceRules deployment whose DecMan status is `failed`; the rules contract id is read from `/governance/state` |
+| 13 | Verified | Confirmations were read per action from `/governance/confirmations` |
+| 14 | Fixed | DecMan v1.13.0 needs an `ActionType` for `core_domain` confirm and execute, and `generic_vote` is only a ProposalType. Mithra now sends `{type:"governance_set_threshold", new_threshold:<current threshold>}` as a no-op placeholder (step 13 and `apps/backend/src/governance/decman.ts`); a `TreasuryCharter` exists in the status output |
+| 15 | Verified | `GET /v2/parties/{treasury}` on 3975, 2975 and 4975 returns `"isLocal":true` |
+| 16 | Verified | DecMan on 8081 and 8082 shows `"threshold":2` with three owner keys; the status script prints `hosting threshold: 2 of 3` |
+| 17 | Verified | Step 14 completed and the status script prints the DSO party `DSO::1220fec3...` |
+| 18 | Verified | `b offline` printed `app-user connected synchronizers now: Vector()`; status showed `NONE (offline)`; `b online` listed synchronizer `global` again |
+| 19 | Verified | The console override ran and printed `[mithra] disconnecting app-user from all synchronizers` |
+| 20 | Not checked | Only the offline and online switch was run; no treasury action was submitted while B was offline |
+
+Node C and node A are refused: `c offline` prints `refusing to take node C offline: it hosts the DSO and the synchronizer` and `a offline` prints `refusing to take node A offline: it hosts the agent, the operator and every demo party`, both with exit code 1 and no change. All three nodes were online at the end of the run. DecMan on 8083 lists only the DSO party in `/decentralized-parties`, not the treasury party, which the ledger API on 4975 still reports as local.
 
 Already checked in the build environment: `bash -n` and `shellcheck` on all scripts; `docker compose config` for the DecMan file and for the console override merged with the bundle's compose files; the JWT helper against `jose`; the SHA-256 of the bundle (`e15e8263...cd73`) and the download, verify and extract path against a local copy; the whole bring-up, a rerun and the status, node and down scripts against a fake DecMan, fake ledger API and fake `docker` (checks the control flow and the JSON bodies, not the real services); `scripts/localnet-up.sh --dry-run` output.
 

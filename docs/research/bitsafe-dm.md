@@ -48,7 +48,7 @@ interface GovernableAction where
 Template conventions (`CUSTOM_DAML_TEMPLATES.md`): proposal `signatory proposer`, `observer governanceParty`, stable PascalCase `actionLabel`. `executeImpl` may only need `{proposer, governanceParty}` authority; third-party sign-offs are collected beforehand as contracts that the governance party consumes ("Require business sign-offs at execute time").
 
 REST for a custom (`core_domain`) action, once the proposal contract exists:
-- `POST /governance/confirm {party_id, rules_contract_id, action: {type:"generic_vote", description:"x"}, governance_type: "core_domain", proposal_cid}` on each confirming node.
+- `POST /governance/confirm {party_id, rules_contract_id, action, governance_type: "core_domain", proposal_cid}` on each confirming node. `action` is required and must be one of DecMan's `ActionType` variants (v1.13.0, `GET /api-docs/openapi.json`); for `core_domain` it is ignored, since the on-chain `Confirmation` only carries the proposal and its label. Mithra sends `{type: "governance_set_threshold", new_threshold: <current threshold>}`. `generic_vote` is a `ProposalType` for `POST /governance/propose` only; confirm rejects it with HTTP 400 "unknown variant".
 - `GET /governance/confirmations?party_id=...` → `domain_actions[]` with `proposal_cid`, `confirmations[]`, `can_execute`.
 - `POST /governance/execute {party_id, rules_contract_id, action, confirmation_cids, disclosed_contracts: [], governance_type: "core_domain", proposal_cid}` on any member node.
 - Non-member proposers (Mithra's operator party) must first be added with the `core_self` action `{type: "governance_add_additional_proposer", additional_proposer}` (confirm on 2 nodes, then execute).
