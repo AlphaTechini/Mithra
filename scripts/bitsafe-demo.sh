@@ -897,7 +897,7 @@ step4() {
   rep "Sealing a Mandate change files a governed action (\`MandateChangeProposal\`) that needs $GOVERNANCE_THRESHOLD of $NODE_COUNT node confirmations through BitSafe's \`GovernanceRules\`. The backend auto-confirms on nodes A and B (\`AUTO_CONFIRM\` in \`localnet/nodes.env\`); node C is confirmed by hand in its own DecMan. With node B offline only node A can confirm."
   rep ""
   newcap="4000"
-  if [ "$(printf '%s' "$ORIG_CAP" | jq -R 'tonumber')" = "4000" ]; then newcap="4500"; fi
+  if [ "$(printf '%s' "$ORIG_CAP" | jq -R 'tonumber|.+0')" = "4000" ]; then newcap="4500"; fi
   rc=0
   node_set b offline || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -956,7 +956,7 @@ step4() {
   mandate="$(api GET /api/mandate)" || mandate="{}"
   ver="$(printf '%s' "$mandate" | jq -r '.version // 0')"
   cap="$(printf '%s' "$mandate" | jq -r '.terms.cap // ""')"
-  if [ "$rc" -eq 0 ] && [ "$ver" -gt "$ORIG_VERSION" ] && [ "$(printf '%s' "$cap" | jq -R 'tonumber')" = "$(printf '%s' "$newcap" | jq -R 'tonumber')" ]; then
+  if [ "$rc" -eq 0 ] && [ "$ver" -gt "$ORIG_VERSION" ] && [ "$(printf '%s' "$cap" | jq -R 'tonumber|.+0')" = "$(printf '%s' "$newcap" | jq -R 'tonumber|.+0')" ]; then
     result G2 PASS "sealed: Mandate version $ORIG_VERSION to $ver, cap $ORIG_CAP to $cap" "$anchor"
   else
     result G2 FAIL "seal did not complete after node B returned (last: $(printf '%s' "$POLL_OUT" | short 200)); Mandate version $ver, cap $cap" "$anchor"
@@ -975,7 +975,7 @@ step4() {
   mandate="$(api GET /api/mandate)" || mandate="{}"
   ver="$(printf '%s' "$mandate" | jq -r '.version // 0')"
   cap="$(printf '%s' "$mandate" | jq -r '.terms.cap // ""')"
-  if [ "$rc" -eq 0 ] && [ "$(printf '%s' "$cap" | jq -R 'tonumber')" = "$(printf '%s' "$ORIG_CAP" | jq -R 'tonumber')" ]; then
+  if [ "$rc" -eq 0 ] && [ "$(printf '%s' "$cap" | jq -R 'tonumber|.+0')" = "$(printf '%s' "$ORIG_CAP" | jq -R 'tonumber|.+0')" ]; then
     result R1 PASS "cap back to $cap (Mandate version $ver)" "$anchor"
   else
     result R1 FAIL "the original cap $ORIG_CAP was not restored (Mandate version $ver, cap $cap, last: $(printf '%s' "$POLL_OUT" | short 200)); reseal it in the app" "$anchor"

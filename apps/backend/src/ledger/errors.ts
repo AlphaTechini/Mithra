@@ -74,6 +74,9 @@ export const NODE_CONFIRMATION_ERROR_IDS: readonly string[] = [
   'NO_SYNCHRONIZER_FOR_SUBMISSION',
   // The command was not completed before its deadline.
   'SUBMISSION_TIMEOUT',
+  // Seen on LocalNet below the hosting threshold: the first submit timed out on our side while the
+  // mediator still waited for confirmations, and the retry (same command id) collided with it.
+  'SUBMISSION_ALREADY_IN_FLIGHT',
 ];
 
 /**
