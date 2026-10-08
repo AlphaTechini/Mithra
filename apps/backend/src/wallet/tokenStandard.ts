@@ -1,5 +1,6 @@
 import { sumDecimals } from '@mithra/shared';
 import { z } from 'zod';
+import type { TokenProvider } from '../ledger/auth';
 import type { LedgerClient } from '../ledger/client';
 import { LfDecimal, encodeDecimal } from '../ledger/codec';
 import {
@@ -58,6 +59,8 @@ export interface TokenStandardAdapterOptions {
   ledger: LedgerClient;
   registryUrl: string;
   instrument: InstrumentId;
+  /** Bearer token for registries that need one, such as a LocalNet validator's scan-proxy. */
+  auth?: TokenProvider;
   fetch?: typeof fetch;
   /** Per request timeout. Default 15 s. */
   timeoutMs?: number;
@@ -99,11 +102,17 @@ export function createTokenStandardAdapter(options: TokenStandardAdapterOptions)
     schema: T,
   ): Promise<z.output<T>> {
     const url = `${base}${path}`;
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      accept: 'application/json',
+    };
+    const token = await options.auth?.getToken();
+    if (token) headers['authorization'] = `Bearer ${token}`;
     let response: Response;
     try {
       response = await doFetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        headers,
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
       });

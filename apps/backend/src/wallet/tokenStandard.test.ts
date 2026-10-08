@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { none } from '../ledger/auth';
+import { none, type TokenProvider } from '../ledger/auth';
 import { jsonBodyOf, urlOf } from '../testUtils';
 import { LedgerClient } from '../ledger/client';
 import { RegistryError, createTokenStandardAdapter, HOLDING_INTERFACE_ID } from './tokenStandard';
@@ -10,6 +10,7 @@ interface Recorded {
   method: string;
   url: string;
   body: unknown;
+  authorization?: string | undefined;
 }
 
 const DISCLOSED = {
@@ -38,7 +39,12 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 beforeAll(async () => {
   server = createServer((req, res) => {
     void readBody(req).then((body) => {
-      const entry = { method: req.method ?? '', url: req.url ?? '', body };
+      const entry = {
+        method: req.method ?? '',
+        url: req.url ?? '',
+        body,
+        authorization: req.headers.authorization,
+      };
       recorded.push(entry);
       const { status, body: out } = respond(entry);
       res.writeHead(status, { 'content-type': 'application/json' });
@@ -61,7 +67,7 @@ beforeEach(() => {
 const instrument = { admin: 'dso::1220', id: 'Amulet' };
 const fixedNow = new Date('2026-10-01T09:00:00Z');
 
-function adapter(ledgerFetch?: typeof fetch) {
+function adapter(ledgerFetch?: typeof fetch, auth?: TokenProvider) {
   const ledger = new LedgerClient({
     baseUrl: 'http://ledger.test',
     userId: 'u',
@@ -73,10 +79,23 @@ function adapter(ledgerFetch?: typeof fetch) {
     registryUrl: `${baseUrl}/api/validator/v0/scan-proxy/`,
     instrument,
     now: () => fixedNow,
+    ...(auth ? { auth } : {}),
   });
 }
 
 describe('transferLeg', () => {
+  it('sends the bearer token when the registry needs one, and none otherwise', async () => {
+    respond = () => ({
+      status: 200,
+      body: { factoryId: '00factory', transferKind: 'direct', choiceContext: {} },
+    });
+    const leg = { sender: 'treasury::1', receiver: 'holder::2', amount: '1' };
+    await adapter(undefined, { getToken: () => Promise.resolve('tok-1') }).transferLeg(leg);
+    await adapter().transferLeg(leg);
+
+    expect(recorded.map((r) => r.authorization)).toEqual(['Bearer tok-1', undefined]);
+  });
+
   it('asks the registry for the factory and turns the answer into a leg with disclosed contracts', async () => {
     respond = () => ({
       status: 200,
