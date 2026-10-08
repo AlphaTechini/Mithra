@@ -652,7 +652,18 @@ deploy_governance_rules() {
   log_ok "GovernanceRules deployed for the treasury ($(short_party "$WAIT_RESULT"), confirmations needed: $GOVERNANCE_THRESHOLD of 3)"
 }
 
-rules_cid() { state_get '.rules_cid'; }
+# A governance change (step 12) archives GovernanceRules and creates a new one, so ask DecMan for
+# the live id and keep the state file in step; the stored id is only a fallback.
+rules_cid() {
+  local c
+  c="$(rules_cid_from_state)"
+  if [ -n "$c" ] && ! is_dry; then
+    state_set_str '.rules_cid' "$c"
+    printf '%s' "$c"
+  else
+    state_get '.rules_cid'
+  fi
+}
 
 # ---------------------------------------------------------------------------------------------------
 # Governed actions (shared by steps 12 and 13)

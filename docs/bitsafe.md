@@ -79,7 +79,7 @@ Also unit-tested: the node status rule (`apps/backend/src/routes/treasury/infras
 
 ### LocalNet run (`scripts/bitsafe-demo.sh`)
 
-Run `scripts/bitsafe-demo.sh` on LocalNet to produce it (how: `docs/verification.md`, "BitSafe evidence (owner's machine)"). No report has been produced yet; when it has, link the newest `docs/bitsafe-evidence/<timestamp>.md` here. It records, with the exact commands and trimmed responses:
+Latest run: [docs/bitsafe-evidence/2026-10-08T2000.md](bitsafe-evidence/2026-10-08T2000.md), on the real LocalNet (Splice 0.6.12, Canton 3.5.8, DecMan v1.13.0): **all 11 claims pass**. Below the hosting threshold Canton rejected the treasury's transaction with `MEDIATOR_SAYS_TX_TIMED_OUT` and the backend's retry saw `SUBMISSION_ALREADY_IN_FLIGHT`; both map to the message above. Run `scripts/bitsafe-demo.sh` to reproduce it (how: `docs/verification.md`, "BitSafe evidence (owner's machine)"). It records, with the exact commands and trimmed responses:
 
 | # | Claim | Step |
 |---|---|---|
