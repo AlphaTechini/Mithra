@@ -2,8 +2,14 @@ import OpenAI from 'openai';
 import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
-  ChatCompletionToolChoiceOption,
 } from 'openai/resources/chat/completions';
+import type {
+  FunctionTool,
+  Response,
+  ResponseInputItem,
+  ToolChoiceFunction,
+  ToolChoiceOptions,
+} from 'openai/resources/responses/responses';
 import { fingerprintOf } from './fingerprint';
 
 /**
@@ -110,6 +116,7 @@ export function describeLlmFailure(error: unknown, timeoutMs: number): string {
   return 'model provider unreachable';
 }
 
+// Chat Completions shape, kept only so request fingerprints stay stable across the API switch.
 function toolDefinitions(tools: LlmTool[], strict: boolean): ChatCompletionTool[] {
   return tools.map((t): ChatCompletionTool => ({
     type: 'function',
@@ -122,9 +129,102 @@ function toolDefinitions(tools: LlmTool[], strict: boolean): ChatCompletionTool[
   }));
 }
 
-function toolChoiceParam(choice: LlmToolChoice): ChatCompletionToolChoiceOption {
+/** The Responses API wants `strict` set explicitly on every function tool. */
+function responseTools(tools: LlmTool[], strict: boolean): FunctionTool[] {
+  return tools.map((t): FunctionTool => ({
+    type: 'function',
+    name: t.name,
+    description: t.description,
+    parameters: t.parameters,
+    strict,
+  }));
+}
+
+function toolChoiceParam(choice: LlmToolChoice): ToolChoiceOptions | ToolChoiceFunction {
   if (typeof choice === 'string') return choice;
-  return { type: 'function', function: { name: choice.name } };
+  return { type: 'function', name: choice.name };
+}
+
+/** Message content arrives as a string or as parts; only text parts can be forwarded. */
+function textOf(content: unknown, role: string): string {
+  if (content === null || content === undefined) return '';
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part: { type?: string; text?: string }) => {
+        if (part.type === 'text' && typeof part.text === 'string') return part.text;
+        throw new LlmInvalidOutputError(
+          `A ${role} message has a "${String(part.type)}" content part; only text is supported.`,
+        );
+      })
+      .join('');
+  }
+  throw new LlmInvalidOutputError(`A ${role} message has content that is not text.`);
+}
+
+/** Chat Completions history in, Responses input items out. Order is kept. */
+function responseInput(messages: LlmMessage[]): ResponseInputItem[] {
+  const items: ResponseInputItem[] = [];
+  for (const m of messages) {
+    switch (m.role) {
+      case 'system':
+      case 'developer':
+        items.push({ role: 'developer', content: textOf(m.content, m.role) });
+        break;
+      case 'user':
+        items.push({ role: 'user', content: textOf(m.content, m.role) });
+        break;
+      case 'assistant': {
+        const text = textOf(m.content, m.role);
+        if (text !== '') items.push({ role: 'assistant', content: text });
+        for (const call of m.tool_calls ?? []) {
+          if (call.type !== 'function') {
+            throw new LlmInvalidOutputError(
+              `The history holds a tool call of type "${String(call.type)}"; only function calls are supported.`,
+            );
+          }
+          items.push({
+            type: 'function_call',
+            call_id: call.id,
+            name: call.function.name,
+            arguments: call.function.arguments,
+          });
+        }
+        break;
+      }
+      case 'tool':
+        items.push({
+          type: 'function_call_output',
+          call_id: m.tool_call_id,
+          output: textOf(m.content, m.role),
+        });
+        break;
+      default:
+        throw new LlmInvalidOutputError(`A "${m.role}" message cannot be sent to the model.`);
+    }
+  }
+  return items;
+}
+
+/** Collects the text and function calls of a response; any other tool item is refused. */
+function readOutput(response: Response): { text: string; toolCalls: LlmToolCall[] } {
+  const texts: string[] = [];
+  const toolCalls: LlmToolCall[] = [];
+  for (const item of response.output ?? []) {
+    if (item.type === 'message') {
+      for (const part of item.content) {
+        if (part.type === 'output_text') texts.push(part.text);
+      }
+    } else if (item.type === 'function_call') {
+      toolCalls.push({ id: item.call_id, name: item.name, arguments: item.arguments });
+    } else if (item.type !== 'reasoning') {
+      // Dropping it silently would look like "the model called no tool".
+      throw new LlmInvalidOutputError(
+        `The model made a tool call of type "${String(item.type)}"; only function calls are supported.`,
+      );
+    }
+  }
+  return { text: texts.join(''), toolCalls };
 }
 
 export function createLlm(config: LlmConfig): Llm {
@@ -146,45 +246,50 @@ export function createLlm(config: LlmConfig): Llm {
         messages: input.messages,
         tools: tools ?? [],
       });
-      let completion;
+      let response: Response;
       try {
-        completion = await client.chat.completions.create({
+        response = await client.responses.create({
           model: config.model,
-          messages: input.messages,
+          input: responseInput(input.messages),
+          store: false,
           ...(tools
             ? {
-                tools,
+                tools: responseTools(input.tools ?? [], strict),
                 tool_choice: toolChoiceParam(input.toolChoice ?? 'auto'),
                 parallel_tool_calls: false,
               }
             : {}),
         });
       } catch (error) {
+        // The reason shown to people is short; the provider's own text says what it rejected.
+        if (error instanceof OpenAI.APIError) {
+          console.error(
+            `[mithra-llm] ${input.purpose} (${config.model}) failed: ${error.message.slice(0, 500)}`,
+          );
+        }
         throw new LlmUnavailableError(describeLlmFailure(error, config.timeoutMs), {
           cause: error,
         });
       }
-      const raw = completion.choices?.[0]?.message;
-      if (!raw) {
-        throw new LlmUnavailableError('the model provider returned no answer');
+      if (response.error) {
+        console.error(
+          `[mithra-llm] ${input.purpose} (${config.model}) failed: ${response.error.message.slice(0, 500)}`,
+        );
+        throw new LlmUnavailableError('the model provider reported an error');
       }
-      const toolCalls: LlmToolCall[] = [];
-      for (const call of raw.tool_calls ?? []) {
-        if (call.type !== 'function') {
-          // Dropping it silently would look like "the model called no tool".
-          throw new LlmInvalidOutputError(
-            `The model made a tool call of type "${String(call.type)}"; only function calls are supported.`,
-          );
-        }
-        toolCalls.push({
-          id: call.id,
-          name: call.function.name,
-          arguments: call.function.arguments,
-        });
+      if (response.status === 'incomplete' || response.status === 'failed') {
+        const why = response.incomplete_details?.reason;
+        throw new LlmUnavailableError(
+          `the model answer was ${response.status}${why ? ` (${why})` : ''}`,
+        );
+      }
+      const { text, toolCalls } = readOutput(response);
+      if (text === '' && toolCalls.length === 0) {
+        throw new LlmUnavailableError('the model provider returned no answer');
       }
       const message: LlmAssistantMessage = {
         role: 'assistant',
-        content: typeof raw.content === 'string' ? raw.content : null,
+        content: text === '' ? null : text,
         ...(toolCalls.length > 0
           ? {
               tool_calls: toolCalls.map((c) => ({

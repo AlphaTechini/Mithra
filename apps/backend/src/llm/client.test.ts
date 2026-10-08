@@ -45,6 +45,7 @@ afterAll(async () => {
 });
 beforeEach(() => {
   stub.requests.length = 0;
+  stub.rawRequests.length = 0;
   stub.script({ text: 'OK' });
 });
 
@@ -80,26 +81,66 @@ describe('createLlm', () => {
     expect((failure as Error).message).toContain('"custom"');
   });
 
-  it('sends model, messages, tools, tool_choice and parallel_tool_calls: false', async () => {
+  it('sends model, input, tools, tool_choice, parallel_tool_calls: false and store: false to /responses', async () => {
     await createLlm(config()).chat({ ...INPUT, toolChoice: { name: 'get_balance' } });
-    const sent = stub.requests[0];
+    const sent = stub.rawRequests[0];
     expect(sent?.model).toBe('test-model');
-    expect(sent?.messages.map((m) => m.role)).toEqual(['system', 'user']);
-    expect(sent?.tools?.[0]?.function.name).toBe('get_balance');
-    expect(sent?.tools?.[0]?.function.strict).toBeUndefined();
-    expect(sent?.tool_choice).toEqual({ type: 'function', function: { name: 'get_balance' } });
+    expect(sent?.store).toBe(false);
+    expect(sent?.input).toEqual([
+      { role: 'developer', content: 'You are a test.' },
+      { role: 'user', content: 'Hello' },
+    ]);
+    expect(sent?.tools).toEqual([
+      {
+        type: 'function',
+        name: 'get_balance',
+        description: 'Read the balance',
+        parameters: TOOL.parameters,
+        strict: false,
+      },
+    ]);
+    expect(sent?.tool_choice).toEqual({ type: 'function', name: 'get_balance' });
     expect(sent?.parallel_tool_calls).toBe(false);
+  });
+
+  it('translates a round-tripped tool call and its result into function_call items', async () => {
+    const history: LlmChatInput['messages'] = [
+      ...INPUT.messages,
+      {
+        role: 'assistant',
+        content: 'Checking.',
+        tool_calls: [
+          {
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'get_balance', arguments: '{"x":1}' },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_1', content: '{"balance":5}' },
+      { role: 'user', content: [{ type: 'text', text: 'Thanks' }] },
+    ];
+    await createLlm(config()).chat({ ...INPUT, messages: history });
+    expect(stub.rawRequests[0]?.input).toEqual([
+      { role: 'developer', content: 'You are a test.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Checking.' },
+      { type: 'function_call', call_id: 'call_1', name: 'get_balance', arguments: '{"x":1}' },
+      { type: 'function_call_output', call_id: 'call_1', output: '{"balance":5}' },
+      { role: 'user', content: 'Thanks' },
+    ]);
   });
 
   it('sends strict: true on function tools only when LLM_STRICT_TOOLS is on', async () => {
     await createLlm(config({ strictTools: true })).chat(INPUT);
-    expect(stub.requests[0]?.tools?.[0]?.function.strict).toBe(true);
+    expect(stub.rawRequests[0]?.tools?.[0]?.strict).toBe(true);
   });
 
   it('leaves tools out when there are none', async () => {
     await createLlm(config()).chat({ purpose: 'plain', messages: INPUT.messages });
-    expect(stub.requests[0]?.tools).toBeUndefined();
-    expect(stub.requests[0]?.parallel_tool_calls).toBeUndefined();
+    expect(stub.rawRequests[0]?.tools).toBeUndefined();
+    expect(stub.rawRequests[0]?.tool_choice).toBeUndefined();
+    expect(stub.rawRequests[0]?.parallel_tool_calls).toBeUndefined();
   });
 
   it('A12: fingerprints are SHA-256 hex, stable for identical requests and different for different ones', async () => {
@@ -166,7 +207,7 @@ describe('createLlm', () => {
     expect((error as LlmUnavailableError).reason).toBe('model provider unreachable');
   });
 
-  it('treats an answer without choices as unavailable', async () => {
+  it('treats an answer without output as unavailable', async () => {
     stub.always({ empty: true });
     await expect(createLlm(config()).chat(INPUT)).rejects.toBeInstanceOf(LlmUnavailableError);
   });

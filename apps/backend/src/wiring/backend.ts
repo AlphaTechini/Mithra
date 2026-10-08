@@ -191,7 +191,12 @@ export function createBackend(
     ...(config.llm.maxToolRounds === undefined ? {} : { maxToolRounds: config.llm.maxToolRounds }),
     ...(config.llm.strictTools === undefined ? {} : { strictTools: config.llm.strictTools }),
   });
-  const drafter = createPolicyDrafter({ llm, services, store: createAgentStore(db) });
+  const drafter = createPolicyDrafter({
+    llm,
+    services,
+    store: createAgentStore(db),
+    ...(config.llm.strictTools === undefined ? {} : { strictTools: config.llm.strictTools }),
+  });
 
   const app = buildApp(config, {
     database,

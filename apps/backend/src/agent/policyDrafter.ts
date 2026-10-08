@@ -22,11 +22,11 @@ const SYSTEM_PROMPT = [
   'You only draft. Nothing is applied until the treasurer seals it. You cannot seal or sign anything.',
 ].join('\n');
 
-function toolFor(): LlmTool {
+function toolFor(strict: boolean): LlmTool {
   return {
     name: draftPolicyTool.name,
     description: draftPolicyTool.description,
-    parameters: jsonSchemaOf(draftPolicyTool, false),
+    parameters: jsonSchemaOf(draftPolicyTool, strict),
   };
 }
 
@@ -37,7 +37,10 @@ export function createPolicyDrafter(deps: {
   services: AgentServices;
   /** For `llm_unavailable` / `llm_invalid_output` events (A11). */
   store?: Pick<AgentStore, 'recordEvent'>;
+  /** Must match what the LLM client sends (`LLM_STRICT_TOOLS`): strict tools need strict schemas. */
+  strictTools?: boolean;
 }): PolicyDrafter {
+  const strict = deps.strictTools ?? false;
   async function recordEvent(kind: string, payload: Record<string, unknown>): Promise<void> {
     if (!deps.store) return;
     try {
@@ -62,7 +65,7 @@ export function createPolicyDrafter(deps: {
             { role: 'system', content: system },
             { role: 'user', content: prompt },
           ],
-          tools: [toolFor()],
+          tools: [toolFor(strict)],
           toolChoice: { name: draftPolicyTool.name },
         });
       } catch (error) {
